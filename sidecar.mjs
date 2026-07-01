@@ -297,6 +297,23 @@ wss.on('connection', (ws) => {
           if (busy) { try { await conn.cancel({ sessionId }) } catch {} drainPerms(); busy = false }   // don't orphan an in-flight turn
           try { await newSession() } catch (e) { log('new', e.message) } broadcast(readyMsg()); break
         }
+        case 'findFile': {   // '@' file autocomplete: bounded walk of the session workdir (the ACP build has no HTTP serve)
+          const q = String(m.query || '').toLowerCase(), out = []
+          const walk = (dir, depth) => {
+            if (out.length >= 40 || depth > 6) return
+            let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+            for (const e of ents) {
+              if (out.length >= 40) break
+              if (e.name.startsWith('.') || e.name === 'node_modules') continue
+              const full = path.join(dir, e.name), rel = path.relative(WORKDIR, full).split(path.sep).join('/')
+              if (e.isDirectory()) { if (!q || rel.toLowerCase().includes(q)) out.push(rel + '/'); walk(full, depth + 1) }
+              else if (!q || rel.toLowerCase().includes(q)) out.push(rel)
+            }
+          }
+          try { walk(WORKDIR, 0) } catch (e) { log('findFile', e.message) }
+          send(ws, { type: 'findFileResult', rid: m.rid, files: out.slice(0, 20) })
+          break
+        }
       }
     } catch (e) { log('msg error', e.message) }
   })

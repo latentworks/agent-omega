@@ -80,6 +80,10 @@
   } catch (e) {}
   async function apiGet(path) {
     // path begins with "/api/..."
+    // Host-provided bridge (the ACP build has no HTTP serve — app.html answers over the WS).
+    if (typeof window.__aoApiGet === "function") {
+      try { const b = await window.__aoApiGet(path); if (b != null) return (b && b.data !== undefined) ? b.data : b; } catch (e) {}
+    }
     try {
       const res = await fetch(BASE + path, { headers: { accept: "application/json" } });
       if (res.ok) { const j = await res.json(); return j && j.data !== undefined ? j.data : j; }
@@ -236,7 +240,7 @@
     // commands offered to the '/' dropdown (anything with a slash; engine skills
     // are EXCLUDED here exactly like autocomplete.tsx, they live in the palette)
     slashes() {
-      return this.all().filter((c) => c.slash && !(c.kind === "engine" && c.source === "skill"));
+      return this.all().filter((c) => c.slash && !c.hidden && !(c.kind === "engine" && c.source === "skill"));
     },
 
     async refresh() {

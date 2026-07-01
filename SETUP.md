@@ -15,6 +15,8 @@ Same model as Windows — **get the code and launch it from the terminal.** A lo
 3. First run installs the config + Keychain vault into your home and shows how to add a model.
 4. **Add a model** (same requirement as Windows — the agent needs one): open Settings (`⌃,`, the gear icon, or `/settings`) → **Vault** → paste an API key (Anthropic / OpenAI / Google / DeepSeek / Moonshot / Z.AI), or run a local server (llama.cpp / Ollama / LM Studio) and pick the `local` model.
 
+**Optional — web search:** the agent's `web.py` gateway needs the separate anon-web component (same as Windows). Put the `anonweb/` package at `~/anon-web/anonweb/`, then `python3 -m venv ~/anon-web/.venv` and `~/anon-web/.venv/bin/pip install lxml trafilatura readability-lxml`. The shell auto-detects `~/anon-web` on launch and wires `AGENT_OMEGA_ANONWEB`/`_VENV`; without it, web search is simply disabled (nothing else is affected).
+
 **Optional — a signed, double-clickable build for non-technical people:** only if you want to hand a *downloaded* `.dmg` to someone who won't open a terminal, `mac/sign-notarize.sh` does the Developer-ID sign + notarize + staple (needs an Apple Developer ID, $99/yr). Not needed for the terminal launch above.
 
 The rest of this document covers the **Windows** setup.

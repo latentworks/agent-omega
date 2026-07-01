@@ -1103,6 +1103,19 @@ function doAbort(){
    ===================================================================== */
 let ws=null, reconnectT=null;
 function wsSend(o){ try{ if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); }catch(e){} }
+/* WS-backed api bridge for command-discovery (the ACP build has no HTTP serve).
+   command-discovery calls window.__aoApiGet(path); we answer commands/agents from
+   live WS state and proxy file search to the sidecar via a rid request/response. */
+const _apiReq=new Map(); let _apiRid=0;
+function wsRequest(type,payload,timeout){ return new Promise(res=>{ const rid='r'+(++_apiRid); _apiReq.set(rid,res); wsSend(Object.assign({},payload,{type,rid})); setTimeout(()=>{ if(_apiReq.has(rid)){ _apiReq.delete(rid); res(null); } }, timeout||5000); }); }
+window.__aoApiGet=async function(p){
+  try{
+    if(p.indexOf('/api/command')===0) return engineCommands||[];
+    if(p.indexOf('/api/agent')===0) return (agents||[]).map(a=>({name:(a.name||a.value)}));
+    if(p.indexOf('/api/find/file')===0){ const q=(p.split('query=')[1]||'').split('&')[0]; const r=await wsRequest('findFile',{query:decodeURIComponent(q)}); return (r&&r.files)||[]; }
+  }catch(e){}
+  return null;
+};
 function scheduleReconnect(){ if(reconnectT) return; reconnectT=setTimeout(()=>{ reconnectT=null; connect(); }, 1200); }
 function connect(){
   setStatus('connecting');
@@ -1130,6 +1143,7 @@ function onWs(m){
     case 'update':       onUpdate(m.update); break;
     case 'permission':   showPermission(m); break;
     case 'commands':     engineCommands=Array.isArray(m.commands)?m.commands:engineCommands; syncDiscovery(); break;
+    case 'findFileResult': { const r=_apiReq.get(m.rid); if(r){ _apiReq.delete(m.rid); r(m); } break; }
     case 'turn-start':   resetTurn(); setStatus('busy'); break;
     case 'turn-end':
       if(!turnProduced) addFallback('turn ended with no output'+(m.stopReason?(' ('+m.stopReason+')'):''));
@@ -1461,6 +1475,9 @@ function wireDiscovery(){
     'provider.connect':notAvail('/connect'),
     'editor.open':     notAvail('an external editor')
   });
+  // Hide commands not wired in the ACP build so nothing shown is broken (kept as actions above
+  // for any code that dispatches them directly, but pulled from the palette + '/' dropdown).
+  try{ const unavail=new Set(['session.list','session.share','session.unshare','session.rename','session.timeline','session.fork','session.compact','session.undo','session.redo','session.copy','session.export','session.sidebar.toggle','mcp.list','variant.list','variant.cycle','model.cycle_recent','agent.cycle','provider.connect','editor.open']); for(const b of C.registry.builtins){ if(unavail.has(b.id)) b.hidden=true; } C.registry.index(); }catch(e){}
   syncDiscovery();   // push whatever `ready` data has already arrived
 }
 

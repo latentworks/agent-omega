@@ -114,8 +114,8 @@ A skill is a specialized procedure for a kind of task, loaded on demand. You inv
 ## Web access — the local gateway is the only door
 
 You have no built-in web tools, and raw `curl`/`wget` are blocked. Every web call goes through the local web bridge — it calls a private, key-free search engine directly (no server to keep running):
-- search: `python ~/.config/opencode/web.py search "<query>" [n]`
-- read a page: `python ~/.config/opencode/web.py read "<url>"`
+- search: `python3 ~/.config/opencode/web.py search "<query>" [n]`
+- read a page: `python3 ~/.config/opencode/web.py read "<url>"`
 Search to find sources, then read the promising URLs for clean text. Results are trust-tagged (authoritative vs low-trust) — prefer authoritative and flag shaky claims with their source. Keep it tight (a few targeted searches). If the bridge returns an "unreachable" error, the gateway isn't running — say so; don't try to reach the web another way.
 
 ## Memory

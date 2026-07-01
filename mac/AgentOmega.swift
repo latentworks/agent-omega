@@ -186,6 +186,12 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         env["AGENT_OMEGA_WORKDIR"] = WORKDIR
         env["AGENT_OMEGA_WS_PORT"] = String(WS_PORT)
         if let dm = ProcessInfo.processInfo.environment["AO_DEFAULT_MODEL"], !dm.isEmpty { env["AGENT_OMEGA_DEFAULT_MODEL"] = dm }
+        // Web search (optional): if anon-web + its venv are installed at ~/anon-web, wire the gateway.
+        let anonRoot = HOME + "/anon-web", anonVenv = HOME + "/anon-web/.venv/bin/python"
+        if fm.fileExists(atPath: anonRoot + "/anonweb") && fm.isExecutableFile(atPath: anonVenv) {
+            env["AGENT_OMEGA_ANONWEB"] = anonRoot
+            env["AGENT_OMEGA_ANONWEB_VENV"] = anonVenv
+        }
         // A Finder-launched app gets a minimal PATH; give the engine's shell tools the usual bin dirs.
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
         p.environment = env
