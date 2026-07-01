@@ -1,7 +1,7 @@
 // skill-router/router.mjs — pure logic + the isolated, context-free router call.
 // Importable/testable (fetch is injectable); index.js holds only the OpenCode wiring.
 //
-// The idea (the user's design): the model that's loaded is its OWN router. On each turn
+// The idea (the design): the model that's loaded is its OWN router. On each turn
 // we make a SEPARATE, context-free call — just the request + the skill list — asking
 // "which skill(s)?". Stripped of conversation momentum, the same model that ignores
 // skills mid-flow classifies them cleanly. We then inject "invoke skill X" into the
@@ -10,12 +10,12 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-export const EVO_URL      = process.env.ROUTER_EVO_URL || ''
+export const EXTRACT_URL      = process.env.ROUTER_EXTRACT_URL || ''
 export const ROUTER_MODEL = process.env.ROUTER_MODEL || ''        // '' => use the loaded model (no swap)
 export const ROUTER_N     = Number(process.env.ROUTER_N || 3)     // how many recent user messages to read
-const RUNNING_URL   = (() => { try { return new URL('/running', EVO_URL).href } catch { return '' } })()
+const RUNNING_URL   = (() => { try { return new URL('/running', EXTRACT_URL).href } catch { return '' } })()
 const FALLBACK_MODEL = process.env.ROUTER_FALLBACK || 'qwen3-coder-30b'
-// Thinking OFF by default — a classify call needs no chain-of-thought (the user's spec).
+// Thinking OFF by default — a classify call needs no chain-of-thought (the spec).
 const NOTHINK = !['0', 'false', 'off'].includes(String(process.env.ROUTER_NOTHINK ?? '1').toLowerCase())
 
 // name -> description, read from each skill's frontmatter (the router self-registers:
@@ -90,7 +90,7 @@ export async function routerCall(prompt, fetchImpl = fetch) {
   const model = await pickModel(fetchImpl)
   const body = { model, messages: [{ role: 'user', content: prompt }], max_tokens: 40, temperature: 0 }
   if (NOTHINK) body.chat_template_kwargs = { enable_thinking: false }
-  const r = await fetchImpl(EVO_URL, {
+  const r = await fetchImpl(EXTRACT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

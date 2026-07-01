@@ -24,7 +24,7 @@ import { createTunnelRunner } from './tunnel.mjs'
 import { openStore, recall as memRecall, addEpisode, addFact, upsertEntity } from '../engram/store.mjs'
 import { extract as memExtract } from '../engram/extract.mjs'
 import { projectOf } from '../engram/capture.mjs'
-import { DB_PATH as ENGRAM_DB, evoExtractCall } from '../engram/engine.mjs'
+import { DB_PATH as ENGRAM_DB, extractCall } from '../engram/engine.mjs'
 
 const z = tool.schema
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -53,7 +53,7 @@ function withTimeout(promise, ms) {
 
 const LABELS = {
   anthropic: 'Claude', openai: 'GPT', moonshotai: 'Kimi', zai: 'GLM',
-  deepseek: 'DeepSeek', google: 'Gemini', evo: 'EVO', asus: 'ASUS', asus2: 'ASUS2',
+  deepseek: 'DeepSeek', google: 'Gemini', local: 'Local',
 }
 
 function labelFor(spec) {
@@ -67,7 +67,7 @@ function parseModel(spec) {
   return { providerID: s.slice(0, i), modelID: s.slice(i + 1) }
 }
 
-const LOCAL_PROVIDERS = new Set(['evo', 'asus', 'asus2'])
+const LOCAL_PROVIDERS = new Set(['local'])
 const CLOUD_PROVIDERS = new Set(['anthropic', 'openai', 'moonshotai', 'zai', 'deepseek', 'google'])
 
 // The gut-check fork contract: how the lead (or a pinned synthesizer) turns a debate
@@ -195,7 +195,7 @@ const CouncilPlugin = async ({ client }) => {
                 content: `COUNCIL DEBATE on: ${args.task}\n\n${debate}`,
                 capturedAt: Date.now(),
               })
-              memExtract(`The following is a council debate. Extract durable conclusions and facts worth remembering.\n\nTASK: ${args.task}\n\n${debate}`, evoExtractCall)
+              memExtract(`The following is a council debate. Extract durable conclusions and facts worth remembering.\n\nTASK: ${args.task}\n\n${debate}`, extractCall)
                 .then((ex) => {
                   if (ex.error) return
                   const now = Date.now()

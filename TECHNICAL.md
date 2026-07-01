@@ -321,7 +321,7 @@ call goes through `config-template/opencode/web.py`:
 ## 7. Secrets vault & the two-layer key model
 
 Cloud API keys live in a **Windows DPAPI-encrypted vault** managed by
-`~\.claude-secrets\secrets.ps1` (readable only as the logged-in Windows user).
+`~\.agent-omega\secrets.ps1` (readable only as the logged-in Windows user).
 
 Flow and the deliberate asymmetry:
 
@@ -355,7 +355,7 @@ guards against the empty-value case that would hang `secrets.ps1` on an interact
 - **Hot-swap.** The UI's model picker sends `setModel`; the sidecar calls
   `unstable_setSessionModel` and rolls back to the previous model on failure (e.g. the local
   server isn't running), surfacing an honest error. The default model when none is passed is
-  `evo/qwen3-coder-80b` (`sidecar.mjs`).
+  `anthropic/claude-opus-4-8` (`sidecar.mjs`).
 
 ---
 
@@ -397,5 +397,5 @@ Agent Omega's safety posture is defense-in-depth across the layers above:
 | `…\opencode\verify-guard\` | Post-action failure classifier (`index.js`, `core.mjs`, `failure-evals.mjs`) |
 | `…\opencode\web.py` | Anonymous web gateway (SSRF-guarded) |
 | `<engine>/bin/opencode.exe | The Bun-compiled engine binary |
-| `~\.claude-secrets\secrets.ps1` | DPAPI secrets vault |
+| `~\.agent-omega\secrets.ps1` | DPAPI secrets vault |
 | `~/.config/opencode/opencode.json` | Provider/model endpoints (local + cloud) |
