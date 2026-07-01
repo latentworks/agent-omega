@@ -6,6 +6,7 @@
 # Usage:  secrets.ps1 <get|set|list|remove> [name] [value]
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Security | Out-Null
+try { $OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch {} # UTF-8 stdout so non-ASCII key values round-trip intact
 
 $Action = $args[0]; $Name = $args[1]; $Value = $args[2]
 $Vault  = Join-Path $HOME '.agent-omega\vault.dat'

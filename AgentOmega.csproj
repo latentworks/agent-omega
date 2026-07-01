@@ -21,5 +21,8 @@
     <!-- the Node sidecar + its manifest ship beside the exe; setup runs `npm install` here and drops the engine in ./engine/ -->
     <None Include="sidecar.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="package.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- the engine binary (dropped in ./engine/ per SETUP) ships beside the exe; empty glob is a no-op if not yet downloaded -->
+    <None Include="engine\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="scripts\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

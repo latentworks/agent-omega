@@ -11,8 +11,9 @@ import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import os from 'node:os'
 import readline from 'node:readline/promises'
+import { fileURLToPath } from 'node:url'
 
-const HERE = import.meta.dirname
+const HERE = path.dirname(fileURLToPath(import.meta.url)) // Node 18+ (import.meta.dirname needs 20.11+)
 const HOME = os.homedir()
 const CFG_DIR = path.join(HOME, '.config', 'opencode')
 const VAULT_DIR = path.join(HOME, '.agent-omega')
@@ -73,20 +74,25 @@ async function main() {
   }
 
   const cfgPath = path.join(CFG_DIR, 'opencode.json')
+  if (!existsSync(cfgPath)) copyFileSync(path.join(tmpl, 'opencode.json'), cfgPath) // self-heal a missing/deleted config
   const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
 
   if (source === 'local') {
     const url = flag('url') || await ask('Local server base URL [http://127.0.0.1:8080/v1]: ', 'http://127.0.0.1:8080/v1')
+    if (!cfg.provider) cfg.provider = {}
+    if (!cfg.provider.local) cfg.provider.local = { npm: '@ai-sdk/openai-compatible', name: 'Local', options: {}, models: { 'local-model': { name: 'Local model', limit: { context: 32768, output: 8192 } } } }
+    cfg.provider.local.options = cfg.provider.local.options || {}
     cfg.provider.local.options.baseURL = url
     cfg.model = 'local/local-model'
     console.log('  model -> local/local-model @ ' + url)
   } else {
     let prov = source
     if (source === 'other') prov = (flag('provider') || await ask('Which? [google/deepseek/moonshotai/zai] (default google): ', 'google'))
-    const info = PROVIDERS[prov] || PROVIDERS.anthropic
+    if (!PROVIDERS[prov]) { console.error("  unknown provider '" + prov + "' — use one of: " + Object.keys(PROVIDERS).join(', ')); process.exit(1) }
+    const info = PROVIDERS[prov]
     const key = flag('key') || await ask(info.label + ' API key (leave blank to add later in the app): ', '')
     if (key) {
-      execFileSync('powershell', ['-NoProfile', '-File', vaultScript, 'set', info.vault, String(key)], { stdio: ['ignore', 'pipe', 'pipe'] })
+      execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', vaultScript, 'set', info.vault, String(key)], { stdio: ['ignore', 'pipe', 'pipe'] })
       console.log('  stored key in the encrypted vault (' + info.vault + ')')
     } else {
       console.log('  no key entered - add it later via the app, or store the ' + info.vault + ' vault entry')

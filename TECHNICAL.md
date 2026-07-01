@@ -70,7 +70,7 @@ single `WebView2` control docked to fill the window.
   `file:///…/ui/app.html?ws=4599&token=<WS_TOKEN>`. `WS_TOKEN` is a fresh `Guid` generated
   **per launch** — only the real window ever receives it.
 - **Spawns the sidecar.** `StartSidecar()` launches
-  `C:\Program Files\nodejs\node.exe sidecar.mjs <WORKDIR> <WS_PORT>` with
+  `node sidecar.mjs <WORKDIR> <WS_PORT>` with
   `CreateNoWindow=true`, passing the token as the `AO_WS_TOKEN` environment variable (never on
   the command line). On `FormClosed` it kills the sidecar process tree.
 - **Host bridge is window-controls only.** `WebMessageReceived` → `OnUiMessage` parses the JSON
@@ -112,7 +112,7 @@ sides.
 ### 3.2 Engine driver (ACP)
 
 - The engine is the Bun-compiled binary
-  `<engine>/bin/opencode.exe spawned as `opencode acp --cwd <WORKDIR>`
+  `engine/opencode.exe spawned as `opencode acp --cwd <WORKDIR>`
   with `stdio: ['pipe','pipe','inherit']`.
   - **Test mode:** setting `AGENT_OMEGA_OPENCODE_SRC` to the `packages/opencode` dir runs the
     engine from source via `bun run … src/index.ts` instead, picking up engine edits without a
@@ -339,8 +339,9 @@ Flow and the deliberate asymmetry:
    actually removes it.) So a shell command the model runs cannot read a cloud key, while the
    HTTP/provider layer is untouched.
 
-Vault management also flows through the sidecar (`vaultList`/`vaultSet`/`vaultRemove`), with
-guards against the empty-value case that would hang `secrets.ps1` on an interactive prompt.
+Vault management also flows through the sidecar (`vaultList`/`vaultSet`/`vaultRemove`). A
+settings write with an empty value is rejected up front, so `secrets.ps1` never runs a pointless
+`set` that would only error — the UI gets a clear message instead.
 
 ---
 
@@ -354,8 +355,9 @@ guards against the empty-value case that would hang `secrets.ps1` on an interact
   matching vault key is present.
 - **Hot-swap.** The UI's model picker sends `setModel`; the sidecar calls
   `unstable_setSessionModel` and rolls back to the previous model on failure (e.g. the local
-  server isn't running), surfacing an honest error. The default model when none is passed is
-  `anthropic/claude-opus-4-8` (`sidecar.mjs`).
+  server isn't running), surfacing an honest error. On launch the sidecar honors the `model`
+  configured in `opencode.json` (it no longer force-selects a model); an explicit 4th launch
+  argument can override it.
 
 ---
 
@@ -396,6 +398,6 @@ Agent Omega's safety posture is defense-in-depth across the layers above:
 | `…\opencode\iterate-loop\` | Verify-and-iterate ladder (`index.js`, `loop.mjs`) |
 | `…\opencode\verify-guard\` | Post-action failure classifier (`index.js`, `core.mjs`, `failure-evals.mjs`) |
 | `…\opencode\web.py` | Anonymous web gateway (SSRF-guarded) |
-| `<engine>/bin/opencode.exe | The Bun-compiled engine binary |
+| `engine/opencode.exe | The Bun-compiled engine binary |
 | `~\.agent-omega\secrets.ps1` | DPAPI secrets vault |
 | `~/.config/opencode/opencode.json` | Provider/model endpoints (local + cloud) |

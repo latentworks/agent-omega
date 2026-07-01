@@ -10,9 +10,11 @@ Agent Omega is a Windows desktop app: a frameless **WebView2 shell** → a **Nod
 |---|---|---|
 | **Windows 10/11** | the shell is WinForms + WebView2 | — |
 | **.NET 8 SDK** | builds the shell | `dotnet --version` ≥ 8 |
-| **Node.js 18+** | runs the sidecar + plugins | `node --version` |
+| **Node.js 18+** (20 LTS recommended) | runs the sidecar + plugins | `node --version` |
 | **WebView2 Runtime** | hosts the UI (preinstalled on most Win11) | [evergreen installer](https://developer.microsoft.com/microsoft-edge/webview2/) if missing |
-| **Python 3.9+** *(optional)* | only for the built-in web search | `python --version` |
+| **Python 3.9+** *(optional)* | required by the separate anon-web component for web search only | `python --version` |
+
+> On Node 18/19 the plugin install may print a harmless `EBADENGINE` warning from a transitive dependency — safe to ignore (Node 20 LTS avoids it).
 
 ## 2. Get the code
 
@@ -36,14 +38,16 @@ After step 3, run the wizard instead of steps 4–6 by hand. It installs the plu
 node setup.mjs
 ```
 
-It'll ask whether you're running a local model, Claude, ChatGPT, or another cloud provider, store your key in the encrypted vault, and set the default model. Then skip to **step 5** (get the engine) if it flagged one missing, and **step 7** (build + run). The manual steps 4–6 below are exactly what it automates.
+It'll ask whether you're running a local model, Claude, ChatGPT, or another cloud provider, store your key in the encrypted vault, and set the default model. The wizard replaces the config + vault + model work (**steps 4 and 6**). You still need the **engine** (step 5 — only if the wizard reports one missing) and the **build** (step 7). The manual steps 4–6 below are what it automates.
 
 ## 4. Install the plugin config
 
-Copy the shipped config into opencode's config directory:
+Copy the shipped config into opencode's config directory, and the encrypted vault script into place:
 
 ```powershell
 Copy-Item -Recurse -Force config-template\opencode "$env:USERPROFILE\.config\opencode"
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.agent-omega" | Out-Null
+Copy-Item -Force scripts\secrets.ps1 "$env:USERPROFILE\.agent-omega\secrets.ps1"
 ```
 
 ## 5. Get the engine
@@ -51,9 +55,8 @@ Copy-Item -Recurse -Force config-template\opencode "$env:USERPROFILE\.config\ope
 The `opencode` engine ships as a prebuilt binary. Because Agent Omega runs a **fork** of opencode, use **this repo's** release (not upstream):
 
 - Download **`opencode.exe`** from the [v2.1.0 release](https://github.com/latentworks/agent-omega/releases/tag/v2.1.0).
-- Point the app at it, either:
-  - set `AGENT_OMEGA_ENGINE` to its full path (simplest), **or**
-  - drop it in an `engine\` folder **next to the built exe** — i.e. `bin\Release\net8.0-windows\engine\opencode.exe` (the sidecar looks for `./engine/opencode.exe` beside itself).
+- Put it in an **`engine\` folder at the repo root** (`agent-omega\engine\opencode.exe`) — the build (step 7) copies it beside the exe automatically.
+- (Alternative, works any time: `setx AGENT_OMEGA_ENGINE "C:\full\path\to\opencode.exe"`, then reopen your terminal.)
 
 ## 6. Configure your model + keys
 
@@ -65,7 +68,7 @@ Open `~/.config/opencode/opencode.json` and choose a setup:
 
 ### The encrypted vault (recommended for keys)
 
-Instead of plaintext environment variables, Agent Omega can read API keys from a **Windows-DPAPI-encrypted vault** at `~/.agent-omega/secrets.ps1` — keys are encrypted at rest, readable only by your Windows user, and never written into code, logs, or the model's shell. (Override the location with `AGENT_OMEGA_VAULT`.) See [TECHNICAL.md](TECHNICAL.md) for the two-layer key model.
+Instead of plaintext environment variables, Agent Omega can read API keys from a **Windows-DPAPI-encrypted vault** at `~/.agent-omega/secrets.ps1` — keys are encrypted at rest, readable only by your Windows user, and never written into code, logs, or the model's shell. The easiest way to add keys is the **wizard** (`node setup.mjs`) or the app's **Settings → Vault** screen — both store them under the exact names the engine expects. (Override the vault location with `AGENT_OMEGA_VAULT`.) See [TECHNICAL.md](TECHNICAL.md) for the two-layer key model.
 
 ## 7. Build + run
 
@@ -78,7 +81,7 @@ The sidecar, UI, and engine are resolved relative to the exe; a scratch workspac
 
 ## Optional: built-in web search
 
-The key-free web search uses the separate **anon-web** component. Install it, then set `AGENT_OMEGA_ANONWEB` (its path) and `AGENT_OMEGA_ANONWEB_VENV` (its venv Python). Without it, web search is simply disabled — nothing else is affected.
+The key-free web search relies on a separate **anon-web** component, which is **not publicly distributed** — so web search is unavailable in this build unless you already have it. If you do, set `AGENT_OMEGA_ANONWEB` (its path) and `AGENT_OMEGA_ANONWEB_VENV` (its venv Python). Without it, web search is simply disabled — nothing else is affected.
 
 ## Troubleshooting
 
