@@ -18,7 +18,7 @@
 //   VERIFY_GUARD_DRYRUN=1     log "would ..." instead of actually re-prompting
 //   VERIFY_GUARD_VERBOSE=1    log every idle decision
 //   VERIFY_GUARD_LOG=<path>   activity log (default: <tmp>/verify-guard.log)
-//   VERIFY_GUARD_EVAL_DIR=<d> where JSONL failure-eval records go (default: verify-guard-logs)
+//   VERIFY_GUARD_EVAL_DIR=<d> where JSONL failure-eval records go (default: <tmp>/verify-guard-evals)
 
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'

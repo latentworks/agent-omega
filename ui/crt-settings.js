@@ -469,20 +469,9 @@
     valRow("Synthesizer", c.synthesizer === "driver" ? "Driver" : shortLabel(c.synthesizer), {
       left: () => cycleSynth(-1), right: () => cycleSynth(1), hint: HINT.council,
     });
-    valRow("Mode", c.mode === "auto" ? "Auto" : "Manual", {
-      left: () => setC({ mode: c.mode === "manual" ? "auto" : "manual" }),
-      right: () => setC({ mode: c.mode === "manual" ? "auto" : "manual" }),
-      hint: HINT.council,
-    });
-    if (c.mode === "auto") {
-      const rungs = ["minimal", "moderate", "partner"], ri = Math.max(0, rungs.indexOf(c.rung));
-      const cap = c.rung.charAt(0).toUpperCase() + c.rung.slice(1);
-      valRow("Rung", cap, {
-        left: () => setC({ rung: rungs[(ri + 2) % 3] }),
-        right: () => setC({ rung: rungs[(ri + 1) % 3] }),
-        hint: HINT.council,
-      });
-    }
+    // NOTE: "Mode: Auto" (council auto-convenes) and its "Rung" are a V3 roadmap item — the
+    // shipped engine only convenes the council when the lead calls the council tool. The rows
+    // were removed rather than shown as live controls the engine ignores.
   }
 
   /* ---------- SKIN ---------- */

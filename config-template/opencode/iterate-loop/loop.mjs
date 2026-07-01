@@ -15,9 +15,14 @@ import { isFailureResult } from '../verify-guard/failure-evals.mjs'
 
 export const MAX_SHOTS = Number(process.env.ITERATE_MAX_SHOTS || 3)  // failed verify cycles before escalating strategy
 export const HARD_CAP = Number(process.env.ITERATE_HARD_CAP || 12)   // total re-prompts before forcing the user rung (no infinite loop)
-// Web-search rung is ON by default (the whole point: look it up before bugging the user). Set
-// ITERATE_WEB_SEARCH=0 to skip it — e.g. for benchmarking, where searching could surface the real fix.
-export const WEB_SEARCH = !['0', 'false', 'off'].includes(String(process.env.ITERATE_WEB_SEARCH || '').toLowerCase())
+// Web-search rung: only usable if the optional anon-web component is actually configured (its
+// env vars are set). On a default install anon-web isn't present, so the rung is OFF and the
+// ladder goes strategy -> user directly — never sending the agent to a dead web bridge.
+// ITERATE_WEB_SEARCH (0/1) overrides the auto-detection either way.
+const ANONWEB_PRESENT = Boolean(process.env.AGENT_OMEGA_ANONWEB_VENV || process.env.AGENT_OMEGA_ANONWEB)
+export const WEB_SEARCH = process.env.ITERATE_WEB_SEARCH != null && process.env.ITERATE_WEB_SEARCH !== ''
+  ? !['0', 'false', 'off'].includes(String(process.env.ITERATE_WEB_SEARCH).toLowerCase())
+  : ANONWEB_PRESENT
 
 function argPath(a) { return (a && (a.filePath || a.path || a.file || a.file_path)) || '' }
 function argCmd(a) { return (a && (a.command || a.cmd || a.script)) || '' }
