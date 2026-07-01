@@ -17,11 +17,14 @@ const ENGINE = process.env.AGENT_OMEGA_ENGINE || path.join(import.meta.dirname, 
 // production → the compiled exe is used.
 const BUN = process.env.AGENT_OMEGA_BUN || 'bun'
 const OPENCODE_SRC = process.env.AGENT_OMEGA_OPENCODE_SRC || ''
-const WORKDIR = process.argv[2] || path.join(os.homedir(), '.agent-omega', 'workspace')
-const WS_PORT = Number(process.argv[3]) || 4599
-const DEFAULT_MODEL = process.argv[4] || 'anthropic/claude-opus-4-8'
+// Config comes from env first (robust across node / bun-standalone / OS), then positional argv
+// (the Windows host passes argv), then defaults. A bun-compiled binary's argv indices are not the
+// same as `node script.mjs …`, so positional args alone are unreliable on macOS.
+const WORKDIR = process.env.AGENT_OMEGA_WORKDIR || process.argv[2] || path.join(os.homedir(), '.agent-omega', 'workspace')
+const WS_PORT = Number(process.env.AGENT_OMEGA_WS_PORT || process.argv[3]) || 4599
+const DEFAULT_MODEL = process.env.AGENT_OMEGA_DEFAULT_MODEL || process.argv[4] || 'anthropic/claude-opus-4-8'
 
-fs.mkdirSync(WORKDIR, { recursive: true })
+try { fs.mkdirSync(WORKDIR, { recursive: true }) } catch (e) { if (e.code !== 'EEXIST') throw e }   // a bun-compiled mkdir can spuriously EEXIST on an already-present dir
 
 let conn = null, sessionId = null, engineProc = null, restarting = false
 let models = [], agents = [], commands = [], curModel = DEFAULT_MODEL, curAgent = null
