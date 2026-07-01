@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>agent-omega</AssemblyName>
+    <ApplicationIcon>ftp.ico</ApplicationIcon>
+    <Version>2.1.0</Version>
+    <AssemblyVersion>2.1.0.0</AssemblyVersion>
+    <FileVersion>2.1.0.0</FileVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4022.49" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- whole ui/ folder, so any NEW file (new boot scripts, css, etc.) ships automatically -->
+    <None Include="ui\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="ftp.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

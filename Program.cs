@@ -1,0 +1,168 @@
+using System;
+using System.IO;
+using System.Drawing;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+using Microsoft.Web.WebView2.WinForms;
+using Microsoft.Web.WebView2.Core;
+
+// Agent Omega (A/O) host. Spawns the node ACP sidecar (sidecar.mjs -> `opencode acp`)
+// and hosts the frameless WebView2 window. The UI talks to the sidecar over a local
+// WebSocket (ws://127.0.0.1:PORT) for ALL engine I/O including interactive permissions;
+// the host only owns the window and its title-bar controls.
+static class Program
+{
+    [DllImport("user32.dll")] static extern bool ReleaseCapture();
+    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr wParam, IntPtr lParam);
+    const int WM_NCLBUTTONDOWN = 0xA1, HTCAPTION = 0x2;
+
+    const string NODE = "node"; // resolved via PATH; setup verifies Node is installed
+    static readonly string SIDECAR = Path.Combine(AppContext.BaseDirectory, "sidecar.mjs");
+    static readonly string WORKDIR = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".agent-omega", "workspace");
+    const int WS_PORT = 4599;
+    static readonly string WS_TOKEN = Guid.NewGuid().ToString("N"); // per-launch control-socket token; only the real window gets it
+
+    static Form _form;
+    static WebView2 _web;
+    static Process _sidecar;
+    static bool _maximized; static Rectangle _restoreBounds;
+
+    [STAThread]
+    static void Main(string[] args)
+    {
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        Directory.CreateDirectory(WORKDIR);
+
+        string defaultUrl = "file:///" + AppDomain.CurrentDomain.BaseDirectory.Replace("\\", "/") + "ui/app.html?ws=" + WS_PORT + "&token=" + WS_TOKEN;
+        // args[0] is a debug override; only honor a local file:// or loopback URL, never an arbitrary remote one.
+        string url = (args.Length > 0 && (args[0].StartsWith("file:///") || args[0].StartsWith("http://127.0.0.1") || args[0].StartsWith("http://localhost")))
+            ? args[0]
+            : defaultUrl;
+
+        var bg = Color.FromArgb(7, 9, 11);
+        _form = new AppForm
+        {
+            Text = "Agent Omega",
+            FormBorderStyle = FormBorderStyle.None,
+            StartPosition = FormStartPosition.CenterScreen,
+            Width = 1120, Height = 720, BackColor = bg,
+            MinimumSize = new Size(760, 480),
+            Padding = new Padding(AppForm.GRIP),  // exposes a thin border for native edge-resize hit-testing (doubles as a subtle CRT bezel)
+        };
+        try { var ico = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ftp.ico"); if (File.Exists(ico)) _form.Icon = new Icon(ico); } catch { }
+
+        _web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = bg };
+        _form.Controls.Add(_web);
+
+        _form.Load += async (s, e) =>
+        {
+            var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(Path.GetTempPath(), "agent-omega-webview2"));
+            await _web.EnsureCoreWebView2Async(env);
+            var c = _web.CoreWebView2;
+            c.Settings.AreDefaultContextMenusEnabled = false;
+            c.Settings.IsStatusBarEnabled = false;
+            c.Settings.AreBrowserAcceleratorKeysEnabled = false; // kill Ctrl+P print, Ctrl+F, Ctrl+R, F5
+            c.Settings.IsZoomControlEnabled = false;
+            c.Settings.AreDevToolsEnabled = false;               // no DevTools access to the local UI
+            c.Settings.IsGeneralAutofillEnabled = false;
+            c.Settings.IsPasswordAutosaveEnabled = false;
+            _web.AllowExternalDrop = false;                      // dropping a file must not navigate the webview away
+            c.NewWindowRequested += (s2, ev) => { ev.Handled = true; };   // no uncontrolled popups (window.open / target=_blank)
+            c.NavigationStarting += (s2, ev) => { if (!(ev.Uri.StartsWith("file:///") || ev.Uri.StartsWith("about:"))) ev.Cancel = true; };  // only the local app UI may load
+            c.WebMessageReceived += OnUiMessage;   // window controls only
+            StartSidecar();
+            c.Navigate(url);
+        };
+        _form.FormClosed += (s, e) => KillProc(ref _sidecar);
+
+        Application.Run(_form);
+    }
+
+    static void StartSidecar()
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = NODE,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(SIDECAR),
+            };
+            psi.ArgumentList.Add(SIDECAR);
+            psi.ArgumentList.Add(WORKDIR.Replace("\\", "/"));
+            psi.ArgumentList.Add(WS_PORT.ToString());
+            psi.EnvironmentVariables["AO_WS_TOKEN"] = WS_TOKEN;
+            _sidecar = Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            try { _web.CoreWebView2.PostWebMessageAsJson("{\"type\":\"engine-down\",\"message\":\"could not start sidecar: " + ex.Message.Replace("\"", "'") + "\"}"); } catch { }
+        }
+    }
+
+    static void OnUiMessage(object sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        // The UI posts OBJECTS via win() (postMessage({type:...})). TryGetWebMessageAsString
+        // THROWS for non-string messages — which silently killed every window control. Read
+        // the JSON instead (works for both an object {type:...} and a bare quoted string).
+        string msg = null;
+        try
+        {
+            using var d = System.Text.Json.JsonDocument.Parse(e.WebMessageAsJson);
+            var root = d.RootElement;
+            if (root.ValueKind == System.Text.Json.JsonValueKind.Object)
+                msg = root.TryGetProperty("type", out var t) ? t.GetString() : null;
+            else if (root.ValueKind == System.Text.Json.JsonValueKind.String)
+                msg = root.GetString();
+        }
+        catch { return; }
+        if (msg == null) return;
+        switch (msg)
+        {
+            case "close": _form.Close(); break;
+            case "minimize": _form.WindowState = FormWindowState.Minimized; break;
+            case "maximize":
+                if (_maximized) { _form.Bounds = _restoreBounds; _maximized = false; }
+                else { _restoreBounds = _form.Bounds; _form.Bounds = Screen.FromHandle(_form.Handle).WorkingArea; _maximized = true; }
+                break;
+            case "drag":
+                ReleaseCapture();
+                SendMessage(_form.Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
+                break;
+        }
+    }
+
+    static void KillProc(ref Process p)
+    {
+        var pr = p; p = null;
+        try { if (pr != null && !pr.HasExited) pr.Kill(true); } catch { }
+    }
+}
+
+// Frameless windows (FormBorderStyle.None) have no native resize. AppForm hit-tests the
+// GRIP-px border that the form's Padding exposes around the WebView2 child, so Windows
+// handles edge/corner resizing natively (no per-pixel JS plumbing).
+class AppForm : Form
+{
+    public const int GRIP = 6;
+    const int WM_NCHITTEST = 0x84;
+    const int HTLEFT = 10, HTRIGHT = 11, HTTOP = 12, HTTOPLEFT = 13, HTTOPRIGHT = 14, HTBOTTOM = 15, HTBOTTOMLEFT = 16, HTBOTTOMRIGHT = 17;
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WM_NCHITTEST && WindowState == FormWindowState.Normal)
+        {
+            int lp = m.LParam.ToInt32();
+            var p = PointToClient(new Point(unchecked((short)(lp & 0xFFFF)), unchecked((short)((lp >> 16) & 0xFFFF))));
+            int w = ClientSize.Width, h = ClientSize.Height;
+            bool l = p.X < GRIP, r = p.X >= w - GRIP, t = p.Y < GRIP, b = p.Y >= h - GRIP;
+            int ht = (t && l) ? HTTOPLEFT : (t && r) ? HTTOPRIGHT : (b && l) ? HTBOTTOMLEFT : (b && r) ? HTBOTTOMRIGHT
+                   : l ? HTLEFT : r ? HTRIGHT : t ? HTTOP : b ? HTBOTTOM : 0;
+            if (ht != 0) { m.Result = (IntPtr)ht; return; }
+        }
+        base.WndProc(ref m);
+    }
+}
