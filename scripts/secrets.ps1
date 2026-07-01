@@ -39,7 +39,13 @@ $h = Load
 switch ($Action) {
   'get'    { if ($h.ContainsKey($Name)) { Write-Output (Unprotect $h[$Name]) } }
   'set'    {
-    if ([string]::IsNullOrEmpty($Value)) { Write-Error 'value required (usage: set <name> <value>)'; exit 1 }
+    # Value may be given positionally (manual use) OR piped on STDIN (the app/sidecar path,
+    # so the secret never appears in a process command line / error string).
+    if ([string]::IsNullOrEmpty($Value)) {
+      $Value = [Console]::In.ReadToEnd()
+      if ($null -ne $Value) { $Value = $Value -replace "(\r?\n)+$", '' }   # strip only trailing newline(s)
+    }
+    if ([string]::IsNullOrEmpty($Value)) { Write-Error 'value required (positional arg or STDIN)'; exit 1 }
     $h[$Name] = (Protect $Value); Save $h; Write-Output "stored $Name"
   }
   'list'   { if ($h.Count -eq 0) { Write-Output '(vault empty)' } else { $h.Keys | Sort-Object | ForEach-Object { Write-Output $_ } } }
