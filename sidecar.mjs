@@ -70,7 +70,7 @@ function ensureVault() {
   } catch {}
   return fs.existsSync(SECRETS_PS1)
 }
-const COUNCIL_JSON = path.join(os.homedir(), '.config', 'opencode', 'council', 'council.json')
+const COUNCIL_JSON = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode', 'council', 'council.json') // honors XDG_CONFIG_HOME so an isolated instance reads its own council config
 const VAULT_TO_ENV = {
   ANTHROPIC_API_KEY: 'ANTHROPIC_API_KEY',
   OPENAI_API_KEY: 'OPENAI_API',
