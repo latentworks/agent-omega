@@ -15,8 +15,15 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)) // Node 18+ (import.meta.dirname needs 20.11+)
 const HOME = os.homedir()
-const CFG_DIR = path.join(HOME, '.config', 'opencode')
+// Honor XDG_CONFIG_HOME so an isolated instance (the launcher sets it) installs to the same
+// place its engine reads from, instead of always the shared ~/.config/opencode.
+const XDG = process.env.XDG_CONFIG_HOME || path.join(HOME, '.config')
+const CFG_DIR = path.join(XDG, 'opencode')
 const VAULT_DIR = path.join(HOME, '.agent-omega')
+// Files that hold USER data — never overwritten on an upgrade.
+const PRESERVE = (rel) => rel === 'opencode.json' || rel === 'council/council.json' || rel.startsWith('memory/') || /\.(db|db-wal|db-shm|log)$/i.test(rel)
+// Distinctive marker that CFG_DIR is an existing Agent Omega install (vs a stranger's own opencode config).
+const isAgentOmega = (dir) => existsSync(path.join(dir, 'skill-router', 'index.js')) || existsSync(path.join(dir, 'council', 'index.js'))
 const args = process.argv.slice(2)
 const NONINT = args.includes('--non-interactive')
 const flag = (n) => { const i = args.indexOf('--' + n); return i >= 0 ? args[i + 1] : undefined }
@@ -24,11 +31,13 @@ const flag = (n) => { const i = args.indexOf('--' + n); return i >= 0 ? args[i +
 if (Number(process.versions.node.split('.')[0]) < 18) { console.error('Agent Omega setup needs Node 18+ (found ' + process.version + ')'); process.exit(1) }
 
 // provider id -> { vault key NAME the sidecar reads, default model, label }
+// vault key NAMEs MUST match sidecar.mjs VAULT_TO_ENV and the in-app Vault UI, or a stored
+// key never reaches the engine.
 const PROVIDERS = {
   anthropic:  { vault: 'ANTHROPIC_API_KEY', model: 'anthropic/claude-opus-4-8',  label: 'Anthropic (Claude)' },
-  openai:     { vault: 'OPENAI_API',        model: 'openai/gpt-5.5',             label: 'OpenAI (ChatGPT)' },
+  openai:     { vault: 'OPENAI_API_KEY',    model: 'openai/gpt-5.5',             label: 'OpenAI (ChatGPT)' },
   google:     { vault: 'GEMINI_API_KEY',    model: 'google/gemini-3.5-flash',    label: 'Google (Gemini)' },
-  deepseek:   { vault: 'DEEPSEEK_API',      model: 'deepseek/deepseek-v4-pro',   label: 'DeepSeek' },
+  deepseek:   { vault: 'DEEPSEEK_API_KEY',  model: 'deepseek/deepseek-v4-pro',   label: 'DeepSeek' },
   moonshotai: { vault: 'KIMI_API_KEY',      model: 'moonshotai/kimi-k2.7-code',  label: 'Kimi (Moonshot)' },
   zai:        { vault: 'ZAI_API_KEY',       model: 'zai/glm-5.2',                label: 'Z.AI (GLM)' },
 }
@@ -43,13 +52,26 @@ async function main() {
     return a || def
   }
 
-  // 1) plugin config -> ~/.config/opencode
+  // 1) plugin config -> CFG_DIR (fresh install, in-place UPGRADE, or refuse a foreign config)
   const tmpl = path.join(HERE, 'config-template', 'opencode')
+  const copyFilter = (isUpgrade) => (s, d) => {
+    const rel = path.relative(tmpl, s).replace(/\\/g, '/')
+    if (rel === '') return true
+    if (isUpgrade && PRESERVE(rel) && existsSync(d)) return false   // keep the user's config/roster/memory/db
+    return true
+  }
   if (!existsSync(CFG_DIR)) {
-    cpSync(tmpl, CFG_DIR, { recursive: true })
+    cpSync(tmpl, CFG_DIR, { recursive: true, filter: copyFilter(false) })
     console.log('  installed plugin config -> ' + CFG_DIR)
+  } else if (isAgentOmega(CFG_DIR)) {
+    cpSync(tmpl, CFG_DIR, { recursive: true, force: true, filter: copyFilter(true) })
+    console.log('  upgraded Agent Omega plugin config in ' + CFG_DIR + ' (kept your opencode.json, council roster, and memory)')
   } else {
-    console.log('  ' + CFG_DIR + ' already exists - leaving it (delete it to reinstall from the template)')
+    console.error('\n  ' + CFG_DIR + ' already exists and is NOT an Agent Omega install')
+    console.error('  (it looks like your own opencode config). Refusing to overwrite it.')
+    console.error('  Options: move/rename that folder first, or run Agent Omega isolated by')
+    console.error('  setting XDG_CONFIG_HOME to a fresh directory before launching + re-running setup.\n')
+    process.exit(1)
   }
 
   // 2) encrypted vault script -> ~/.agent-omega/secrets.ps1
@@ -60,9 +82,10 @@ async function main() {
 
   // 3) engine check
   const engine = process.env.AGENT_OMEGA_ENGINE || path.join(HERE, 'engine', 'opencode.exe')
-  console.log(existsSync(engine)
+  const engineFound = existsSync(engine)
+  console.log(engineFound
     ? '  engine found -> ' + engine
-    : '  engine NOT found - download opencode.exe from the release into ./engine/ (see SETUP.md)')
+    : '  engine NOT found - download opencode.exe from the release into ./engine/ (see SETUP.md step 5)')
 
   // 4) model + key
   let source = flag('source')
@@ -95,7 +118,8 @@ async function main() {
     const info = PROVIDERS[prov]
     const key = flag('key') || await ask(info.label + ' API key (leave blank to add later in the app): ', '')
     if (key) {
-      execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', vaultScript, 'set', info.vault, String(key)], { stdio: ['ignore', 'pipe', 'pipe'] })
+      // Pass the key on STDIN so it never appears in the process command line / any error text.
+      execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', vaultScript, 'set', info.vault], { input: String(key), stdio: ['pipe', 'pipe', 'pipe'] })
       console.log('  stored key in the encrypted vault (' + info.vault + ')')
     } else {
       console.log('  no key entered - add it later via the app, or store the ' + info.vault + ' vault entry')
@@ -106,7 +130,14 @@ async function main() {
 
   writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n')
   console.log('\n  wrote ' + cfgPath)
-  console.log('\nSetup complete. Build + launch:\n  dotnet build -c Release\n  .\\bin\\Release\\net8.0-windows\\agent-omega.exe\n')
+  if (!engineFound) {
+    console.log('\nConfig is ready, but setup is NOT complete: the engine binary is still missing.')
+    console.log('Finish SETUP.md step 5 (download opencode.exe into ./engine/), then build + launch:')
+  } else {
+    console.log('\nSetup complete. Build + launch:')
+  }
+  console.log('  dotnet build -c Release\n  .\\bin\\Release\\net8.0-windows\\agent-omega.exe')
+  console.log('\nWork on a real project by launching with --workdir "C:\\path\\to\\project" (or set AGENT_OMEGA_WORKDIR); otherwise a scratch workspace under %LOCALAPPDATA%\\AgentOmega is used.\n')
   if (rl) rl.close()
 }
 

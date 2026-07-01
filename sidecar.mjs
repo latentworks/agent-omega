@@ -18,10 +18,17 @@ const ENGINE = process.env.AGENT_OMEGA_ENGINE || path.join(HERE, 'engine', 'open
 // production → the compiled exe is used.
 const BUN = process.env.AGENT_OMEGA_BUN || 'bun'
 const OPENCODE_SRC = process.env.AGENT_OMEGA_OPENCODE_SRC || ''
-const WORKDIR = process.argv[2] || path.join(os.homedir(), '.agent-omega', 'workspace')
+// Default scratch workspace lives OUTSIDE ~/.agent-omega on purpose: that tree holds the
+// vault and is blocked from the model's shell (opencode.json deny "*.agent-omega*"), so a
+// workspace there would make every absolute-path command the model runs get denied.
+const DEFAULT_WORKDIR = process.platform === 'win32'
+  ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'AgentOmega', 'workspace')
+  : path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'agent-omega', 'workspace')
+const WORKDIR = process.argv[2] || process.env.AGENT_OMEGA_WORKDIR || DEFAULT_WORKDIR
 const WS_PORT = Number(process.argv[3]) || 4599
 const API_PORT = WS_PORT + 1   // engine HTTP API rides one above the control socket (unique per instance)
 const DEFAULT_MODEL = process.argv[4] || '' // explicit launch override; empty => honor opencode.json's model
+const PARENT_PID = Number(process.env.AO_PARENT_PID || 0)   // shell PID; sidecar self-exits if the shell dies (no orphaned engine)
 
 fs.mkdirSync(WORKDIR, { recursive: true })
 
@@ -73,22 +80,32 @@ function ensureVault() {
   return fs.existsSync(SECRETS_PS1)
 }
 const COUNCIL_JSON = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode', 'council', 'council.json') // honors XDG_CONFIG_HOME so an isolated instance reads its own council config
+// engine-env-var  <-  vault key NAME. The vault names MUST match what the in-app Vault UI
+// (ui/crt-settings.js) and setup.mjs store under, or a key the user added never reaches the
+// engine. These are the canonical names both of those write.
 const VAULT_TO_ENV = {
   ANTHROPIC_API_KEY: 'ANTHROPIC_API_KEY',
-  OPENAI_API_KEY: 'OPENAI_API',
-  DEEPSEEK_API_KEY: 'DEEPSEEK_API',
+  OPENAI_API_KEY: 'OPENAI_API_KEY',
+  DEEPSEEK_API_KEY: 'DEEPSEEK_API_KEY',
   ZAI_API_KEY: 'ZAI_API_KEY',
   MOONSHOT_API_KEY: 'KIMI_API_KEY',
   GOOGLE_GENERATIVE_AI_API_KEY: 'GEMINI_API_KEY',
+}
+// Pre-2.3 installs stored these two under shorter names; fall back to them so an upgrade
+// doesn't silently lose an already-stored key.
+const VAULT_LEGACY = { OPENAI_API_KEY: 'OPENAI_API', DEEPSEEK_API_KEY: 'DEEPSEEK_API' }
+function vaultGet(vaultName) {
+  try {
+    return execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', SECRETS_PS1, 'get', vaultName], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch { return '' }
 }
 function vaultEnv() {
   const out = {}
   ensureVault()
   for (const [envName, vaultName] of Object.entries(VAULT_TO_ENV)) {
-    try {
-      const v = execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', SECRETS_PS1, 'get', vaultName], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-      if (v) out[envName] = v
-    } catch {}
+    let v = vaultGet(vaultName)
+    if (!v && VAULT_LEGACY[vaultName]) v = vaultGet(VAULT_LEGACY[vaultName])
+    if (v) out[envName] = v
   }
   log('vault -> engine env: ' + (Object.keys(out).join(', ') || '(none)'))
   return out
@@ -324,13 +341,14 @@ wss.on('connection', (ws) => {
         case 'vaultSet': {
           try {
             if (typeof m.name !== 'string' || !m.name.trim()) { send(ws, { type: 'vaultKeys', error: 'name required' }); break }
-            // Empty value would make secrets.ps1 drop to an interactive Read-Host prompt and HANG the sidecar.
             if (typeof m.value !== 'string' || m.value === '') { send(ws, { type: 'vaultKeys', error: 'value required' }); break }
-            execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', SECRETS_PS1, 'set', m.name, m.value], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-            const note = busy ? 'Key saved — restart the app to apply it (a turn is in progress).' : 'Key saved — engine reloaded. If your first cloud call still fails, restart the app.'
+            // Pass the secret on STDIN, never as an argv element — argv would land in any thrown
+            // error string (execFileSync embeds the full command) and could leak the key value.
+            execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', SECRETS_PS1, 'set', m.name], { input: m.value, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
+            const note = busy ? 'Key saved — restart the app to apply it (a turn is in progress).' : 'Key saved — engine reloaded.'
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))   // pick up the new key without a manual restart
-          } catch (e) { log('vaultSet', e.message); send(ws, { type: 'vaultKeys', error: e.message }) }
+          } catch (e) { log('vaultSet failed for', m.name, '(exit ' + (e.status ?? '?') + ')'); send(ws, { type: 'vaultKeys', error: 'Could not store key — vault write failed.' }) }
           break
         }
         case 'vaultRemove': {
@@ -340,7 +358,7 @@ wss.on('connection', (ws) => {
             const note = busy ? 'Key removed — restart the app to fully apply.' : 'Key removed — engine reloaded.'
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))
-          } catch (e) { log('vaultRemove', e.message); send(ws, { type: 'vaultKeys', error: e.message }) }
+          } catch (e) { log('vaultRemove failed for', m.name, '(exit ' + (e.status ?? '?') + ')'); send(ws, { type: 'vaultKeys', error: 'Could not remove key — vault write failed.' }) }
           break
         }
         case 'abort': { try { await conn.cancel({ sessionId }) } catch (e) { log('cancel', e.message) } drainPerms(); busy = false; break }
@@ -371,5 +389,18 @@ wss.on('connection', (ws) => {
     } catch (e) { log('msg error', e.message) }
   })
 })
+
+// Lifecycle: never leave the engine running once the sidecar is going down, and go down
+// ourselves if the shell that launched us dies abnormally (crash / kill) without firing its
+// normal child-cleanup — otherwise the engine + the bound ports would be orphaned.
+function killEngine() { try { if (engineProc) engineProc.kill() } catch {} }
+process.on('exit', killEngine)
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => { killEngine(); process.exit(0) })
+if (PARENT_PID) {
+  setInterval(() => {
+    try { process.kill(PARENT_PID, 0) }   // signal 0 = liveness probe, never actually signals
+    catch { killEngine(); process.exit(0) }
+  }, 3000).unref()
+}
 
 start().catch(e => { log('start failed', e.message); process.exit(1) })

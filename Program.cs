@@ -2,6 +2,8 @@ using System;
 using System.IO;
 using System.Drawing;
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.WinForms;
@@ -19,9 +21,40 @@ static class Program
 
     const string NODE = "node"; // resolved via PATH; setup verifies Node is installed
     static readonly string SIDECAR = Path.Combine(AppContext.BaseDirectory, "sidecar.mjs");
-    static readonly string WORKDIR = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".agent-omega", "workspace");
-    const int WS_PORT = 4599;
+    // Scratch workspace lives under LocalAppData, NOT ~/.agent-omega — that tree holds the vault
+    // and is blocked from the model's shell, so a workspace there would get every absolute-path
+    // command denied. Override with AGENT_OMEGA_WORKDIR or --workdir <path> to open a real project.
+    static string _workdir = ResolveWorkdir();
+    // Logs live under ~/.agent-omega/logs (intentionally inside the shell-blocked tree, away from
+    // the model). This captures sidecar + engine stderr so a boot crash is diagnosable.
+    static readonly string LOG_DIR = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".agent-omega", "logs");
+    static readonly string LOG_PATH = Path.Combine(LOG_DIR, "sidecar.log");
+    static int _wsPort = 4599;   // resolved to a free loopback port pair at launch (control socket + engine API on +1)
     static readonly string WS_TOKEN = Guid.NewGuid().ToString("N"); // per-launch control-socket token; only the real window gets it
+
+    static string ResolveWorkdir()
+    {
+        var args = Environment.GetCommandLineArgs();
+        for (int i = 1; i < args.Length - 1; i++)
+            if (args[i] == "--workdir" && !string.IsNullOrWhiteSpace(args[i + 1])) return args[i + 1];
+        var env = Environment.GetEnvironmentVariable("AGENT_OMEGA_WORKDIR");
+        if (!string.IsNullOrWhiteSpace(env)) return env;
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentOmega", "workspace");
+    }
+
+    // Find a free loopback port P where BOTH P (control socket) and P+1 (engine API) are open,
+    // so a second instance or an unrelated listener on 4599 can't wedge startup.
+    static int FreePortPair(int start)
+    {
+        for (int p = start; p < start + 400; p++)
+            if (IsFree(p) && IsFree(p + 1)) return p;
+        return start;
+    }
+    static bool IsFree(int port)
+    {
+        try { var l = new TcpListener(IPAddress.Loopback, port); l.Start(); l.Stop(); return true; }
+        catch { return false; }
+    }
 
     static Form _form;
     static WebView2 _web;
@@ -34,10 +67,12 @@ static class Program
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        Directory.CreateDirectory(WORKDIR);
+        Directory.CreateDirectory(_workdir);
+        Directory.CreateDirectory(LOG_DIR);
+        _wsPort = FreePortPair(4599);
 
         string uiFile = new Uri(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ui", "app.html")).AbsoluteUri;  // properly percent-encodes spaces/unicode in the path
-        string defaultUrl = uiFile + "?ws=" + WS_PORT + "&token=" + WS_TOKEN;
+        string defaultUrl = uiFile + "?ws=" + _wsPort + "&token=" + WS_TOKEN;
         // args[0] is a debug override; only honor a local file:// or loopback URL, never an arbitrary remote one.
         string url = (args.Length > 0 && (args[0].StartsWith("file:///") || args[0].StartsWith("http://127.0.0.1") || args[0].StartsWith("http://localhost")))
             ? args[0]
@@ -93,6 +128,8 @@ static class Program
         Application.Run(_form);
     }
 
+    static StreamWriter _logWriter;
+
     static void StartSidecar()
     {
         try
@@ -102,15 +139,24 @@ static class Program
                 FileName = NODE,
                 UseShellExecute = false,
                 CreateNoWindow = true,
+                RedirectStandardOutput = true,   // capture sidecar + engine stderr to a log so a boot crash is diagnosable
+                RedirectStandardError = true,
                 WorkingDirectory = Path.GetDirectoryName(SIDECAR),
             };
             psi.ArgumentList.Add(SIDECAR);
-            psi.ArgumentList.Add(WORKDIR.Replace("\\", "/"));
-            psi.ArgumentList.Add(WS_PORT.ToString());
+            psi.ArgumentList.Add(_workdir.Replace("\\", "/"));
+            psi.ArgumentList.Add(_wsPort.ToString());
             psi.EnvironmentVariables["AO_WS_TOKEN"] = WS_TOKEN;
+            psi.EnvironmentVariables["AO_PARENT_PID"] = Environment.ProcessId.ToString();   // sidecar self-exits if this shell dies abnormally
+
+            try { _logWriter = new StreamWriter(new FileStream(LOG_PATH, FileMode.Create, FileAccess.Write, FileShare.Read)) { AutoFlush = true }; } catch { _logWriter = null; }
             _sidecar = Process.Start(psi);
             _sidecar.EnableRaisingEvents = true;
-            _sidecar.Exited += (s, e) => { try { PostEngineDown("the engine process exited (code " + _sidecar.ExitCode + ") — check that Node.js is installed, that you ran npm install in the app folder, and that the engine binary is present (see SETUP.md)."); } catch { } };
+            _sidecar.OutputDataReceived += (s, e) => { if (e.Data != null) try { _logWriter?.WriteLine(e.Data); } catch { } };
+            _sidecar.ErrorDataReceived += (s, e) => { if (e.Data != null) try { _logWriter?.WriteLine(e.Data); } catch { } };
+            _sidecar.BeginOutputReadLine();
+            _sidecar.BeginErrorReadLine();
+            _sidecar.Exited += (s, e) => { try { PostEngineDown("the engine process exited (code " + _sidecar.ExitCode + ") — check that Node.js is installed, that you ran npm install in the app folder, and that the engine binary is present (see SETUP.md). Details: " + LOG_PATH); } catch { } };
         }
         catch (Exception ex)
         {
