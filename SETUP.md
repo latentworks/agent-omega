@@ -40,8 +40,10 @@ Copy-Item -Recurse -Force config-template\opencode "$env:USERPROFILE\.config\ope
 
 The `opencode` engine ships as a prebuilt binary. Because Agent Omega runs a **fork** of opencode, use **this repo's** release (not upstream):
 
-- Download `opencode.exe` from this repo's **Releases**.
-- Put it at `agent-omega\engine\opencode.exe` (beside the built app), or set the `AGENT_OMEGA_ENGINE` environment variable to its full path.
+- Download **`opencode.exe`** from the [v2.1.0 release](https://github.com/latentworks/agent-omega/releases/tag/v2.1.0).
+- Point the app at it, either:
+  - set `AGENT_OMEGA_ENGINE` to its full path (simplest), **or**
+  - drop it in an `engine\` folder **next to the built exe** — i.e. `bin\Release\net8.0-windows\engine\opencode.exe` (the sidecar looks for `./engine/opencode.exe` beside itself).
 
 ## 6. Configure your model + keys
 
