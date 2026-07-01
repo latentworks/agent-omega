@@ -56,7 +56,7 @@ Copy-Item -Force scripts\secrets.ps1 "$env:USERPROFILE\.agent-omega\secrets.ps1"
 
 The `opencode` engine ships as a prebuilt binary. Because Agent Omega runs a **fork** of opencode, use **this repo's** release (not upstream):
 
-- Download **`opencode.exe`** from the [v2.1.0 release](https://github.com/latentworks/agent-omega/releases/tag/v2.1.0).
+- Download **`opencode.exe`** from the [v2.2.0 release](https://github.com/latentworks/agent-omega/releases/tag/v2.2.0).
 - Put it in an **`engine\` folder at the repo root** (`agent-omega\engine\opencode.exe`) — the build (step 7) copies it beside the exe automatically.
 - (Alternative, works any time: `setx AGENT_OMEGA_ENGINE "C:\full\path\to\opencode.exe"`, then reopen your terminal.)
 

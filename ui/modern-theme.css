@@ -779,7 +779,8 @@ body.theme-modern .ftpset-overlay {
   background: rgba(10,11,14,.8);
   backdrop-filter: blur(8px);
 }
-/* The settings panel itself stays CRT-styled (it's a separate overlay) */
+/* The settings panel itself is restyled in the MENUS section at the
+   bottom of this file (glassy card, no box-drawing borders). */
 
 /* ===================================================================
    BOOT ANIMATION (subtle fade/rise)
@@ -852,3 +853,348 @@ body.theme-modern.is-generating #statusDot {
    CRT-ONLY HOME FOOTER — hidden in Modern
    =================================================================== */
 body.theme-modern .crt-homefoot { display: none !important; }
+
+/* ===================================================================
+   MENUS IN MODERN — reskin of the CRT-injected overlays
+   (crt-settings.js panel · command palette · slash/@ dropdown ·
+   leader hint bar). Pure CSS overrides of the <style> blocks those
+   scripts inject; classes, DOM and behavior are untouched.
+   =================================================================== */
+
+/* -------------------------------------------------------------------
+   SETTINGS PANEL (.ftpset) — glassy card instead of the DOS frame
+   ------------------------------------------------------------------- */
+body.theme-modern .ftpset {
+  font-family: 'Geist', 'Segoe UI', system-ui, sans-serif;
+  font-size: 13.5px;
+  line-height: 1.55;
+  letter-spacing: normal;
+  text-shadow: none;
+  color: #d4d8de;
+  width: min(720px, 93vw);
+  background: rgba(22,24,29,.97);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 14px;
+  box-shadow: 0 18px 44px -12px rgba(0,0,0,.7);
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+  padding: 0 8px 8px;
+}
+/* kill the panel's self-contained scanline texture */
+body.theme-modern .ftpset::after { display: none !important; }
+/* hide every box-drawing glyph: side walls, ═ fills, ╔╗╚╝ corners and
+   the "═╡ title ╞═" (fs-title carries fs-edge, so it's hidden too) */
+body.theme-modern .ftpset .fs-edge,
+body.theme-modern .ftpset .fs-fill { display: none !important; }
+/* replacement header (the CRT title text lives in a hidden fs-edge) */
+body.theme-modern .ftpset::before {
+  content: "Settings";
+  display: block;
+  padding: 14px 14px 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: #6b7178;
+}
+
+/* rows / cells */
+body.theme-modern .ftpset .fs-cell {
+  padding: 6px 14px;
+  gap: 8px;
+  color: #c5c9cf;
+}
+/* selection bar: indigo pill instead of inverted amber */
+body.theme-modern .ftpset .fs-cell.sel {
+  background: rgba(110,123,255,.13);
+  box-shadow: inset 0 0 0 1px rgba(110,123,255,.32);
+  border-radius: 8px;
+}
+body.theme-modern .ftpset .fs-cell.sel,
+body.theme-modern .ftpset .fs-cell.sel * {
+  color: #e8eaed !important;
+  text-shadow: none !important;
+}
+body.theme-modern .ftpset .fs-cell.sel .fs-vd,
+body.theme-modern .ftpset .fs-cell.sel .fs-needs { color: #9aa3ad !important; }
+body.theme-modern .ftpset .fs-cell.sel .fs-box.on { color: #3ecf8e !important; }
+body.theme-modern .ftpset .fs-cell.sel .fs-del    { color: #ff6369 !important; }
+
+/* scroll area */
+body.theme-modern .ftpset .fs-scroll { padding: 2px 0 4px; }
+body.theme-modern .ftpset .fs-scroll::-webkit-scrollbar { width: 6px; }
+body.theme-modern .ftpset .fs-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.08);
+  border-radius: 3px;
+}
+
+/* tabs — pills, divider underneath (replaces the ╠══╣ rule line) */
+body.theme-modern .ftpset .fs-tabs {
+  gap: 2px;
+  padding: 6px 10px 12px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  margin-bottom: 4px;
+}
+body.theme-modern .ftpset .fs-tab {
+  color: #8b9097;
+  padding: 3px 10px;
+  border-radius: 7px;
+  transition: color .12s, background .12s;
+}
+body.theme-modern .ftpset .fs-tab.on {
+  background: rgba(110,123,255,.16);
+  color: #e8eaed;
+  text-shadow: none;
+}
+body.theme-modern .ftpset .fs-tab.focus {
+  box-shadow: 0 0 0 1.5px rgba(110,123,255,.55);
+}
+body.theme-modern .ftpset .fs-tabsep { color: transparent; }
+
+/* info lines / section heads */
+body.theme-modern .ftpset .fs-info { color: #6b7178; }
+body.theme-modern .ftpset .fs-head {
+  color: #9197a0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  text-shadow: none;
+  padding-top: 12px;
+}
+
+/* provider group rows */
+body.theme-modern .ftpset .fs-grp { padding-top: 10px; }
+body.theme-modern .ftpset .fs-grp .fs-grp-name {
+  color: #8b9097;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .06em;
+}
+body.theme-modern .ftpset .fs-grp .fs-grp-tag { color: #4d525a; font-size: 11px; }
+body.theme-modern .ftpset .fs-grp .fs-grp-tag.warn { color: #f2c97d; }
+
+/* vault rows */
+body.theme-modern .ftpset .fs-vk { color: #d4d8de; }
+body.theme-modern .ftpset .fs-vd { color: #5a606a; letter-spacing: 2px; }
+body.theme-modern .ftpset .fs-del { color: #ff6369; }
+body.theme-modern .ftpset .fs-add { color: var(--ac); }
+body.theme-modern .ftpset .fs-form .fs-input {
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 7px;
+  color: #e8eaed;
+  font-family: 'Geist', 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  letter-spacing: normal;
+  caret-color: var(--ac);
+  padding: 3px 10px;
+}
+body.theme-modern .ftpset .fs-form .fs-input::placeholder { color: #5a606a; }
+body.theme-modern .ftpset .fs-form .fs-input:focus {
+  border-color: rgba(110,123,255,.5);
+}
+
+/* model rows: checkbox, name, availability tag */
+body.theme-modern .ftpset .fs-box { color: #5a606a; }
+body.theme-modern .ftpset .fs-box.on { color: #3ecf8e; }
+body.theme-modern .ftpset .fs-mname { color: #d4d8de; }
+body.theme-modern .ftpset .fs-needs { color: #6b7178; font-size: 12px; }
+
+/* preset buttons */
+body.theme-modern .ftpset .fs-btn {
+  color: #9197a0;
+  border: 1px solid rgba(255,255,255,.1);
+  background: rgba(255,255,255,.04);
+  border-radius: 7px;
+  padding: 1px 8px;
+  font-size: 12.5px;
+}
+body.theme-modern .ftpset .fs-btn.on {
+  background: rgba(110,123,255,.16);
+  border-color: rgba(110,123,255,.4);
+  color: #e8eaed;
+  text-shadow: none;
+}
+
+/* council value rows */
+body.theme-modern .ftpset .fs-key { color: #8b9097; width: 120px; }
+body.theme-modern .ftpset .fs-val { color: var(--ac); text-shadow: none; }
+body.theme-modern .ftpset .fs-arr { color: #5a606a; }
+
+/* hints footer — divider on top (replaces the ╠══╣ rule line) */
+body.theme-modern .ftpset .fs-hints {
+  color: #5a606a;
+  font-size: 12px;
+  border-top: 1px solid rgba(255,255,255,.06);
+  padding-top: 10px;
+  padding-bottom: 4px;
+  margin-top: 4px;
+}
+body.theme-modern .ftpset .fs-kc {
+  color: #9197a0;
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 11px;
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.09);
+  border-radius: 5px;
+  padding: 0 6px;
+}
+body.theme-modern .ftpset .fs-flash { color: #3ecf8e; text-shadow: none; }
+
+/* -------------------------------------------------------------------
+   COMMAND PALETTE (^P) — glassy floating panel
+   ------------------------------------------------------------------- */
+body.theme-modern #ftpPalette.ftp-overlay {
+  background: rgba(10,11,14,.7);
+  backdrop-filter: blur(6px);
+}
+body.theme-modern .ftp-pal {
+  font-family: 'Geist', 'Segoe UI', system-ui, sans-serif;
+  text-shadow: none;
+  background: rgba(22,24,29,.97);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 14px;
+  box-shadow: 0 18px 44px -12px rgba(0,0,0,.7);
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+  width: 560px;
+}
+body.theme-modern .ftp-pal-head {
+  gap: 10px;
+  padding: 13px 16px 11px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+body.theme-modern .ftp-pal-head .ac {
+  color: var(--ac);
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 14px;
+  text-shadow: none;
+}
+body.theme-modern .ftp-pal-input {
+  font-family: 'Geist', 'Segoe UI', system-ui, sans-serif;
+  font-size: 14.5px;
+  color: #e8eaed;
+  caret-color: var(--ac);
+  letter-spacing: normal;
+  text-shadow: none;
+}
+body.theme-modern .ftp-pal-input::placeholder { color: #5a606a; }
+body.theme-modern .ftp-pal-list { padding: 6px; }
+body.theme-modern .ftp-pal-list::-webkit-scrollbar { width: 6px; }
+body.theme-modern .ftp-pal-list::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.08);
+  border-radius: 3px;
+}
+body.theme-modern .ftp-pal-cat {
+  color: #6b7178;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  padding: 10px 12px 4px;
+  opacity: 1;
+}
+body.theme-modern .ftp-pal-row {
+  gap: 9px;
+  padding: 6px 12px;
+  font-size: 13.5px;
+  color: #c5c9cf;
+  border-radius: 8px;
+}
+body.theme-modern .ftp-pal-row.on { background: rgba(110,123,255,.13); }
+body.theme-modern .ftp-pal-title { color: #e8eaed; }
+body.theme-modern .ftp-pal-row.on .ftp-pal-title { color: #ffffff; }
+body.theme-modern .ftp-pal-slash {
+  color: var(--ac);
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 12px;
+}
+body.theme-modern .ftp-pal-desc { color: #6b7178; font-size: 12.5px; }
+body.theme-modern .ftp-pal-key {
+  color: #6b7178;
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 11px;
+  background: rgba(255,255,255,.05);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+body.theme-modern .ftp-pal-empty { color: #6b7178; font-size: 13.5px; }
+body.theme-modern .ftp-pal-foot {
+  border-top: 1px solid rgba(255,255,255,.06);
+  padding: 8px 16px;
+  font-size: 11.5px;
+  color: #5a606a;
+}
+body.theme-modern .ftp-pal-foot .ac {
+  color: var(--ac);
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 11px;
+  text-shadow: none;
+}
+/* fuzzy-match highlight: JS emits inline amber spans — recolor to accent */
+body.theme-modern .ftp-pal-title span[style*="color:#ffb454"],
+body.theme-modern .ftp-drop-label span[style*="color:#ffb454"] {
+  color: var(--ac) !important;
+  text-shadow: none;
+}
+
+/* -------------------------------------------------------------------
+   SLASH / @ AUTOCOMPLETE DROPDOWN (.ftp-drop)
+   ------------------------------------------------------------------- */
+body.theme-modern .ftp-drop {
+  font-family: 'Geist', 'Segoe UI', system-ui, sans-serif;
+  text-shadow: none;
+  background: rgba(22,24,29,.97);
+  border: 1px solid rgba(255,255,255,.09);
+  border-radius: 12px;
+  box-shadow: 0 -12px 40px -8px rgba(0,0,0,.6);
+  backdrop-filter: blur(8px);
+}
+body.theme-modern .ftp-drop-list { padding: 5px; }
+body.theme-modern .ftp-drop-list::-webkit-scrollbar { width: 6px; }
+body.theme-modern .ftp-drop-list::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.08);
+  border-radius: 3px;
+}
+body.theme-modern .ftp-drop-row {
+  gap: 10px;
+  padding: 5px 11px;
+  font-size: 13.5px;
+  color: #c5c9cf;
+  border-radius: 7px;
+}
+body.theme-modern .ftp-drop-row.on { background: rgba(110,123,255,.13); }
+body.theme-modern .ftp-drop-label { color: #e8eaed; }
+body.theme-modern .ftp-drop-row.on .ftp-drop-label { color: #ffffff; }
+body.theme-modern .ftp-drop-desc { color: #6b7178; font-size: 12.5px; }
+body.theme-modern .ftp-drop-empty { color: #6b7178; font-size: 13px; }
+
+/* -------------------------------------------------------------------
+   LEADER-KEY HINT BAR (^X which-key)
+   ------------------------------------------------------------------- */
+body.theme-modern .ftp-leader {
+  font-family: 'Geist', 'Segoe UI', system-ui, sans-serif;
+  font-size: 12.5px;
+  color: #8b9097;
+  text-shadow: none;
+  gap: 8px 16px;
+  padding: 10px 16px;
+  background: rgba(16,17,22,.96);
+  border-top: 1px solid rgba(255,255,255,.07);
+  backdrop-filter: blur(8px);
+}
+body.theme-modern .ftp-leader-title {
+  color: var(--ac);
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-weight: 600;
+  margin-right: 8px;
+}
+body.theme-modern .ftp-leader-item .ac {
+  color: var(--ac);
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 11px;
+  background: rgba(255,255,255,.06);
+  border-radius: 4px;
+  padding: 0 5px;
+}
