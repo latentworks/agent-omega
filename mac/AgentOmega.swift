@@ -140,6 +140,15 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
                     try? fm.copyItem(atPath: src + "/" + it, toPath: dst + "/" + it)
                 }
             }
+            // node_modules may pre-exist (a stock opencode install) without our plugin deps —
+            // merge in any bundled package that's missing so council/engram can import.
+            let srcNM = src + "/node_modules", dstNM = dst + "/node_modules"
+            if fm.fileExists(atPath: srcNM) {
+                try? fm.createDirectory(atPath: dstNM, withIntermediateDirectories: true)
+                for pkg in (try? fm.contentsOfDirectory(atPath: srcNM)) ?? [] where !fm.fileExists(atPath: dstNM + "/" + pkg) {
+                    try? fm.copyItem(atPath: srcNM + "/" + pkg, toPath: dstNM + "/" + pkg)
+                }
+            }
         }
         // 2. secrets.sh -> ~/.agent-omega/secrets.sh (if absent), executable
         let vsrc = RES + "/secrets.sh"

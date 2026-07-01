@@ -6,16 +6,16 @@ Agent Omega is a Windows desktop app: a frameless **WebView2 shell** → a **Nod
 
 ## macOS
 
-There's a native macOS build (`mac/AgentOmega.swift` — a Swift + WKWebView shell). It targets **Apple Silicon (arm64), macOS 13+**. The finished `.app` is **self-contained** — no Node or Python at runtime (the sidecar and engine are compiled binaries; the vault uses the macOS Keychain).
+Same model as Windows — **get the code and launch it from the terminal.** A locally-built app carries no quarantine flag, so macOS runs it directly; there is no "clickable installer" or code-signing requirement. The native build (`mac/AgentOmega.swift` — a Swift + WKWebView shell) targets **Apple Silicon (arm64), macOS 13+**, and is **self-contained at runtime** — no Node or Python needed (the sidecar and engine are compiled binaries; the vault uses the macOS Keychain).
 
-**Build + install it locally (no Apple Developer account needed):**
-1. Install build-time tools: Xcode Command Line Tools (`xcode-select --install`), [bun](https://bun.sh), and Node/npm.
-2. Build the engine once so `engine/opencode` exists — see [`docs/MAC_BRANCH.md`](docs/MAC_BRANCH.md) Phase 0 (`bun run packages/opencode/script/build.ts --single --skip-embed-web-ui` in the fork, then copy the result to `engine/opencode`).
-3. Run **`sh mac/install.sh`** — it builds `AgentOmega.app` and installs it to `/Applications`. (A locally-built app isn't quarantined, so it opens without a Gatekeeper warning.)
-4. Launch Agent Omega. First run installs the config + Keychain vault into your home and shows a welcome explaining how to add a model.
-5. **Add a model:** open Settings (the gear icon top-right, `⌃,`, or type `/settings`) → **Vault** → paste an API key (Anthropic / OpenAI / Google / DeepSeek / Moonshot / Z.AI). Or run a local server (llama.cpp / Ollama / LM Studio) and select the `local` model. Same requirement as Windows — the agent needs a model.
+**Build-time tools** (to build, not to run): Xcode Command Line Tools (`xcode-select --install`), [bun](https://bun.sh), and Node/npm.
 
-**Distribute to other people (needs an Apple Developer ID — $99/yr):** after `mac/build-app.sh`, run `mac/sign-notarize.sh` to Developer-ID sign + notarize + staple a `.dmg`. This is **required** for a *downloaded* copy to open by double-click — without notarization, macOS Gatekeeper blocks a downloaded app (a locally-built copy is unaffected).
+1. Build the engine once so `engine/opencode` exists — [`docs/MAC_BRANCH.md`](docs/MAC_BRANCH.md) Phase 0 (`bun run packages/opencode/script/build.ts --single --skip-embed-web-ui` in the fork, then copy the result to `engine/opencode`). A *downloaded* engine binary is quarantined — clear it with `xattr -dr com.apple.quarantine engine/opencode` (the Mac analog of Windows "Unblock"); one you build locally isn't.
+2. **Launch:** `sh mac/run.sh` — builds the self-contained `AgentOmega.app` once and launches it. (Equivalently: `sh mac/build-app.sh` then `open mac/build/AgentOmega.app`; or `sh mac/install.sh` to also copy it to `/Applications`.)
+3. First run installs the config + Keychain vault into your home and shows how to add a model.
+4. **Add a model** (same requirement as Windows — the agent needs one): open Settings (`⌃,`, the gear icon, or `/settings`) → **Vault** → paste an API key (Anthropic / OpenAI / Google / DeepSeek / Moonshot / Z.AI), or run a local server (llama.cpp / Ollama / LM Studio) and pick the `local` model.
+
+**Optional — a signed, double-clickable build for non-technical people:** only if you want to hand a *downloaded* `.dmg` to someone who won't open a terminal, `mac/sign-notarize.sh` does the Developer-ID sign + notarize + staple (needs an Apple Developer ID, $99/yr). Not needed for the terminal launch above.
 
 The rest of this document covers the **Windows** setup.
 
