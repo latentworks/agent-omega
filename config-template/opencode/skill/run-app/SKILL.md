@@ -61,27 +61,30 @@ Keep it tight — `--help` covers every flag; you only need enough to prove it b
 
 The defining concern is **lifecycle**: start in the background, confirm it's up, hit it, shut it down cleanly.
 
+NOTE: `curl` / `wget` / `Invoke-RestMethod` / `Invoke-WebRequest` are blocked by the harness (they'd bypass the anonymity gateway). Probe your own localhost server with the runtime you already have — Node or Python — which the examples below use.
+
 ```bash
-# git-bash — background, capture PID, poll readiness
+# git-bash — background, capture PID, poll readiness with a tiny node probe
 npm run dev &> /tmp/api.log &
 SERVER_PID=$!
-timeout 30 bash -c 'until curl -sf http://localhost:3000/health >/dev/null; do sleep 0.5; done'
+probe() { node -e "fetch('http://localhost:3000/health').then(r=>{if(!r.ok)process.exit(1);return r.text()}).then(t=>console.log(t)).catch(()=>process.exit(1))"; }
+timeout 30 bash -c 'until node -e "fetch(\"http://localhost:3000/health\").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; do sleep 0.5; done'
 
-curl http://localhost:3000/health
+probe
 # → {"status":"ok","version":"1.2.3"}
 
 # hit the route your change actually touched, read the body
-curl -s http://localhost:3000/api/items | head
+node -e "fetch('http://localhost:3000/api/items').then(r=>r.text()).then(t=>console.log(t.slice(0,400)))"
 
 kill $SERVER_PID          # or, PID lost: pkill -f "tsx watch src/index.ts"
 ```
 
-PowerShell equivalents when you prefer it: `Start-Process node -ArgumentList ... -RedirectStandardOutput`, poll with `Invoke-RestMethod` in a `do { } until`, hit routes with `Invoke-RestMethod`/`Invoke-WebRequest`, stop with `Stop-Process`.
+PowerShell equivalents: start with `Start-Process node -ArgumentList ... -RedirectStandardOutput`; poll/hit routes with a Node or Python one-liner (`python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:3000/health').read().decode())"`); stop with `Stop-Process`.
 
 Nail down and, if useful, record:
 - **Port**, and how to override it (`PORT=4000 npm run dev` / `$env:PORT=4000`).
 - **What "ready" means** — a health endpoint or a specific log line in `/tmp/api.log`.
-- **Required env vars** — DB URL, API keys (pull secrets from the vault, never hardcode).
+- **Required env vars** — DB URL, API keys (from the project's own `.env`/config or ask the user; never hardcode or echo a secret — the app's key vault is off-limits to you).
 - **Dependent services** (Postgres/Redis): the `docker run` or compose command that brings them up first.
 
 A page or endpoint can return its shell while every data call 500s — read the actual body, and skim the log, before calling it up.

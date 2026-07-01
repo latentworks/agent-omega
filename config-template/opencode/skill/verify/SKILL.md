@@ -53,11 +53,11 @@ Find how to build and launch before you drive. Check the repo's own docs/scripts
 Per surface type:
 - **Web / GUI** → start the dev server (e.g. `npm run dev`), wait for the ready signal, then drive the page at its URL.
 - **CLI / TUI** → identify the entry point (e.g. `node ./cli.js`, `python -m app`, `./target/debug/app`) and run it in the terminal.
-- **API** → start the server, then hit it with `curl` (or, in PowerShell, `Invoke-RestMethod`).
+- **API** → start the server, then hit it. NOTE: `curl` / `wget` / `Invoke-RestMethod` are blocked by the harness (they'd bypass the anonymity gateway), so probe localhost with the runtime you already have — e.g. `node -e "fetch('http://localhost:3000/health').then(r=>r.text()).then(t=>console.log(t)).catch(e=>{console.error(e);process.exit(1)})"` or `python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:3000/health').read().decode())"`. That reaches your own server and reads the real response.
 
 Timebox the cold start to ~15 min. If you cannot get it up — missing dep, build broke, launch won't come up — report **BLOCKED** with exactly where it stopped. That is not a verdict on the change.
 
-**Authentication.** If the surface is behind a login, you must get past it before you can verify — an auth wall is not a PASS and not a FAIL of the feature. Find the login route, the credentials (check the user's secrets vault rather than asking; never hardcode or echo a secret), and the post-login signal (a redirect, a "Welcome" element, a set cookie/token). Drive the login, confirm the signal, then proceed. If you can't authenticate, that's BLOCKED — say so.
+**Authentication.** If the surface is behind a login, you must get past it before you can verify — an auth wall is not a PASS and not a FAIL of the feature. Find the login route, the credentials (from the project's own test fixtures / `.env` / config, or ask the user — the app's key vault is off-limits to you and holds only provider keys anyway; never hardcode or echo a secret), and the post-login signal (a redirect, a "Welcome" element, a set cookie/token). Drive the login, confirm the signal, then proceed. If you can't authenticate, that's BLOCKED — say so.
 
 ## 4. Drive it
 
