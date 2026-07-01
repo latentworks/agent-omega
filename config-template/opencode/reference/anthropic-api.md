@@ -21,8 +21,7 @@ npm install @anthropic-ai/sdk      # TypeScript/Node
 
 ## Client init — let it read the key from the environment
 
-The SDK resolves credentials in order: `ANTHROPIC_API_KEY` env var, then `ANTHROPIC_AUTH_TOKEN`. Never hardcode a key in source. If a key is needed and not in the env, pull it from the vault rather than asking or failing:
-`powershell -NoProfile -File "~\.agent-omega\secrets.ps1" get ANTHROPIC_API_KEY`
+The SDK resolves credentials in order: `ANTHROPIC_API_KEY` env var, then `ANTHROPIC_AUTH_TOKEN`. Never hardcode a key in source. When the user has configured an Anthropic key in Agent Omega, the sidecar already injects `ANTHROPIC_API_KEY` into the environment your code runs in — so just let the SDK read it from the env. If it isn't set, ask the user to add it (Settings → Vault); do NOT try to read the vault file directly — the harness blocks that path on purpose.
 
 ```python
 import anthropic
