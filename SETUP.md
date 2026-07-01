@@ -56,8 +56,8 @@ Copy-Item -Force scripts\secrets.ps1 "$env:USERPROFILE\.agent-omega\secrets.ps1"
 
 The `opencode` engine ships as a prebuilt binary. Because Agent Omega runs a **fork** of opencode, use **this repo's** release (not upstream):
 
-- Download **`opencode.exe`** from the [v2.2.0 release](https://github.com/latentworks/agent-omega/releases/tag/v2.2.0).
-- **Verify the download** before you trust it (it's an unsigned binary you're about to run with your privileges). The SHA-256 for the v2.2.0 `opencode.exe` is:
+- Download **`opencode.exe`** from the [v2.2.0 release](https://github.com/latentworks/agent-omega/releases/tag/v2.2.0). (The engine binary is unchanged in 2.2.1 — the v2.2.0 asset is still current.)
+- **Verify the download** before you trust it (it's an unsigned binary you're about to run with your privileges). The SHA-256 for the `opencode.exe` is:
   ```
   2277235acbfbf6970e760b18f33e0171e006758ae755a31b3940ad784e6e01ab
   ```
