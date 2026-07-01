@@ -1,6 +1,6 @@
 # Agent Omega — Windows-Dependency Inventory for a macOS Port
 
-Scope: every Windows-specific dependency in the tree at `C:\Users\user\agent-omega`,
+Scope: every Windows-specific dependency in the tree at `the agent-omega repo root`,
 excluding `node_modules/` and `.git/`. Each item cites `file:line` and the Mac
 equivalent / change needed. Counts and the blocker shortlist are at the end.
 
