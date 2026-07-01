@@ -16,7 +16,7 @@ const isUnder = (p, base) => p === base || p.startsWith(base.replace(/\/+$/, '')
 
 // ---- deny-list (data; compared lowercased + forward-slashed) ----
 const DENY_PREFIXES = [
-  norm(HOME + '/.claude-secrets'), norm(HOME + '/.ssh'), norm(HOME + '/.aws'),
+  norm(HOME + '/.agent-omega'), norm(HOME + '/.ssh'), norm(HOME + '/.aws'),
   norm(HOME + '/.gnupg'), norm(HOME + '/.azure'), norm(HOME + '/.kube'), norm(HOME + '/.docker'),
   norm(HOME + '/.config/gh'), norm(HOME + '/.config/gcloud'), norm(HOME + '/.claude/.credentials'),
   norm(HOME + '/appdata/roaming/microsoft/credentials'), norm(HOME + '/appdata/local/microsoft/credentials'),
@@ -26,13 +26,13 @@ const DENY_PREFIXES = [
   norm(HOME + '/appdata/roaming/gcloud'), norm(HOME + '/.local/share/opencode'), norm(HOME + '/.npm'),
   'c:/windows/system32/config',
 ]
-const DENY_DIR_SEGMENTS = new Set(['.ssh', '.aws', '.gnupg', '.claude-secrets'])
+const DENY_DIR_SEGMENTS = new Set(['.ssh', '.aws', '.gnupg', '.agent-omega'])
 const DENY_LEAF = [
   /^\.env(\..+)?$/, /\.env$/, /\.pem$/, /\.ppk$/, /\.pfx$/, /\.p12$/, /\.jks$/, /\.keystore$/, /\.kdbx$/, /\.key$/,
   /\.gpg$/, /\.asc$/, /(^|[._-])key$/, /^id_(rsa|dsa|ecdsa|ed25519)$/, /^\.netrc$/, /^\.pgpass$/, /^secring/,
   /^\.gitconfig$/, /^\.git-credentials$/, /^\.npmrc$/,  // F2
 ]
-const DENY_SUBSTR_HARD = ['private-key', 'private_key', 'privatekey', 'client-secret', 'client_secret', 'service-account', 'service_account', 'id_ed25519', 'id_rsa', '.claude-secrets']
+const DENY_SUBSTR_HARD = ['private-key', 'private_key', 'privatekey', 'client-secret', 'client_secret', 'service-account', 'service_account', 'id_ed25519', 'id_rsa', '.agent-omega']
 const DENY_SUBSTR_SOFT = ['secret', 'token', 'password', 'passwd', 'credential', 'apikey', 'api-key', 'api_key', 'vault']
 
 class Refusal extends Error {}

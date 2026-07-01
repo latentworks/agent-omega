@@ -22,7 +22,7 @@ npm install @anthropic-ai/sdk      # TypeScript/Node
 ## Client init — let it read the key from the environment
 
 The SDK resolves credentials in order: `ANTHROPIC_API_KEY` env var, then `ANTHROPIC_AUTH_TOKEN`. Never hardcode a key in source. If a key is needed and not in the env, pull it from the vault rather than asking or failing:
-`powershell -NoProfile -File "~\.claude-secrets\secrets.ps1" get ANTHROPIC_API_KEY`
+`powershell -NoProfile -File "~\.agent-omega\secrets.ps1" get ANTHROPIC_API_KEY`
 
 ```python
 import anthropic

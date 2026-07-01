@@ -8,7 +8,7 @@
 // Exports ONLY the default plugin function (OpenCode loads every export of a plugin
 // module as a plugin); all importable/testable logic lives in router.mjs.
 //
-// Env: ROUTER_EVO_URL, ROUTER_MODEL ('' = loaded model, no swap), ROUTER_N (recent msgs),
+// Env: ROUTER_EXTRACT_URL, ROUTER_MODEL ('' = loaded model, no swap), ROUTER_N (recent msgs),
 //      ROUTER_NOTHINK (default 1), ROUTER_DRYRUN=1 (log instead of inject), ROUTER_LOG.
 
 import { readFileSync, appendFileSync } from 'node:fs'

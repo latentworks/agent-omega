@@ -1,6 +1,6 @@
 // engram/extract.mjs — turn a captured chunk of conversation into structured,
 // durable facts using a LOCAL model. Transport-agnostic: callLLM is injected, so
-// this is unit-testable with a fake and works with either a direct EVO HTTP call
+// this is unit-testable with a fake and works with either a direct local HTTP call
 // or OpenCode's client. The parser is hardened because local models wrap JSON in
 // markdown, add preambles, and emit <think> reasoning blocks.
 

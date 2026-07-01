@@ -1,4 +1,4 @@
-// engram/engine.mjs — the capture engine + EVO extractor + config.
+// engram/engine.mjs — the capture engine + local extractor + config.
 //
 // IMPORTANT: this lives separately from index.js because OpenCode treats EVERY
 // export of a plugin module as a plugin to load — so index.js must export ONLY its
@@ -15,12 +15,12 @@ import { selectDropped, buildEpisodeText, projectOf } from './capture.mjs'
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 export const DB_PATH = process.env.ENGRAM_DB || join(HERE, 'engram.db')
-export const EVO_URL = process.env.ENGRAM_EVO_URL || ''
+export const EXTRACT_URL = process.env.ENGRAM_EXTRACT_URL || ''
 // Explicit extractor override — people shipping this will set their own. Empty (the
 // default) means: use whatever model is ALREADY LOADED on the box, so writing a memory
 // never evicts the model you're talking to. The llama-swap /running endpoint tells us.
 export const ENGRAM_MODEL = process.env.ENGRAM_MODEL || ''
-const RUNNING_URL = (() => { try { return new URL('/running', EVO_URL).href } catch { return '' } })()
+const RUNNING_URL = (() => { try { return new URL('/running', EXTRACT_URL).href } catch { return '' } })()
 const FALLBACK_MODEL = 'gpt-oss-120b'
 export const TAIL_KEEP = Number(process.env.ENGRAM_TAIL_KEEP || 4)
 const EXTRACT_TIMEOUT = Number(process.env.ENGRAM_EXTRACT_TIMEOUT || 180000)
@@ -53,9 +53,9 @@ export async function pickExtractModel() {
 
 // Default extractor: a direct call to the local box using the currently-loaded model.
 // Injectable for tests.
-export async function evoExtractCall({ system, user }) {
+export async function extractCall({ system, user }) {
   const model = await pickExtractModel()
-  const r = await fetch(EVO_URL, {
+  const r = await fetch(EXTRACT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -73,7 +73,7 @@ export async function evoExtractCall({ system, user }) {
 
 // The capture engine. Pure orchestration over an injected client + extractor, so
 // an integration test can drive the real capture path without a live OpenCode server.
-export function createEngram({ client, directory, db, callLLM = evoExtractCall } = {}) {
+export function createEngram({ client, directory, db, callLLM = extractCall } = {}) {
   const store = db || openStore(DB_PATH)
   const watermark = new Map() // sessionID -> messages already captured
 

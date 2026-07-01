@@ -3,7 +3,7 @@
 //
 //   • CAPTURE: at compaction (the moment OpenCode drops old context), grab what's
 //     about to fall off, store it as an episode, and — in the BACKGROUND so it never
-//     blocks the user — have a local EVO model distill it into temporal facts.
+//     blocks the user — have a local model distill it into temporal facts.
 //   • RECALL: a `recall` tool to pull relevant memory back, plus `remember` to save
 //     a durable fact explicitly.
 //
@@ -52,7 +52,7 @@ const EngramPlugin = async ({ client, directory }) => {
       if (r && r.extraction) {
         r.extraction.then(() => recallCache.clear()).catch(() => {})   // once new facts are stored, invalidate cached recalls so the next turn re-queries
         log('writing memory…')
-        // brief visible beat only — NEVER stall the user's next turn on a slow/flaky EVO link.
+        // brief visible beat only — NEVER stall the user's next turn on a slow/flaky local link.
         // The extraction itself continues in the background regardless of this cap.
         const cap = Number(process.env.ENGRAM_COMPACT_WAIT_MS || 2500)
         await Promise.race([r.extraction, new Promise((res) => setTimeout(res, cap))])
