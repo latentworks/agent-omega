@@ -4,6 +4,6 @@
   "private": true,
   "dependencies": {
     "ws": "^8.21.0",
-    "@agentclientprotocol/sdk": "^0.21.0"
+    "@agentclientprotocol/sdk": "0.21.0"
   }
 }
