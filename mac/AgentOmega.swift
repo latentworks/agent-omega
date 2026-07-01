@@ -56,6 +56,12 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     let logURL = URL(fileURLWithPath: HOME + "/Library/Logs/AgentOmega/sidecar.log")
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        // single-instance: if Agent Omega is already running, focus it and quit this copy
+        // (avoids a second window fighting over the sidecar port).
+        if let bid = Bundle.main.bundleIdentifier {
+            let others = NSRunningApplication.runningApplications(withBundleIdentifier: bid).filter { $0 != .current }
+            if let other = others.first { other.activate(options: [.activateAllWindows]); exit(0) }
+        }
         guard let res = resourceRoot() else {
             fatalAlert("Agent Omega's resources couldn't be found in the app bundle. Please reinstall.")
         }
