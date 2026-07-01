@@ -19,7 +19,9 @@ export const HARD_CAP = Number(process.env.ITERATE_HARD_CAP || 12)   // total re
 // env vars are set). On a default install anon-web isn't present, so the rung is OFF and the
 // ladder goes strategy -> user directly — never sending the agent to a dead web bridge.
 // ITERATE_WEB_SEARCH (0/1) overrides the auto-detection either way.
-const ANONWEB_PRESENT = Boolean(process.env.AGENT_OMEGA_ANONWEB_VENV || process.env.AGENT_OMEGA_ANONWEB)
+// web.py needs BOTH the anon-web path AND its venv python to function, so require both here too —
+// otherwise a half-configured install would route the agent to a bridge that then reports "unavailable".
+const ANONWEB_PRESENT = Boolean(process.env.AGENT_OMEGA_ANONWEB_VENV && process.env.AGENT_OMEGA_ANONWEB)
 export const WEB_SEARCH = process.env.ITERATE_WEB_SEARCH != null && process.env.ITERATE_WEB_SEARCH !== ''
   ? !['0', 'false', 'off'].includes(String(process.env.ITERATE_WEB_SEARCH).toLowerCase())
   : ANONWEB_PRESENT

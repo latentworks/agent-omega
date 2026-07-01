@@ -43,11 +43,18 @@ static class Program
     }
 
     // Find a free loopback port P where BOTH P (control socket) and P+1 (engine API) are open,
-    // so a second instance or an unrelated listener on 4599 can't wedge startup.
+    // so a second instance or an unrelated listener on 4599 can't wedge startup. Two instances
+    // launched at once could still race for the same P (a brief probe-then-bind gap); starting the
+    // scan at a per-process offset makes that collision unlikely, and a lost race fails cleanly
+    // (the sidecar exits on EADDRINUSE and the shell reports engine-down) rather than corrupting.
     static int FreePortPair(int start)
     {
-        for (int p = start; p < start + 400; p++)
+        int offset = (Environment.ProcessId % 200) * 2;   // even offset keeps the P/P+1 pairing aligned
+        for (int i = 0; i < 400; i++)
+        {
+            int p = start + ((offset + i * 2) % 400);
             if (IsFree(p) && IsFree(p + 1)) return p;
+        }
         return start;
     }
     static bool IsFree(int port)

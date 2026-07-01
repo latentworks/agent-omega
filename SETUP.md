@@ -127,7 +127,8 @@ To move to a newer version, `git pull` and re-run `node setup.mjs`. The wizard d
 
 Deleting the cloned repo removes the app, but three things live outside it and persist until you remove them:
 
-- `~/.agent-omega\` — the encrypted key vault (`vault.dat`), the vault script, logs, and the scratch workspace lives under `%LOCALAPPDATA%\AgentOmega`.
+- `~/.agent-omega\` — the encrypted key vault (`vault.dat`), the vault script, and logs.
+- `%LOCALAPPDATA%\AgentOmega\` — the scratch workspace.
 - `~/.config\opencode\` — the plugin config, your `opencode.json`, and the engram memory database.
 - `%TEMP%\agent-omega-webview2\` — the WebView2 browser profile.
 
