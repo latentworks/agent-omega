@@ -72,10 +72,11 @@ This is a first-class concern, not a footnote.
   hands it to the engine's environment at launch — the key never gets written into
   code, into config you might commit, or into logs. A missing key is simply skipped
   (that provider stays dark); nothing is ever faked to cover a gap.
-- **Key-free anonymous web access.** The agent has no raw internet access. Every
-  web search and page read goes through a local gateway that reaches a private,
-  key-free search engine — no account, no API key, no per-query identity trailing
-  back to you.
+- **Key-free anonymous web access.** *(Requires a separate `anon-web` component that isn't
+  publicly distributed — so web search is **disabled by default** in this build.)* Where present,
+  the agent has no raw internet access; every web search and page read goes through a local
+  gateway that reaches a private, key-free search engine — no account, no API key, no per-query
+  identity trailing back to you.
 - **A fully-local option.** Point Agent Omega at models running on your own machine
   (or your own boxes on your LAN) and your code, your prompts, and your files never
   leave your hardware. No cloud provider sees the work at all.

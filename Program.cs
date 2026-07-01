@@ -110,7 +110,7 @@ static class Program
             psi.EnvironmentVariables["AO_WS_TOKEN"] = WS_TOKEN;
             _sidecar = Process.Start(psi);
             _sidecar.EnableRaisingEvents = true;
-            _sidecar.Exited += (s, e) => { try { PostEngineDown("the engine process exited (code " + _sidecar.ExitCode + ") — is Node.js 20.11+ installed and on your PATH?"); } catch { } };
+            _sidecar.Exited += (s, e) => { try { PostEngineDown("the engine process exited (code " + _sidecar.ExitCode + ") — check that Node.js is installed, that you ran npm install in the app folder, and that the engine binary is present (see SETUP.md)."); } catch { } };
         }
         catch (Exception ex)
         {

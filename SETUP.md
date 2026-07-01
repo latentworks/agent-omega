@@ -9,12 +9,13 @@ Agent Omega is a Windows desktop app: a frameless **WebView2 shell** → a **Nod
 | Need | Why | Check |
 |---|---|---|
 | **Windows 10/11** | the shell is WinForms + WebView2 | — |
+| **git** | clone the repo (or download the ZIP) | `git --version` |
 | **.NET 8 SDK** | builds the shell | `dotnet --version` ≥ 8 |
 | **Node.js 18+** (20 LTS recommended) | runs the sidecar + plugins | `node --version` |
 | **WebView2 Runtime** | hosts the UI (preinstalled on most Win11) | [evergreen installer](https://developer.microsoft.com/microsoft-edge/webview2/) if missing |
 | **Python 3.9+** *(optional)* | required by the separate anon-web component for web search only | `python --version` |
 
-> On Node 18/19 the plugin install may print a harmless `EBADENGINE` warning from a transitive dependency — safe to ignore (Node 20 LTS avoids it).
+> The plugin install may print a harmless `EBADENGINE` warning from a transitive dependency (`ini`) whose `engines` field lags current Node — safe to ignore.
 
 ## 2. Get the code
 
@@ -32,7 +33,7 @@ npm install --prefix config-template/opencode   # plugin deps
 
 ## Quick setup (recommended)
 
-After step 3, run the wizard instead of steps 4–6 by hand. It installs the plugin config + the encrypted vault, checks the engine, and configures your model + API key interactively:
+After step 3, run the wizard instead of steps 4 and 6 by hand (you still need step 5 — the engine). It installs the plugin config + the encrypted vault, checks the engine, and configures your model + API key interactively:
 
 ```
 node setup.mjs
@@ -45,7 +46,8 @@ It'll ask whether you're running a local model, Claude, ChatGPT, or another clou
 Copy the shipped config into opencode's config directory, and the encrypted vault script into place:
 
 ```powershell
-Copy-Item -Recurse -Force config-template\opencode "$env:USERPROFILE\.config\opencode"
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.config\opencode" | Out-Null
+Copy-Item -Recurse -Force config-template\opencode\* "$env:USERPROFILE\.config\opencode"
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.agent-omega" | Out-Null
 Copy-Item -Force scripts\secrets.ps1 "$env:USERPROFILE\.agent-omega\secrets.ps1"
 ```
