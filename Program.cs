@@ -53,7 +53,7 @@ static class Program
             MinimumSize = new Size(760, 480),
             Padding = new Padding(AppForm.GRIP),  // exposes a thin border for native edge-resize hit-testing (doubles as a subtle CRT bezel)
         };
-        try { var ico = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ftp.ico"); if (File.Exists(ico)) _form.Icon = new Icon(ico); } catch { }
+        try { var ico = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "agent-omega.ico"); if (File.Exists(ico)) _form.Icon = new Icon(ico); } catch { }
 
         _web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = bg };
         _form.Controls.Add(_web);

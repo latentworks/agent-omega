@@ -2,7 +2,7 @@
 
 Agent Omega is a Windows desktop app: a frameless **WebView2 shell** → a **Node sidecar** → the **`opencode` engine**, with a plugin config that lives in `~/.config/opencode`. This gets it running from a clone.
 
-> A macOS build is planned — the full porting plan is in [`docs/MAC_BRANCH.md`](docs/MAC_BRANCH.md).
+> A macOS build is planned (in progress separately).
 
 ## 1. Prerequisites
 
@@ -62,7 +62,7 @@ The `opencode` engine ships as a prebuilt binary. Because Agent Omega runs a **f
 
 ## 6. Configure your model + keys
 
-Open `~/.config/opencode/opencode.json` and choose a setup:
+Open `%USERPROFILE%\.config\opencode\opencode.json` (that's what `~/.config/opencode/` means — `~` is your user folder, `C:\Users\<name>`) and choose a setup:
 
 **Cloud (simplest).** Set `"model"` to a provider you have a key for — e.g. `anthropic/claude-opus-4-8`, `openai/gpt-5.5`, `google/gemini-3.5-flash`. Provide the key either as an environment variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) or via the encrypted vault (below).
 
@@ -91,3 +91,5 @@ The key-free web search relies on a separate **anon-web** component, which is **
 - **First cloud call fails right after adding a key to the vault** — the engine reads keys at startup; restart the app once so it picks them up.
 - **Blank window** — install the WebView2 Runtime (see prerequisites).
 - **`helper1`/`helper2` delegation errors** — you have no `local` provider configured; either point `local.baseURL` at a running local server or just let the lead work inline.
+- **Engine won't start / "engine-down" right after downloading it** — Windows SmartScreen/antivirus may have quarantined the unsigned `opencode.exe`. Run `Unblock-File .\engine\opencode.exe`, and allowlist it in your antivirus if needed.
+- **Behind a corporate proxy** — `npm install` and the engine download honor `HTTP_PROXY`/`HTTPS_PROXY`; set those (or `npm config set proxy <url>`) before steps 3 and 5.
