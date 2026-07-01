@@ -26,13 +26,13 @@ Every shape is the same four beats. Only the mechanics differ.
 3. **Drive** one representative path that exercises the change — not the whole app, one path that proves it works.
 4. **Tear down** the process you started, before relaunching, or the next run collides (port in use, stale session).
 
-Backgrounding is shell-specific on Windows:
-- **PowerShell:** `Start-Process` (or `Start-Job`) launches detached; redirect output to a file you can read.
-- **git-bash:** `cmd &> /tmp/app.log &` plus `$!` for the PID, exactly like Linux.
+Backgrounding uses zsh/bash (the macOS default shell):
+- Append `&` to launch detached: `cmd >/tmp/app.log 2>&1 &` plus `$!` for the PID.
+- For a process that must outlive the shell, `nohup cmd >/tmp/app.log 2>&1 &`.
 
-Use whichever the rest of the recipe is written in. git-bash gives you the familiar `&` / `$!` / `pkill` / `tmux` toolset; reach for it for TUIs and poll-loops.
+zsh/bash gives you the familiar `&` / `$!` / `pkill` / `tmux` toolset; reach for it for TUIs and poll-loops.
 
-If the launch + poll + smoke sequence grows past a few lines, `write` it to a `smoke.ps1` or `smoke.sh` in this skill's directory and just run that — one command, exit code tells you if the app is healthy.
+If the launch + poll + smoke sequence grows past a few lines, `write` it to a `smoke.sh` in this skill's directory and just run that — one command, exit code tells you if the app is healthy.
 
 ---
 
@@ -42,15 +42,15 @@ Simplest case — usually no background process, no port, no lifecycle. Focus on
 
 1. Get it on PATH: installed (`pip install -e .`, `npm link`), run via a runner (`npx`, `uv run`), or built to a path (`./target/release/foo`, `dist/cli.js`). Confirm with `--version`.
 2. Run two or three representative commands covering the main use cases. Read stdout against what you expect.
-3. Check the **exit code** when it carries meaning (a linter returns non-zero on findings). In PowerShell that's `$LASTEXITCODE`; in git-bash, `$?`.
+3. Check the **exit code** when it carries meaning (a linter returns non-zero on findings) with `$?`.
 4. If the tool reads **stdin**, exercise that path too.
 
-```powershell
+```bash
 pip install -e .
 mytool --version            # → mytool 0.3.1
 mytool process input.json   # → Processed 42 records, wrote output.json
-Get-Content input.json | mytool process -   # stdin path
-mytool lint .\src; $LASTEXITCODE            # 0 clean, 1 issues found
+cat input.json | mytool process -   # stdin path
+mytool lint ./src; echo $?          # 0 clean, 1 issues found
 ```
 
 Keep it tight — `--help` covers every flag; you only need enough to prove it builds, runs, and the change shows up.
@@ -62,8 +62,8 @@ Keep it tight — `--help` covers every flag; you only need enough to prove it b
 The defining concern is **lifecycle**: start in the background, confirm it's up, hit it, shut it down cleanly.
 
 ```bash
-# git-bash — background, capture PID, poll readiness
-npm run dev &> /tmp/api.log &
+# background, capture PID, poll readiness
+npm run dev >/tmp/api.log 2>&1 &
 SERVER_PID=$!
 timeout 30 bash -c 'until curl -sf http://localhost:3000/health >/dev/null; do sleep 0.5; done'
 
@@ -76,10 +76,8 @@ curl -s http://localhost:3000/api/items | head
 kill $SERVER_PID          # or, PID lost: pkill -f "tsx watch src/index.ts"
 ```
 
-PowerShell equivalents when you prefer it: `Start-Process node -ArgumentList ... -RedirectStandardOutput`, poll with `Invoke-RestMethod` in a `do { } until`, hit routes with `Invoke-RestMethod`/`Invoke-WebRequest`, stop with `Stop-Process`.
-
 Nail down and, if useful, record:
-- **Port**, and how to override it (`PORT=4000 npm run dev` / `$env:PORT=4000`).
+- **Port**, and how to override it (`PORT=4000 npm run dev`).
 - **What "ready" means** — a health endpoint or a specific log line in `/tmp/api.log`.
 - **Required env vars** — DB URL, API keys (pull secrets from the vault, never hardcode).
 - **Dependent services** (Postgres/Redis): the `docker run` or compose command that brings them up first.
@@ -90,7 +88,7 @@ A page or endpoint can return its shell while every data call 500s — read the 
 
 ## Shape: TUI / interactive terminal app
 
-Editors, REPLs, curses UIs take over the terminal, so the bash tool can't drive them directly. Wrap them in **tmux** (run it through git-bash): start detached, send keys, capture the pane.
+Editors, REPLs, curses UIs take over the terminal, so the bash tool can't drive them directly. Wrap them in **tmux**: start detached, send keys, capture the pane.
 
 ```bash
 tmux new-session -d -s app -x 120 -y 40 './myapp'
@@ -125,7 +123,7 @@ A dev server serves HTML to a browser. You can't open a window, so "run it" mean
 **Step 1 — dev server**, backgrounded and polled (same as the server shape):
 
 ```bash
-npm run dev &> /tmp/dev.log &
+npm run dev >/tmp/dev.log 2>&1 &
 echo $! > /tmp/dev.pid
 timeout 30 bash -c 'until curl -sf http://localhost:3000 >/dev/null; do sleep 1; done'
 # stop before relaunching: kill $(cat /tmp/dev.pid)   (else EADDRINUSE)

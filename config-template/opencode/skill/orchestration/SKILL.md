@@ -105,6 +105,6 @@ A helper's summary says what it **intended**, not always what it **did**. Before
 
 When a helper reports failure, that's normal — follow up the same helper (it holds the error context) with a corrected spec, or if a correction also fails, switch approach or surface it to the user.
 
-## Windows note
+## macOS note
 
-Helpers run on Windows 11 and can use PowerShell or git-bash via `bash`. When a prompt needs a shell example, prefer PowerShell (`$env:VAR`, `$null`, `Get-Content`) and tell the helper which shell you mean if it matters. The same `git add <specific file>` discipline applies in both.
+Helpers run on macOS and use zsh/bash (the macOS default shell). When a prompt needs a shell example, prefer bash (`$VAR`, empty string / unset, `cat`) and tell the helper which shell you mean if it matters. The same `git add <specific file>` discipline applies.

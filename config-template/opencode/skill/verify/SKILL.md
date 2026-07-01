@@ -15,7 +15,7 @@ This is a RIGID skill. Follow it exactly — do not improvise the procedure, ski
 
 ## 1. Find the change
 
-The scope is what you're verifying — usually a diff, sometimes just "does X work." In a git repo, establish the full range (a branch may be many commits, or the change may still be uncommitted). Use the bash tool (git-bash):
+The scope is what you're verifying — usually a diff, sometimes just "does X work." In a git repo, establish the full range (a branch may be many commits, or the change may still be uncommitted). Use the bash tool (zsh/bash, the macOS default shell):
 
 ```bash
 git log --oneline @{u}..        # count commits (if upstream set)
@@ -53,7 +53,7 @@ Find how to build and launch before you drive. Check the repo's own docs/scripts
 Per surface type:
 - **Web / GUI** → start the dev server (e.g. `npm run dev`), wait for the ready signal, then drive the page at its URL.
 - **CLI / TUI** → identify the entry point (e.g. `node ./cli.js`, `python -m app`, `./target/debug/app`) and run it in the terminal.
-- **API** → start the server, then hit it with `curl` (or, in PowerShell, `Invoke-RestMethod`).
+- **API** → start the server, then hit it with `curl`.
 
 Timebox the cold start to ~15 min. If you cannot get it up — missing dep, build broke, launch won't come up — report **BLOCKED** with exactly where it stopped. That is not a verdict on the change.
 
@@ -93,7 +93,7 @@ Pick the probes the change points at — not a checklist. At least one. A probe 
 
 Stdout, response bodies, page text, terminal dumps — captured output is evidence; your memory is not. Something unexpected? Don't route around it — capture it, note it, decide whether it's the change or the environment. Unrelated breakage is a finding, not noise.
 
-Isolate shared state. You share ports, temp dirs, and lockfiles with the host machine — bind a non-default port, use a fresh temp dir (PowerShell: `New-TemporaryFile`; git-bash: `mktemp -d`), and clean up servers/processes you started when done.
+Isolate shared state. You share ports, temp dirs, and lockfiles with the host machine — bind a non-default port, use a fresh temp dir (`mktemp -d`), and clean up servers/processes you started when done.
 
 ## 7. Report (inline, final message)
 

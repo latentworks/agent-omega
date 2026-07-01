@@ -91,10 +91,13 @@
 
       "format *": "deny",
       "diskpart*": "deny",
+      "diskutil*": "deny",
       "mkfs*": "deny",
       "shutdown*": "deny",
       "reg add*": "deny",
       "reg delete*": "deny",
+      "defaults write*": "deny",
+      "defaults delete*": "deny",
       "* | sh*": "deny",
       "* | bash*": "deny",
       "curl *": "deny",
@@ -103,6 +106,7 @@
       "Invoke-RestMethod*": "deny",
 
       "*secrets.ps1*": "deny",
+      "*secrets.sh*": "deny",
       "*.agent-omega*": "deny",
       "*vault.dat*": "deny",
       "printenv*": "deny",

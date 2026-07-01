@@ -17,7 +17,7 @@ a raw finder hit without verifying it.
 
 One bash call. Cover both committed and uncommitted work:
 
-```powershell
+```bash
 git diff "@{upstream}...HEAD"; git diff HEAD
 ```
 

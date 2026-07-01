@@ -10,7 +10,8 @@ import os from 'node:os'
 import { WebSocketServer } from 'ws'
 import * as acp from '@agentclientprotocol/sdk'
 
-const ENGINE = process.env.AGENT_OMEGA_ENGINE || path.join(import.meta.dirname, 'engine', 'opencode.exe')
+const isWin = process.platform === 'win32'
+const ENGINE = process.env.AGENT_OMEGA_ENGINE || path.join(import.meta.dirname, 'engine', isWin ? 'opencode.exe' : 'opencode')
 // Test mode: set AGENT_OMEGA_OPENCODE_SRC to the packages/opencode dir to run the engine
 // FROM SOURCE via bun — picks up engine edits without a binary rebuild. Unset in
 // production → the compiled exe is used.
@@ -45,7 +46,11 @@ function log(...a) { console.error('[sidecar]', ...a) }
 // pass them to `opencode acp`, so cloud providers (anthropic/openai/...) and frontier
 // council members light up. Honest: a missing/failed key is simply skipped (the
 // provider stays dark), never faked. Env var name <- vault key name.
-const SECRETS_PS1 = process.env.AGENT_OMEGA_VAULT || path.join(os.homedir(), '.agent-omega', 'secrets.ps1')
+// Vault backend is platform-specific but shares one get/set/list/rm CLI contract, so the
+// sidecar only varies the launcher: Windows = powershell -File secrets.ps1 (DPAPI); macOS/
+// other = sh secrets.sh (Keychain). Every call-site below stays identical across OSes.
+const VAULT_SCRIPT = process.env.AGENT_OMEGA_VAULT || path.join(os.homedir(), '.agent-omega', isWin ? 'secrets.ps1' : 'secrets.sh')
+const [VAULT_CMD, VAULT_PRE] = isWin ? ['powershell', ['-NoProfile', '-File', VAULT_SCRIPT]] : ['sh', [VAULT_SCRIPT]]
 const COUNCIL_JSON = path.join(os.homedir(), '.config', 'opencode', 'council', 'council.json')
 const VAULT_TO_ENV = {
   ANTHROPIC_API_KEY: 'ANTHROPIC_API_KEY',
@@ -59,7 +64,7 @@ function vaultEnv() {
   const out = {}
   for (const [envName, vaultName] of Object.entries(VAULT_TO_ENV)) {
     try {
-      const v = execFileSync('powershell', ['-NoProfile', '-File', SECRETS_PS1, 'get', vaultName], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+      const v = execFileSync(VAULT_CMD, [...VAULT_PRE, 'get', vaultName], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
       if (v && !/^no secret named/i.test(v)) out[envName] = v
     } catch {}
   }
@@ -128,7 +133,7 @@ function validateCouncilPatch(patch) {
 // sentinel "(vault empty)". Args go through execFileSync's array form (no shell) so a key
 // name can't inject a command.
 function vaultListNames() {
-  const out = execFileSync('powershell', ['-NoProfile', '-File', SECRETS_PS1, 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  const out = execFileSync(VAULT_CMD, [...VAULT_PRE, 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   return out.split(/\r?\n/).map(s => s.trim()).filter(s => s && s !== '(vault empty)')
 }
 
@@ -267,7 +272,7 @@ wss.on('connection', (ws) => {
             if (typeof m.name !== 'string' || !m.name.trim()) { send(ws, { type: 'vaultKeys', error: 'name required' }); break }
             // Empty value would make secrets.ps1 drop to an interactive Read-Host prompt and HANG the sidecar.
             if (typeof m.value !== 'string' || m.value === '') { send(ws, { type: 'vaultKeys', error: 'value required' }); break }
-            execFileSync('powershell', ['-NoProfile', '-File', SECRETS_PS1, 'set', m.name, m.value], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+            execFileSync(VAULT_CMD, [...VAULT_PRE, 'set', m.name, m.value], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
             const note = busy ? 'Key saved — restart the app to apply it (a turn is in progress).' : 'Key saved — engine reloaded. If your first cloud call still fails, restart the app.'
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))   // pick up the new key without a manual restart
@@ -277,7 +282,7 @@ wss.on('connection', (ws) => {
         case 'vaultRemove': {
           try {
             if (typeof m.name !== 'string' || !m.name.trim()) { send(ws, { type: 'vaultKeys', error: 'name required' }); break }
-            execFileSync('powershell', ['-NoProfile', '-File', SECRETS_PS1, 'rm', m.name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+            execFileSync(VAULT_CMD, [...VAULT_PRE, 'rm', m.name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
             const note = busy ? 'Key removed — restart the app to fully apply.' : 'Key removed — engine reloaded.'
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))

@@ -2,7 +2,7 @@
 
 Purpose: how to make git commits and GitHub PRs safely and cleanly — only when asked, never destructively.
 
-Use the `bash` tool for all git and `gh` work. Both PowerShell and git-bash are available; prefer PowerShell, and use its `@'...'@` here-string for multi-line messages. For any GitHub task (issues, PRs, checks, releases, or reading a GitHub URL), use the `gh` CLI.
+Use the `bash` tool for all git and `gh` work. Use zsh/bash (the macOS default shell); use a `<<'EOF'` heredoc for multi-line messages. For any GitHub task (issues, PRs, checks, releases, or reading a GitHub URL), use the `gh` CLI.
 
 ## Safety protocol (always)
 
@@ -27,15 +27,9 @@ Use the `bash` tool for all git and `gh` work. Both PowerShell and git-bash are 
    - Name the change type accurately: "add" = wholly new feature, "update" = enhancement to existing, "fix" = bug fix; also refactor/test/docs.
    - 1–2 sentences, focused on WHY over what.
    - Confirm no secret files are staged.
-3. Stage the specific files and commit. Pass the message via a here-string so formatting survives. PowerShell — closing `'@` MUST be at column 0, no leading whitespace:
-   ```powershell
-   git add path/to/file1 path/to/file2
-   git commit -m @'
-   Commit message here.
-   '@
-   ```
-   git-bash equivalent:
+3. Stage the specific files and commit. Pass the message via a heredoc so formatting survives — the closing `EOF` MUST be at column 0, no leading whitespace:
    ```bash
+   git add path/to/file1 path/to/file2
    git commit -m "$(cat <<'EOF'
    Commit message here.
    EOF
@@ -54,23 +48,13 @@ Do NOT run extra code-exploration commands while committing — only git `bash` 
    - Check whether the branch tracks a remote and is current, so you know if a push is needed.
    - `git branch --show-current`.
    - `git log <base>...HEAD` and `git diff <base>...HEAD` for the FULL branch history (`<base>` = the default branch, usually `main`).
-   - `gh pr view --json number` — does a PR already exist for this branch? In PowerShell: `gh pr view --json number 2>$null; if (-not $?) { "" }`.
+   - `gh pr view --json number` — does a PR already exist for this branch? In bash: `gh pr view --json number 2>/dev/null || true`.
 2. Review EVERY commit that will be in the PR (all of them since the branch diverged — not just the latest), then draft a title and body.
    - Title: short, descriptive, under 70 chars. Put detail in the body, not the title.
 3. Act in a single message:
    - If on the default branch, create a new branch first (prefix with the username, e.g. `username/feature-name`).
    - Push the branch (`-u` if it has no upstream yet).
-   - If a PR already exists, update it with `gh pr edit`. Otherwise create one with `gh pr create`, body via here-string:
-   ```powershell
-   gh pr create --title "Short, descriptive title" --body @'
-   ## Summary
-   <1-3 bullet points>
-
-   ## Test plan
-   [Bulleted markdown checklist of TODOs for testing the PR]
-   '@
-   ```
-   git-bash equivalent:
+   - If a PR already exists, update it with `gh pr edit`. Otherwise create one with `gh pr create`, body via heredoc:
    ```bash
    gh pr create --title "Short, descriptive title" --body "$(cat <<'EOF'
    ## Summary

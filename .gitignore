@@ -32,5 +32,11 @@ workspace/
 
 # --- Engine binary (shipped via GitHub Release, never committed) ---
 *.exe
+engine/
+
+# --- macOS shell build artifacts (source in mac/ is tracked; binaries/tests aren't) ---
+mac/AgentOmega
+mac/build/
+_smoke/
 
 # Note: config-template/ is shipped source and is intentionally tracked.
