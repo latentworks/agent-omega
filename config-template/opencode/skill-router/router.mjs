@@ -21,8 +21,11 @@ function readLocalProvider() {
     const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
     const loc = cfg && cfg.provider && cfg.provider.local
     const baseURL = loc && loc.options && typeof loc.options.baseURL === 'string' ? loc.options.baseURL : ''
-    const modelId = loc && loc.models && typeof loc.models === 'object' ? (Object.keys(loc.models)[0] || '') : ''
-    return { baseURL, modelId }
+    // Prefer the model the MAIN session actually drives with (cfg.model === "local/<id>"): that id
+    // is proven to work against the user's server. Fall back to the first configured local model.
+    const selected = typeof cfg.model === 'string' && cfg.model.startsWith('local/') ? cfg.model.slice('local/'.length) : ''
+    const firstKey = loc && loc.models && typeof loc.models === 'object' ? (Object.keys(loc.models)[0] || '') : ''
+    return { baseURL, modelId: selected || firstKey }
   } catch { return { baseURL: '', modelId: '' } }
 }
 const LOCAL = readLocalProvider()

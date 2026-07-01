@@ -26,7 +26,10 @@ const EXEC_PATTERNS = [
   /\b(npm|yarn|pnpm|bun)\s+(run\s+)?(test|start|dev|serve|preview)\b/,
   /\bnpm\s+test\b/,
   /\bdotnet\s+(test|run)\b/,
-  /\b(gradle|gradlew|mvn|maven)\s+\S*\b(test|check|verify|run|integration)\b/,   // build tool invoking tests
+  // build tool invoking a TEST target — the target must be its own space-delimited arg, so a
+  // lint goal like `mvn checkstyle:check` (":check", no leading space) does NOT count, while
+  // `make test`, `make check`, `mvn verify`, `gradle test`, `gradle check` do.
+  /\b(make|cmake|gradle|gradlew|mvn|maven)\b[^&;|]*\s(test|check|verify|integration-test|integrationTest|run|itest)(\s|$)/,
   /\bctest\b/,
   /\b(pio|platformio)\s+(run|test)\b/,
   /\b(python3?|node|deno|ruby|php|perl|rscript)\s+\S/i,

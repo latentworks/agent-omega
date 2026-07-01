@@ -130,7 +130,7 @@ A dev server serves HTML to a browser. You can't open a window, so "run it" mean
 ```bash
 npm run dev &> /tmp/dev.log &
 echo $! > /tmp/dev.pid
-timeout 30 bash -c 'until curl -sf http://localhost:3000 >/dev/null; do sleep 1; done'
+timeout 30 bash -c 'until node -e "fetch(\"http://localhost:3000\").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; do sleep 1; done'
 # stop before relaunching: kill $(cat /tmp/dev.pid)   (else EADDRINUSE)
 ```
 

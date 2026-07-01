@@ -68,13 +68,16 @@ function friendlyError(msg) {
 // council members light up. Honest: a missing/failed key is simply skipped (the
 // provider stays dark), never faked. Env var name <- vault key name.
 const SECRETS_PS1 = process.env.AGENT_OMEGA_VAULT || path.join(os.homedir(), '.agent-omega', 'secrets.ps1')
-// Self-heal the vault script: if it isn't installed yet, drop the shipped copy in place so the
-// in-app Vault + key injection work even if the user never ran setup.mjs.
+// Self-heal the vault script: install the shipped copy if missing, AND refresh it if it differs
+// from the shipped one — otherwise an upgrade over a pre-2.3 install leaves a stale secrets.ps1
+// that can't handle the new stdin-based `set`, silently failing every in-app vault write.
 function ensureVault() {
   try {
-    if (!fs.existsSync(SECRETS_PS1)) {
-      const src = path.join(HERE, 'scripts', 'secrets.ps1')
-      if (fs.existsSync(src)) { fs.mkdirSync(path.dirname(SECRETS_PS1), { recursive: true }); fs.copyFileSync(src, SECRETS_PS1) }
+    const src = path.join(HERE, 'scripts', 'secrets.ps1')
+    if (fs.existsSync(src)) {
+      const cur = fs.existsSync(SECRETS_PS1) ? fs.readFileSync(SECRETS_PS1, 'utf8') : null
+      const shipped = fs.readFileSync(src, 'utf8')
+      if (cur !== shipped) { fs.mkdirSync(path.dirname(SECRETS_PS1), { recursive: true }); fs.copyFileSync(src, SECRETS_PS1) }
     }
   } catch {}
   return fs.existsSync(SECRETS_PS1)
