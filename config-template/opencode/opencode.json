@@ -135,6 +135,18 @@
   "agent": {
     "general": { "disable": true },
     "explore": { "disable": true },
-    "scout": { "disable": true }
+    "scout": { "disable": true },
+    "helper1": {
+      "mode": "subagent",
+      "model": "local/local-model",
+      "description": "Fast local worker subagent for parallel, self-contained grunt work (drafting, boilerplate, mechanical multi-file edits, summaries, simple tests). Points at your local model via the `local` provider — configure its baseURL in this file. Delegate here to keep grunt work out of the lead's context.",
+      "prompt": "You are a fast worker. The lead hands you a self-contained subtask. Do EXACTLY what you are given - concisely, correctly, completely. You only have what is in the task; rely on it. Return just the result, no preamble."
+    },
+    "helper2": {
+      "mode": "subagent",
+      "model": "local/local-model",
+      "description": "Second local worker subagent that runs ALONGSIDE helper1 for parallel work. Use when you want a second subtask running at the same time as helper1.",
+      "prompt": "You are a fast worker. The lead hands you a self-contained subtask. Do EXACTLY what you are given - concisely, correctly, completely. You only have what is in the task; rely on it. Return just the result, no preamble."
+    }
   }
 }

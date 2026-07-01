@@ -18,7 +18,7 @@ const BUN = process.env.AGENT_OMEGA_BUN || 'bun'
 const OPENCODE_SRC = process.env.AGENT_OMEGA_OPENCODE_SRC || ''
 const WORKDIR = process.argv[2] || path.join(os.homedir(), '.agent-omega', 'workspace')
 const WS_PORT = Number(process.argv[3]) || 4599
-const DEFAULT_MODEL = process.argv[4] || 'evo/qwen3-coder-80b'
+const DEFAULT_MODEL = process.argv[4] || 'anthropic/claude-opus-4-8'
 
 fs.mkdirSync(WORKDIR, { recursive: true })
 
