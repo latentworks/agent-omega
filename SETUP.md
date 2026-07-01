@@ -28,6 +28,16 @@ npm install                                     # sidecar deps (ws + the ACP sdk
 npm install --prefix config-template/opencode   # plugin deps
 ```
 
+## Quick setup (recommended)
+
+After step 3, run the wizard instead of steps 4–6 by hand. It installs the plugin config + the encrypted vault, checks the engine, and configures your model + API key interactively:
+
+```
+node setup.mjs
+```
+
+It'll ask whether you're running a local model, Claude, ChatGPT, or another cloud provider, store your key in the encrypted vault, and set the default model. Then skip to **step 5** (get the engine) if it flagged one missing, and **step 7** (build + run). The manual steps 4–6 below are exactly what it automates.
+
 ## 4. Install the plugin config
 
 Copy the shipped config into opencode's config directory:
