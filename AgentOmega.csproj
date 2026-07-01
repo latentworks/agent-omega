@@ -25,4 +25,9 @@
     <None Include="engine\**\*" CopyToOutputDirectory="PreserveNewest" />
     <None Include="scripts\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <!-- Vendor the sidecar's node deps beside the exe so a relocated/copied build stays self-contained.
+       Offline-friendly: copies the repo-root node_modules; `& exit 0` keeps robocopy's success codes from failing the build. -->
+  <Target Name="VendorSidecarDeps" AfterTargets="Build" Condition="Exists('node_modules')">
+    <Exec Command="robocopy node_modules &quot;$(TargetDir)node_modules&quot; /E /NFL /NDL /NJH /NJS /NC /NS /NP &amp; exit 0" />
+  </Target>
 </Project>

@@ -48,7 +48,7 @@ function friendlyError(msg) {
   const m = String(msg || '')
   const prov = (curModel || '').split('/')[0] || 'this provider'
   if (/401|403|unauthor|authentication|api[_ -]?key|x-api-key|invalid.*key|missing.*key|no auth/i.test(m))
-    return 'No valid API key for ' + prov + ' — open Settings (Ctrl+,) → Vault, add the key, then relaunch.  [' + m.slice(0, 160) + ']'
+    return 'No valid API key for ' + prov + ' — open Settings (Ctrl+,) → Vault and add the key; the engine reloads automatically.  [' + m.slice(0, 160) + ']'
   if (/ECONNREFUSED|fetch failed|ENOTFOUND|ETIMEDOUT|network|econnreset|connect/i.test(m))
     return 'Could not reach ' + prov + ' — is the server/endpoint running and reachable?  [' + m.slice(0, 160) + ']'
   return m
@@ -85,7 +85,7 @@ function vaultEnv() {
   for (const [envName, vaultName] of Object.entries(VAULT_TO_ENV)) {
     try {
       const v = execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', SECRETS_PS1, 'get', vaultName], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-      if (v && !/^no secret named/i.test(v)) out[envName] = v
+      if (v) out[envName] = v
     } catch {}
   }
   log('vault -> engine env: ' + (Object.keys(out).join(', ') || '(none)'))
@@ -209,6 +209,10 @@ async function newSession() {
 }
 
 async function start() {
+  if (!OPENCODE_SRC && !fs.existsSync(ENGINE)) {   // engine preflight — clear message instead of a raw ENOENT
+    lastEngineDown = { type: 'engine-down', message: 'Engine not found at ' + ENGINE + ' — download opencode.exe into an engine/ folder (see SETUP.md) or set AGENT_OMEGA_ENGINE.' }
+    log('engine missing:', ENGINE); broadcast(lastEngineDown); return
+  }
   const [cmd, baseArgs] = OPENCODE_SRC
     ? [BUN, ['run', '--cwd', OPENCODE_SRC, '--conditions=browser', 'src/index.ts']]
     : [ENGINE, []]

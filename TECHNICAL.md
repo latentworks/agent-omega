@@ -111,9 +111,8 @@ sides.
 
 ### 3.2 Engine driver (ACP)
 
-- The engine is the Bun-compiled binary
-  `engine/opencode.exe spawned as `opencode acp --cwd <WORKDIR>`
-  with `stdio: ['pipe','pipe','inherit']`.
+- The engine is the Bun-compiled binary `engine/opencode.exe`, spawned as
+  `opencode acp --cwd <WORKDIR>` with `stdio: ['pipe','pipe','inherit']`.
   - **Test mode:** setting `AGENT_OMEGA_OPENCODE_SRC` to the `packages/opencode` dir runs the
     engine from source via `bun run … src/index.ts` instead, picking up engine edits without a
     binary rebuild. Unset in production → the compiled exe is used.
@@ -303,8 +302,13 @@ message and never runs commands itself.
 
 ## 6. Web access — `web.py` (the only door)
 
-The engine has no built-in web tools and `curl`/`wget` are blocked (per `AGENTS.md`). Every web
-call goes through `config-template/opencode/web.py`:
+> **Not shipped by default.** Web access depends on a separate `anon-web` component that is **not
+> publicly distributed**. With it unset, `web.py` returns "web engine failed to launch" and web
+> search is simply disabled — everything else works normally. Treat this section as how web access
+> works *when anon-web is present*, not as a shipped feature.
+
+The engine has no built-in web tools and `curl`/`wget` are blocked (per `AGENTS.md`). When anon-web
+is present, every web call goes through `config-template/opencode/web.py`:
 
 - `python web.py search "<query>" [n]` and `python web.py read "<url>"`. It calls anon-web's
   private, key-free search engine directly via that project's venv Python — there is no server

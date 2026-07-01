@@ -21,6 +21,8 @@ const args = process.argv.slice(2)
 const NONINT = args.includes('--non-interactive')
 const flag = (n) => { const i = args.indexOf('--' + n); return i >= 0 ? args[i + 1] : undefined }
 
+if (Number(process.versions.node.split('.')[0]) < 18) { console.error('Agent Omega setup needs Node 18+ (found ' + process.version + ')'); process.exit(1) }
+
 // provider id -> { vault key NAME the sidecar reads, default model, label }
 const PROVIDERS = {
   anthropic:  { vault: 'ANTHROPIC_API_KEY', model: 'anthropic/claude-opus-4-8',  label: 'Anthropic (Claude)' },
@@ -33,6 +35,7 @@ const PROVIDERS = {
 
 async function main() {
   console.log('\n=== Agent Omega setup ===\n')
+  if (!NONINT && !process.stdin.isTTY) { console.error('setup.mjs needs an interactive terminal — or run: node setup.mjs --non-interactive --source <local|anthropic|openai|other> [--key <key>]'); process.exit(1) }
   const rl = NONINT ? null : readline.createInterface({ input: process.stdin, output: process.stdout })
   const ask = async (q, def) => {
     if (NONINT) return def
