@@ -10,7 +10,8 @@ short so you can get going quickly.
   shell, the Node.js sidecar, and the Python web bridge.
 - **config-template/opencode/** -- the plugin and agent configuration that
   ships with the app (shipped source, safe to edit).
-- **docs/** -- documentation, including setup and architecture notes.
+- **Docs** -- at the repo root: `README.md` (overview), `SETUP.md` (install +
+  troubleshooting), `TECHNICAL.md` (architecture), `NOTICE.md` (licensing).
 
 ## Built on opencode
 
