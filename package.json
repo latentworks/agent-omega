@@ -1,6 +1,6 @@
 {
   "name": "agent-omega",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "private": true,
   "dependencies": {
     "ws": "^8.21.0",
