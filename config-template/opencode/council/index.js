@@ -1,9 +1,10 @@
 // council/index.js — the OpenCode plugin that exposes the council as a tool.
 //
 // The engine (engine.mjs) is pure turn-taking. This file is the TRANSPORT: it
-// drives each member through OpenCode's own model layer (client.session.prompt),
-// so every model you've already wired — cloud or local — is a possible member
-// with no per-vendor code. anon-web needed providers.py for this; OpenCode is it.
+// drives each member as an independent DIRECT AI-SDK call over its own provider
+// tunnel (see tunnel.mjs) — deliberately NOT through opencode child sessions,
+// which deadlock on nested tool calls. Every model already wired in opencode.json
+// (cloud or local) is a possible member, with no per-vendor code.
 //
 // Phase 1: frontier, discuss-only (member tools disabled), driver synthesizes by
 // default (the tool returns the debate; whatever model called the tool reads it

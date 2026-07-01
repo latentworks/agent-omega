@@ -9,8 +9,10 @@ import path from 'node:path'
 import os from 'node:os'
 import { WebSocketServer } from 'ws'
 import * as acp from '@agentclientprotocol/sdk'
+import { fileURLToPath } from 'node:url'
 
-const ENGINE = process.env.AGENT_OMEGA_ENGINE || path.join(import.meta.dirname, 'engine', 'opencode.exe')
+const HERE = path.dirname(fileURLToPath(import.meta.url)) // works on Node 18+ (import.meta.dirname needs 20.11+)
+const ENGINE = process.env.AGENT_OMEGA_ENGINE || path.join(HERE, 'engine', 'opencode.exe')
 // Test mode: set AGENT_OMEGA_OPENCODE_SRC to the packages/opencode dir to run the engine
 // FROM SOURCE via bun — picks up engine edits without a binary rebuild. Unset in
 // production → the compiled exe is used.
@@ -18,11 +20,11 @@ const BUN = process.env.AGENT_OMEGA_BUN || 'bun'
 const OPENCODE_SRC = process.env.AGENT_OMEGA_OPENCODE_SRC || ''
 const WORKDIR = process.argv[2] || path.join(os.homedir(), '.agent-omega', 'workspace')
 const WS_PORT = Number(process.argv[3]) || 4599
-const DEFAULT_MODEL = process.argv[4] || 'anthropic/claude-opus-4-8'
+const DEFAULT_MODEL = process.argv[4] || '' // explicit launch override; empty => honor opencode.json's model
 
 fs.mkdirSync(WORKDIR, { recursive: true })
 
-let conn = null, sessionId = null, engineProc = null, restarting = false
+let conn = null, sessionId = null, engineProc = null, restarting = false, lastEngineDown = null
 let models = [], agents = [], commands = [], curModel = DEFAULT_MODEL, curAgent = null
 let busy = false
 const pendingPerms = new Map()   // toolCallId -> resolve fn
@@ -41,11 +43,33 @@ function send(ws, m) { try { if (ws.readyState === 1) ws.send(JSON.stringify(m))
 function broadcast(m) { const s = JSON.stringify(m); for (const c of clients) { try { if (c.readyState === 1) c.send(s) } catch {} } }
 function log(...a) { console.error('[sidecar]', ...a) }
 
+// Turn a raw provider/engine error into an actionable hint (missing key, unreachable server).
+function friendlyError(msg) {
+  const m = String(msg || '')
+  const prov = (curModel || '').split('/')[0] || 'this provider'
+  if (/401|403|unauthor|authentication|api[_ -]?key|x-api-key|invalid.*key|missing.*key|no auth/i.test(m))
+    return 'No valid API key for ' + prov + ' — open Settings (Ctrl+,) → Vault, add the key, then relaunch.  [' + m.slice(0, 160) + ']'
+  if (/ECONNREFUSED|fetch failed|ENOTFOUND|ETIMEDOUT|network|econnreset|connect/i.test(m))
+    return 'Could not reach ' + prov + ' — is the server/endpoint running and reachable?  [' + m.slice(0, 160) + ']'
+  return m
+}
+
 // Vault -> engine env: read cloud API keys from the DPAPI vault (secrets.ps1) and
 // pass them to `opencode acp`, so cloud providers (anthropic/openai/...) and frontier
 // council members light up. Honest: a missing/failed key is simply skipped (the
 // provider stays dark), never faked. Env var name <- vault key name.
 const SECRETS_PS1 = process.env.AGENT_OMEGA_VAULT || path.join(os.homedir(), '.agent-omega', 'secrets.ps1')
+// Self-heal the vault script: if it isn't installed yet, drop the shipped copy in place so the
+// in-app Vault + key injection work even if the user never ran setup.mjs.
+function ensureVault() {
+  try {
+    if (!fs.existsSync(SECRETS_PS1)) {
+      const src = path.join(HERE, 'scripts', 'secrets.ps1')
+      if (fs.existsSync(src)) { fs.mkdirSync(path.dirname(SECRETS_PS1), { recursive: true }); fs.copyFileSync(src, SECRETS_PS1) }
+    }
+  } catch {}
+  return fs.existsSync(SECRETS_PS1)
+}
 const COUNCIL_JSON = path.join(os.homedir(), '.config', 'opencode', 'council', 'council.json')
 const VAULT_TO_ENV = {
   ANTHROPIC_API_KEY: 'ANTHROPIC_API_KEY',
@@ -57,9 +81,10 @@ const VAULT_TO_ENV = {
 }
 function vaultEnv() {
   const out = {}
+  ensureVault()
   for (const [envName, vaultName] of Object.entries(VAULT_TO_ENV)) {
     try {
-      const v = execFileSync('powershell', ['-NoProfile', '-File', SECRETS_PS1, 'get', vaultName], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+      const v = execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', SECRETS_PS1, 'get', vaultName], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
       if (v && !/^no secret named/i.test(v)) out[envName] = v
     } catch {}
   }
@@ -128,7 +153,8 @@ function validateCouncilPatch(patch) {
 // sentinel "(vault empty)". Args go through execFileSync's array form (no shell) so a key
 // name can't inject a command.
 function vaultListNames() {
-  const out = execFileSync('powershell', ['-NoProfile', '-File', SECRETS_PS1, 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  ensureVault()
+  const out = execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', SECRETS_PS1, 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   return out.split(/\r?\n/).map(s => s.trim()).filter(s => s && s !== '(vault empty)')
 }
 
@@ -165,6 +191,7 @@ function extractConfig(co) {
   co = co || []
   const modelOpt = co.find(o => o.id === 'model')
   models = (modelOpt && modelOpt.options || []).map(o => ({ value: o.value, name: o.name }))
+  if (!curModel && modelOpt && modelOpt.currentValue) curModel = modelOpt.currentValue // adopt the model the engine loaded from opencode.json
   const modeOpt = co.find(o => o.id === 'mode' || o.id === 'agent' || o.category === 'mode')
   agents = (modeOpt && modeOpt.options || []).map(o => ({ value: o.value, name: o.name }))
   if (modeOpt) curAgent = modeOpt.currentValue
@@ -174,7 +201,10 @@ async function newSession() {
   const s = await conn.newSession({ cwd: WORKDIR, mcpServers: [] })
   sessionId = s.sessionId
   extractConfig(s.configOptions)
-  try { await conn.unstable_setSessionModel({ sessionId, modelId: curModel }) } catch (e) { log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + curModel + '" — check that its server is running and the model is loaded. (' + e.message + ')' }) }
+  if (!curModel) curModel = (models[0] && models[0].value) || 'anthropic/claude-opus-4-8'
+  // Only force a model when the launcher explicitly passed one (argv[4]); otherwise the engine
+  // already loaded the model from opencode.json — don't override the user's configured choice.
+  if (DEFAULT_MODEL) { try { await conn.unstable_setSessionModel({ sessionId, modelId: curModel }) } catch (e) { log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + curModel + '" — check that its server is running and the model is loaded. (' + e.message + ')' }) } }
   return s
 }
 
@@ -183,14 +213,16 @@ async function start() {
     ? [BUN, ['run', '--cwd', OPENCODE_SRC, '--conditions=browser', 'src/index.ts']]
     : [ENGINE, []]
   log('engine:', cmd, baseArgs.join(' '))
-  const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: { ...process.env, ...vaultEnv() } })
+  const { AO_WS_TOKEN: _wsTok, ...engineEnv } = process.env // never expose the control-socket token to the engine/model shell
+  const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: { ...engineEnv, ...vaultEnv() } })
   engineProc = proc
-  proc.on('error', e => { log('spawn error', e.message); if (!restarting) broadcast({ type: 'engine-down', message: e.message }) })
-  proc.on('exit', c => { log('engine exited', c); if (!restarting) broadcast({ type: 'engine-down', message: 'engine exited ' + c }) })
+  proc.on('error', e => { log('spawn error', e.message); if (!restarting) { lastEngineDown = { type: 'engine-down', message: e.message }; broadcast(lastEngineDown) } })
+  proc.on('exit', c => { log('engine exited', c); if (!restarting) { lastEngineDown = { type: 'engine-down', message: 'engine exited ' + c }; broadcast(lastEngineDown) } })
   conn = new acp.ClientSideConnection((_a) => new UIClient(), acp.ndJsonStream(Writable.toWeb(proc.stdin), Readable.toWeb(proc.stdout)))
   await conn.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } } })
   await newSession()
   log('ready: session', sessionId, '| models', models.length, '| agents', agents.length)
+  lastEngineDown = null
   broadcast(readyMsg())
 }
 function readyMsg() { return { type: 'ready', sessionId, model: curModel, agent: curAgent, models, agents, commands } }
@@ -216,6 +248,7 @@ wss.on('connection', (ws) => {
     }
   })
   if (sessionId) send(ws, readyMsg())
+  else if (lastEngineDown) send(ws, lastEngineDown)   // replay a startup engine failure to a late-connecting UI
   ws.on('message', async (data) => {
     let m; try { m = JSON.parse(data.toString()) } catch { return }
     try {
@@ -224,7 +257,7 @@ wss.on('connection', (ws) => {
           if (busy || !m.text) return
           busy = true; broadcast({ type: 'turn-start' })
           try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: m.text }] }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
-          catch (e) { broadcast({ type: 'error', message: e.message }) }
+          catch (e) { broadcast({ type: 'error', message: friendlyError(e.message) }) }
           finally { busy = false }
           break
         }
@@ -232,7 +265,7 @@ wss.on('connection', (ws) => {
           if (busy || !m.name) return
           busy = true; broadcast({ type: 'turn-start' })
           try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + m.name + (m.args ? ' ' + m.args : '') }] }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
-          catch (e) { broadcast({ type: 'error', message: e.message }) }
+          catch (e) { broadcast({ type: 'error', message: friendlyError(e.message) }) }
           finally { busy = false }
           break
         }
@@ -267,7 +300,7 @@ wss.on('connection', (ws) => {
             if (typeof m.name !== 'string' || !m.name.trim()) { send(ws, { type: 'vaultKeys', error: 'name required' }); break }
             // Empty value would make secrets.ps1 drop to an interactive Read-Host prompt and HANG the sidecar.
             if (typeof m.value !== 'string' || m.value === '') { send(ws, { type: 'vaultKeys', error: 'value required' }); break }
-            execFileSync('powershell', ['-NoProfile', '-File', SECRETS_PS1, 'set', m.name, m.value], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+            execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', SECRETS_PS1, 'set', m.name, m.value], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
             const note = busy ? 'Key saved — restart the app to apply it (a turn is in progress).' : 'Key saved — engine reloaded. If your first cloud call still fails, restart the app.'
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))   // pick up the new key without a manual restart
@@ -277,7 +310,7 @@ wss.on('connection', (ws) => {
         case 'vaultRemove': {
           try {
             if (typeof m.name !== 'string' || !m.name.trim()) { send(ws, { type: 'vaultKeys', error: 'name required' }); break }
-            execFileSync('powershell', ['-NoProfile', '-File', SECRETS_PS1, 'rm', m.name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+            execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', SECRETS_PS1, 'remove', m.name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
             const note = busy ? 'Key removed — restart the app to fully apply.' : 'Key removed — engine reloaded.'
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))

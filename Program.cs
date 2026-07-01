@@ -36,7 +36,8 @@ static class Program
         Application.SetCompatibleTextRenderingDefault(false);
         Directory.CreateDirectory(WORKDIR);
 
-        string defaultUrl = "file:///" + AppDomain.CurrentDomain.BaseDirectory.Replace("\\", "/") + "ui/app.html?ws=" + WS_PORT + "&token=" + WS_TOKEN;
+        string uiFile = new Uri(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ui", "app.html")).AbsoluteUri;  // properly percent-encodes spaces/unicode in the path
+        string defaultUrl = uiFile + "?ws=" + WS_PORT + "&token=" + WS_TOKEN;
         // args[0] is a debug override; only honor a local file:// or loopback URL, never an arbitrary remote one.
         string url = (args.Length > 0 && (args[0].StartsWith("file:///") || args[0].StartsWith("http://127.0.0.1") || args[0].StartsWith("http://localhost")))
             ? args[0]
@@ -59,8 +60,17 @@ static class Program
 
         _form.Load += async (s, e) =>
         {
-            var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(Path.GetTempPath(), "agent-omega-webview2"));
-            await _web.EnsureCoreWebView2Async(env);
+            try
+            {
+                var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(Path.GetTempPath(), "agent-omega-webview2"));
+                await _web.EnsureCoreWebView2Async(env);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Agent Omega needs the Microsoft WebView2 Runtime, which doesn't appear to be installed.\n\nInstall it from https://developer.microsoft.com/microsoft-edge/webview2/ then relaunch.\n\n(" + ex.Message + ")", "Agent Omega — WebView2 Runtime required", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Application.Exit();
+                return;
+            }
             var c = _web.CoreWebView2;
             c.Settings.AreDefaultContextMenusEnabled = false;
             c.Settings.IsStatusBarEnabled = false;
@@ -73,8 +83,10 @@ static class Program
             c.NewWindowRequested += (s2, ev) => { ev.Handled = true; };   // no uncontrolled popups (window.open / target=_blank)
             c.NavigationStarting += (s2, ev) => { if (!(ev.Uri.StartsWith("file:///") || ev.Uri.StartsWith("about:"))) ev.Cancel = true; };  // only the local app UI may load
             c.WebMessageReceived += OnUiMessage;   // window controls only
+            // Replay a startup engine failure that fired before the page was ready to hear it.
+            c.NavigationCompleted += (s2, ev) => { if (_pendingEngineDown != null) { try { c.PostWebMessageAsJson(_pendingEngineDown); } catch { } } };
+            c.Navigate(url);   // load the UI FIRST so it can receive engine-status messages
             StartSidecar();
-            c.Navigate(url);
         };
         _form.FormClosed += (s, e) => KillProc(ref _sidecar);
 
@@ -97,11 +109,23 @@ static class Program
             psi.ArgumentList.Add(WS_PORT.ToString());
             psi.EnvironmentVariables["AO_WS_TOKEN"] = WS_TOKEN;
             _sidecar = Process.Start(psi);
+            _sidecar.EnableRaisingEvents = true;
+            _sidecar.Exited += (s, e) => { try { PostEngineDown("the engine process exited (code " + _sidecar.ExitCode + ") — is Node.js 20.11+ installed and on your PATH?"); } catch { } };
         }
         catch (Exception ex)
         {
-            try { _web.CoreWebView2.PostWebMessageAsJson("{\"type\":\"engine-down\",\"message\":\"could not start sidecar: " + ex.Message.Replace("\"", "'") + "\"}"); } catch { }
+            PostEngineDown("could not start the engine — is Node.js installed and on your PATH? (" + ex.Message + ")");
         }
+    }
+
+    static string _pendingEngineDown = null;
+    // Surface an engine failure to the UI, safely and on the UI thread; cache it so it can be
+    // replayed if the page hadn't finished loading yet (NavigationCompleted above).
+    static void PostEngineDown(string msg)
+    {
+        string safe = msg.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", " ").Replace("\r", " ");
+        _pendingEngineDown = "{\"type\":\"engine-down\",\"message\":\"" + safe + "\"}";
+        try { _web?.BeginInvoke((Action)(() => { try { _web.CoreWebView2?.PostWebMessageAsJson(_pendingEngineDown); } catch { } })); } catch { }
     }
 
     static void OnUiMessage(object sender, CoreWebView2WebMessageReceivedEventArgs e)
