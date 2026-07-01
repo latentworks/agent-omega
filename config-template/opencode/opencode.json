@@ -1,0 +1,140 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "share": "disabled",
+  "autoupdate": false,
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 1024
+  },
+  "plugin": ["./skill-router/index.js", "./verify-guard/index.js", "./iterate-loop/index.js", "./council/index.js", "./engram/index.js"],
+  "keybinds": {
+    "display_thinking": "<leader>t"
+  },
+  "enabled_providers": [
+    "local",
+    "anthropic",
+    "openai",
+    "google",
+    "deepseek",
+    "moonshotai",
+    "zai"
+  ],
+  "provider": {
+    "local": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Local (llama.cpp / Ollama / LM Studio — point baseURL at your server)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8080/v1",
+        "apiKey": "local-noauth"
+      },
+      "models": {
+        "local-model": {
+          "name": "Local model",
+          "limit": { "context": 32768, "output": 8192 }
+        }
+      }
+    },
+    "zai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Z.AI (GLM)",
+      "options": {
+        "baseURL": "https://api.z.ai/api/paas/v4",
+        "apiKey": "{env:ZAI_API_KEY}",
+        "setCacheKey": true
+      },
+      "whitelist": ["glm-5.2", "glm-5.1"],
+      "models": {
+        "glm-5.2": { "name": "GLM-5.2" },
+        "glm-5.1": { "name": "GLM-5.1" }
+      }
+    },
+    "anthropic": {
+      "whitelist": ["claude-opus-4-8", "claude-fable-5"]
+    },
+    "openai": {
+      "options": { "setCacheKey": true },
+      "whitelist": ["gpt-5.5-pro", "gpt-5.5"]
+    },
+    "deepseek": {
+      "options": { "setCacheKey": true },
+      "whitelist": ["deepseek-v4-pro", "deepseek-v4-flash"]
+    },
+    "moonshotai": {
+      "options": { "setCacheKey": true },
+      "whitelist": ["kimi-k2.7-code", "kimi-k2.6"]
+    },
+    "google": {
+      "whitelist": ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
+    }
+  },
+  "model": "anthropic/claude-opus-4-8",
+  "permission": {
+    "read": "allow",
+    "edit": "allow",
+    "write": "allow",
+    "webfetch": "deny",
+    "websearch": "deny",
+    "task": "allow",
+    "external_directory": {
+      "*": "allow",
+      "*/.ssh/*": "ask",
+      "*/.aws/*": "ask",
+      "*/.gnupg/*": "ask",
+      "*/.azure/*": "ask",
+      "*/.config/gcloud/*": "ask",
+      "*/.config/gh/*": "ask",
+      "*/.agent-omega/*": "deny"
+    },
+    "bash": {
+      "*": "allow",
+
+      "format *": "deny",
+      "diskpart*": "deny",
+      "mkfs*": "deny",
+      "shutdown*": "deny",
+      "reg add*": "deny",
+      "reg delete*": "deny",
+      "* | sh*": "deny",
+      "* | bash*": "deny",
+      "curl *": "deny",
+      "wget *": "deny",
+      "Invoke-WebRequest*": "deny",
+      "Invoke-RestMethod*": "deny",
+
+      "*secrets.ps1*": "deny",
+      "*.agent-omega*": "deny",
+      "*vault.dat*": "deny",
+      "printenv*": "deny",
+      "*Get-ChildItem env:*": "deny",
+      "*gci env:*": "deny",
+      "*ls env:*": "deny",
+      "*dir env:*": "deny",
+
+      "*rm -rf*": "ask",
+      "*rm -fr*": "ask",
+      "*rm -Rf*": "ask",
+      "*rm -fR*": "ask",
+      "*rm -r *": "ask",
+      "*rm -R *": "ask",
+      "*Remove-Item*-Recurse*": "ask",
+      "*Remove-Item*-Force*": "ask",
+      "*git reset --hard*": "ask",
+      "*git clean -*": "ask",
+      "*git checkout -- *": "ask",
+      "*git checkout .*": "ask",
+      "*git push --force*": "ask",
+      "*git push -f*": "ask",
+      "*del /s*": "ask",
+      "*del /q*": "ask",
+      "*rmdir /s*": "ask",
+      "*rd /s*": "ask",
+      "*truncate -s 0*": "ask"
+    }
+  },
+  "agent": {
+    "general": { "disable": true },
+    "explore": { "disable": true },
+    "scout": { "disable": true }
+  }
+}

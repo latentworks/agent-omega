@@ -18,5 +18,8 @@
     <!-- whole ui/ folder, so any NEW file (new boot scripts, css, etc.) ships automatically -->
     <None Include="ui\**\*" CopyToOutputDirectory="PreserveNewest" />
     <None Include="ftp.ico" CopyToOutputDirectory="PreserveNewest" />
+    <!-- the Node sidecar + its manifest ship beside the exe; setup runs `npm install` here and drops the engine in ./engine/ -->
+    <None Include="sidecar.mjs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="package.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
