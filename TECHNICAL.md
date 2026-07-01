@@ -185,8 +185,8 @@ theme (`modern-theme.css`). All rendering is done by hand in vanilla JS.
 ## 5. The engine plugins
 
 The plugins live in `config-template\opencode\` and are installed to
-`~/.config/opencode/` (`~\.config\opencode\`). opencode auto-discovers them by
-directory.
+`~/.config/opencode/` (`~\.config\opencode\`). They're registered via the `plugin`
+array in `opencode.json`; skills and commands are what opencode discovers by directory.
 
 **Plugin authoring convention (important):** each plugin's `index.js` exports **only** its
 default plugin function, because opencode treats *every* export of a plugin module as a separate
