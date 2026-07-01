@@ -1,0 +1,1520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent omega</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{ --ac:#ffb454; }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; background:#07090b; overflow:hidden;
+             font-family:'VT323','Segoe UI Symbol',monospace; color:#b9c7be; }
+  @keyframes blink{50%{opacity:0}}
+  @keyframes flick{0%,100%{opacity:1}3%{opacity:.965}6%{opacity:1}68%{opacity:1}70%{opacity:.94}72%{opacity:1}}
+  @keyframes roll{0%{transform:translateY(-160%)}100%{transform:translateY(540%)}}
+  @keyframes scanmove{0%{transform:translateY(0)}100%{transform:translateY(3px)}}
+
+  .win{ width:100vw; height:100vh; background:#07090b; overflow:hidden; display:flex; flex-direction:column; position:relative; }
+  .titlebar{ height:30px; flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; padding:0 13px;
+             background:#0b0e11; border-bottom:1px solid #181f23; color:#566359; font-size:16px; letter-spacing:.5px; user-select:none; }
+  .ctl{ cursor:default; }
+  .screen{ flex:1 1 auto; position:relative; overflow:hidden;
+           background:radial-gradient(125% 120% at 50% 0%, #0d1417 0%, #070a0c 62%, #040607 100%);
+           box-shadow:inset 0 0 140px rgba(0,0,0,.55), inset 0 0 30px rgba(0,0,0,.5); animation:flick 5s linear infinite; }
+  .content{ position:absolute; inset:0; padding:24px 44px 18px; display:flex; flex-direction:column; z-index:1;
+            font-size:21px; line-height:1.35; letter-spacing:.4px; text-shadow:0 0 1px rgba(170,225,195,.5),0 0 7px rgba(110,200,160,.14); }
+  .hidden{ display:none !important; }
+  .ac{ color:var(--ac); }
+  .cy{ color:#5fd3dd; }
+  .gr{ color:#66dd88; }
+  .pk{ color:#ff79c6; text-shadow:0 0 8px rgba(255,121,198,.4); }
+
+  /* inputs — prompt textarea (auto-grow, terminal-style) [ROOT-3 input-system] */
+  .inp{ flex:1 1 auto; min-width:0; background:transparent; border:none; outline:none;
+        color:#dfeae2; font-family:inherit; font-size:inherit; letter-spacing:inherit;
+        caret-color:var(--ac); resize:none; overflow-y:auto; line-height:1.3;
+        padding:0; margin:0; max-height:34vh; }
+  textarea.inp{ display:block; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .inp:disabled{ color:#54655b; caret-color:transparent; }
+  .inp::-webkit-scrollbar{ width:7px; } .inp::-webkit-scrollbar-thumb{ background:#1e2d27; }
+
+  /* prompt marker + shell mode (! shell) */
+  .promptmark{ flex:0 0 auto; margin-right:10px; line-height:1.3; transition:color .12s; }
+  body.shellmode .promptmark{ color:var(--ac); text-shadow:0 0 8px rgba(255,180,84,.45); }
+  .shellhint{ align-self:flex-start; margin-left:10px; margin-top:2px; flex:0 0 auto;
+              font-size:15px; letter-spacing:1px; color:#54655b;
+              border:1px solid #45554d; padding:0 7px; }
+  .box{ position:relative; border:1px solid #45554d; background:rgba(8,12,10,.5); box-shadow:inset 0 0 18px rgba(0,0,0,.45); }
+  .box-label{ position:absolute; top:-12px; left:18px; padding:0 8px; background:#080b0d; color:var(--ac); font-size:16px; letter-spacing:1px; }
+
+  /* CRT overlays */
+  .overlay{ position:absolute; pointer-events:none; }
+  .scan{ inset:-4px; z-index:5; background-image:repeating-linear-gradient(0deg, rgba(0,0,0,.17) 0, rgba(0,0,0,.17) 1px, transparent 1px, transparent 2px); animation:scanmove .6s steps(2) infinite; }
+  .roll{ left:0; right:0; top:0; height:34%; z-index:6; background:linear-gradient(180deg, rgba(180,220,200,0) 0%, rgba(180,225,205,.05) 50%, rgba(180,220,200,0) 100%); animation:roll 7.5s linear infinite; }
+  .grille{ inset:0; z-index:6; mix-blend-mode:screen; background-image:repeating-linear-gradient(90deg, rgba(255,40,40,.035) 0, rgba(40,255,90,.035) .7px, rgba(60,90,255,.035) 1.4px, transparent 2px); }
+  .vignette{ inset:0; z-index:7; background:radial-gradient(125% 115% at 50% 50%, transparent 52%, rgba(0,0,0,.55) 100%); }
+
+  /* conversation: scroll container + bottom-anchored inner log (avoids the
+     justify-content:flex-end scroll-up clipping bug while still pinning to the floor) */
+  .convo{ flex:1 1 auto; min-height:0; display:flex; flex-direction:column; overflow-y:auto; padding-bottom:6px; }
+  .convo::-webkit-scrollbar{ width:8px; } .convo::-webkit-scrollbar-thumb{ background:#1e2d27; }
+  .log{ margin-top:auto; display:flex; flex-direction:column; gap:16px; }
+
+  .urow{ font-size:22px; color:#e6efe8; display:flex; align-items:baseline; padding:2px 0; }
+  .utext{ white-space:pre-wrap; word-break:break-word; min-width:0; }   /* preserve newlines in the echoed user message */
+  .arow{ font-size:22px; line-height:1.42; }
+  .think .body{ font-size:20px; color:#7c8b82; margin-top:6px; max-width:900px; white-space:pre-wrap; }
+  .diff{ border:1px solid #1b2227; background:rgba(8,12,10,.4); font-size:19px; line-height:1.55; padding:8px 0; overflow:hidden; }
+  .errrow{ font-size:22px; line-height:1.42; color:#ff6b6b; white-space:pre-wrap; }
+  .fallback{ font-size:21px; color:#7c8b82; }
+
+  /* ===== permission / question panel, model/agent pickers, plan list ===== */
+  .panel,.perm,.plan{ border:1px solid #2a3a32; background:rgba(8,14,11,.55); box-shadow:inset 0 0 18px rgba(0,0,0,.4); padding:11px 16px; }
+  .perm{ border-color:#5a4a2a; box-shadow:inset 0 0 22px rgba(120,80,20,.18); }
+  .panel-title,.plan-title{ font-size:20px; color:#e9f2eb; margin-bottom:8px; letter-spacing:.6px; }
+  .perm-title{ font-size:21px; color:#ffd9a0; margin-bottom:9px; letter-spacing:.5px; text-shadow:0 0 8px rgba(255,180,84,.3); }
+  .pick{ font-size:21px; color:#cdd8cf; padding:3px 2px; cursor:default; display:flex; align-items:baseline; }
+  .pick:hover{ color:#e9f2eb; background:rgba(255,180,84,.06); }
+  .pk-key{ color:var(--ac); margin-right:10px; min-width:34px; flex:0 0 auto; }
+  .pk-cur{ color:#66dd88; margin-left:10px; font-size:18px; }
+  .perm-opts{ display:flex; gap:12px; flex-wrap:wrap; margin:4px 0 2px; }
+  .perm-btn{ font-family:inherit; font-size:20px; letter-spacing:.4px; background:rgba(8,12,10,.6);
+             border:1px solid #45554d; color:#cdd8cf; padding:6px 18px; cursor:default; }
+  .perm-btn:hover{ background:rgba(255,180,84,.08); }
+  .perm-btn.sel{ box-shadow:0 0 0 2px var(--ac) inset; }
+  .perm-hint{ font-size:17px; color:#54655b; margin-top:8px; }
+  .plan-row{ font-size:20px; color:#cdd8cf; display:flex; align-items:baseline; padding:1px 0; }
+  .plan-mark{ width:24px; flex:0 0 auto; }
+
+  /* ===== richer tool + message rendering (adapted from app.parity.html to ACP shapes) ===== */
+  .toolwrap{ }
+  .toolline{ font-size:21px; color:#54655b; display:flex; align-items:baseline; flex-wrap:wrap; }
+  .tglyph{ color:#ffb454; flex:0 0 auto; }
+  .tname{ color:#5fd3dd; }
+  .ttime{ color:#46544c; flex:0 0 auto; }
+  .tsub{ font-size:19px; color:#54655b; padding-left:1.7em; }            /* "↳ working…", task progress */
+  .ttodos{ display:flex; flex-direction:column; margin-top:4px; padding-left:1.7em; }
+  .ttodo{ display:flex; font-size:20px; color:#54655b; line-height:1.45; }
+  .ttodo.active{ color:#ffb454; }
+  .ttodo-m{ flex:0 0 auto; white-space:pre; }
+  .out{ margin-top:2px; }
+  .out-head{ font-size:19px; color:#7c8b82; cursor:default; user-select:none; }
+  .out-head:hover{ color:#9fb0a6; }
+  .out-pre{ margin:6px 0 0; padding:8px 12px; background:rgba(0,0,0,.32); border:1px solid #1b2227; color:#9fb0a6;
+            font-family:inherit; font-size:18px; line-height:1.4; white-space:pre-wrap; max-height:320px; overflow:auto; }
+  .out-pre::-webkit-scrollbar{ width:8px; } .out-pre::-webkit-scrollbar-thumb{ background:#1e2d27; }
+
+  /* ---- syntax token classes (CRT colors; overridden in Modern via modern-theme.css) ---- */
+  .tk-comment { color:#5f7a6c; }
+  .tk-string  { color:#c3e88d; }
+  .tk-number  { color:#f78c6c; }
+  .tk-keyword { color:#c792ea; }
+  .tk-type    { color:#5fd3dd; }
+  .tk-capital { color:#82aaff; }
+  .tk-default { color:#c7d3cb; }
+  .tk-punct   { color:#7a8a82; }
+
+  /* ---- diff row structure classes (CRT) ---- */
+  .dk-row { display:flex; }
+  .dk-row-del .dk-code { opacity:.5; }
+  @keyframes aoShake{ 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-4px)} 40%,80%{transform:translateX(4px)} }
+  .ao-shake{ animation:aoShake .28s ease; }
+  .dk-num  { width:48px; flex:0 0 auto; text-align:right; padding-right:14px; color:#3a443e; }
+  .dk-sign { width:16px; flex:0 0 auto; }
+  .dk-sign-add { color:#66dd88; }
+  .dk-sign-del { color:#ff6b6b; }
+  .dk-sign-ctx { color:#3f4a44; }
+  .dk-code { flex:1; white-space:pre; padding-right:14px; }
+  .dk-foot { display:flex; gap:16px; padding:7px 14px 2px 62px; margin-top:4px; border-top:1px solid #161c1f; font-size:17px; }
+  .dk-add  { color:#66dd88; }
+  .dk-del  { color:#ff6b6b; }
+  .dk-file { color:#46544c; }
+</style>
+<link rel="stylesheet" href="modern-theme.css">
+</head>
+<body>
+<div class="win">
+  <div class="titlebar" id="titlebar" onmousedown="if(!event.target.classList.contains('ctl')&&!event.target.closest('.m-trafficlights')&&!event.target.closest('.m-cmdkpill'))win('drag')">
+    <!-- Modern: macOS traffic lights (spans so div:last-child in wireGear() resolves to crt-tb-controls) -->
+    <div class="m-trafficlights">
+      <span class="m-tl m-tl-close" onclick="win('close')" title="Close">
+        <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
+          <path d="M4 4l6 6M10 4l-6 6" stroke="rgba(255,255,255,.5)" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M4 4l6 6M10 4l-6 6" stroke="rgba(100,30,20,.65)" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <span class="m-tl m-tl-min" onclick="win('minimize')" title="Minimize">
+        <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
+          <path d="M3.5 7h7" stroke="rgba(255,255,255,.5)" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M3.5 7h7" stroke="rgba(80,50,0,.65)" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <span class="m-tl m-tl-zoom" onclick="win('maximize')" title="Zoom">
+        <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
+          <path d="M6 3.5H3.5V6M3.5 3.5l3 3M8 10.5h2.5V8M10.5 10.5l-3-3" stroke="rgba(255,255,255,.5)" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M6 3.5H3.5V6M3.5 3.5l3 3M8 10.5h2.5V8M10.5 10.5l-3-3" stroke="rgba(20,60,10,.65)" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </span>
+    </div>
+    <!-- CRT: brand left -->
+    <div class="crt-tb-brand" style="display:flex; align-items:center; gap:9px;">
+      <span class="ac" style="text-shadow:0 0 7px currentColor; font-weight:700; letter-spacing:1px;">A/O</span>
+      <span style="color:#9fb0a6; letter-spacing:.5px;">agent&nbsp;omega</span>
+      <span style="color:#3f4a44;">— for the people!</span>
+    </div>
+    <!-- Modern: centered brand -->
+    <div class="m-brand">
+      <div class="m-brand-dot"></div>
+      <span class="m-brand-name">agent-omega</span>
+      <span class="m-brand-sep">·</span>
+      <span class="m-brand-branch">main</span>
+    </div>
+    <!-- Modern: ⌘K pill right (placed before CRT controls so crt-tb-controls is div:last-child for wireGear()) -->
+    <span class="m-cmdkpill">⌘K</span>
+    <!-- CRT: window controls right (must remain last div child of #titlebar for wireGear's div:last-child lookup) -->
+    <div class="crt-tb-controls" style="display:flex; align-items:center; gap:15px; color:#3f4a44; font-size:15px;">
+      <span class="ctl" onclick="win('minimize')">—</span>
+      <span class="ctl" onclick="win('maximize')">▢</span>
+      <span class="ctl" onclick="win('close')" style="color:#7a564a;">✕</span>
+    </div>
+  </div>
+
+  <div class="screen">
+    <canvas id="omegaGlobe" style="position:absolute; inset:0; width:100%; height:100%; z-index:0; pointer-events:none;"></canvas>
+    <div class="content">
+
+      <!-- ===== HOME / initial-empty state ===== -->
+      <div id="home" style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+
+        <!-- Modern: hero section (hidden in CRT) -->
+        <div class="m-home-content">
+          <div class="m-ambient"></div>
+          <div class="m-kicker"><span class="m-kicker-slash">A</span>/O</div>
+          <div class="m-hero">
+            <span class="m-hero-slash">/</span>agent-omega
+            <span class="m-caret"></span>
+          </div>
+        </div>
+
+        <!-- CRT: pixel A/O wordmark -->
+        <div class="crt-wordmark" style="font-size:118px; line-height:1; letter-spacing:2px; display:flex; align-items:baseline;">
+          <span style="color:#e9f2eb; text-shadow:0 0 2px rgba(220,240,228,.7), 0 0 24px rgba(150,210,180,.35);">A</span>
+          <span class="ac" style="text-shadow:0 0 2px var(--ac), 0 0 28px rgba(255,180,84,.45);">/O</span>
+          <span class="ac" style="margin-left:8px; animation:blink 1.05s steps(1) infinite; text-shadow:0 0 14px rgba(255,180,84,.55);">▌</span>
+        </div>
+        <!-- CRT: tagline -->
+        <div class="ac crt-tagline" style="font-size:26px; letter-spacing:9px; margin-top:10px; text-shadow:0 0 10px rgba(255,180,84,.35);">for the people!</div>
+
+        <!-- Shared: prompt input box (restyled per theme via CSS) -->
+        <div class="box" style="width:680px; max-width:calc(100% - 48px); margin-top:58px; padding:20px 22px 16px;">
+          <span class="box-label">prompt</span>
+          <div class="home-input-row" style="font-size:23px; min-height:30px; display:flex; align-items:flex-start;">
+            <span id="homeMark" class="ac promptmark">&gt;</span>
+            <textarea id="homeInput" class="inp" rows="1" style="font-size:23px;" autocomplete="off"
+                      spellcheck="false" placeholder='ask anything…   "what&#39;s the tech stack here?"'></textarea>
+            <!-- Modern: send button (hidden in CRT) -->
+            <div class="m-sendbtn" onclick="document.getElementById('homeInput').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))" title="Send">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 19V5M12 5l-6 6M12 5l6 6"/>
+              </svg>
+            </div>
+          </div>
+          <!-- CRT: meta line -->
+          <div class="crt-home-meta" style="font-size:20px; margin-top:14px; color:#54655b; padding-left:26px;"><span class="ac metaAgent">build</span>&nbsp;·&nbsp;<span class="cy metaModel">—</span>&nbsp;&nbsp;<span style="color:#46544c;">local (llama-swap)</span></div>
+          <!-- Modern: model pill (hidden in CRT) -->
+          <div class="m-modelpill-row">
+            <div class="m-modelpill">
+              <div class="m-modelpill-dot"></div>
+              <span class="m-modelpill-name metaAgent">build</span>
+              <span class="m-modelpill-sep">·</span>
+              <span class="m-modelpill-name metaModel">—</span>
+              <span class="m-modelpill-sep">·</span>
+              <span class="m-modelpill-local">local</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Modern: suggestion chips (hidden in CRT) -->
+        <div class="m-chips">
+          <span class="m-chip" onclick="document.getElementById('homeInput').value='what\'s the tech stack here?'; document.getElementById('homeInput').focus();">what's the tech stack?</span>
+          <span class="m-chip" onclick="document.getElementById('homeInput').value='explain the architecture'; document.getElementById('homeInput').focus();">explain the architecture</span>
+          <span class="m-chip" onclick="document.getElementById('homeInput').value='find recent changes'; document.getElementById('homeInput').focus();">find recent changes</span>
+        </div>
+
+        <!-- CRT: /agent /model ctrl+p hints -->
+        <div class="crt-cmdhints" style="width:680px; display:flex; justify-content:flex-end; gap:24px; margin-top:14px; font-size:19px; color:#54655b;">
+          <span><span class="ac">/agent</span> agents</span><span><span class="ac">/model</span> models</span><span><span class="ac">ctrl+p</span> commands</span>
+        </div>
+        <!-- CRT: tip line -->
+        <div class="crt-tip" style="margin-top:36px; font-size:20px; color:#54655b;"><span class="ac">● tip</span>&nbsp;&nbsp;<span class="ac">enter</span> sends · <span class="ac">shift+enter</span> newline · <span class="ac">!</span> shell · <span class="ac">esc</span> stops / new session</div>
+        <!-- CRT: version footer -->
+        <div class="crt-homefoot" style="font-size:18px; color:#3f4a44; width:680px; max-width:calc(100% - 48px); display:flex; justify-content:space-between; margin-top:24px; padding-top:8px; border-top:1px solid #161c1f;">
+          <span>~/dev/agent-omega</span>
+          <span>agent-omega · v2.1.0</span>
+        </div>
+
+        <!-- Modern: footer (hidden in CRT) -->
+        <div class="m-homefoot">
+          <span>~/dev/agent-omega</span>
+          <span>agent-omega · v2.1.0</span>
+        </div>
+      </div>
+
+      <!-- ===== CHAT ===== -->
+      <div id="chat" class="hidden" style="flex:1; display:flex; flex-direction:column; min-height:0;">
+        <div id="convo" class="convo"><div id="log" class="log"></div></div>
+
+        <div class="box" style="padding:18px 18px 13px; margin-top:8px;">
+          <span class="box-label" style="font-size:15px;">message</span>
+          <div style="font-size:22px; min-height:28px; color:#dfeae2; display:flex; align-items:flex-start;">
+            <span id="chatMark" class="ac promptmark">&gt;</span>
+            <textarea id="chatInput" class="inp" rows="1" style="font-size:22px;" autocomplete="off"
+                      spellcheck="false" placeholder="reply…"></textarea>
+            <span id="shellHint" class="shellhint hidden">SHELL · esc to exit</span>
+          </div>
+          <div style="font-size:18px; margin-top:8px; color:#54655b; padding-left:26px;"><span class="ac metaAgent">build</span>&nbsp;·&nbsp;<span class="cy metaModel">—</span>&nbsp;&nbsp;<span style="color:#46544c;">local (llama-swap)</span></div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; font-size:19px; color:#46544c; padding-top:8px;">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span id="statusDot" style="color:#54655b;">●</span><span id="statusText">connecting</span>
+          </div>
+          <div style="display:flex; gap:14px; align-items:center;">
+            <span id="tok" style="color:#7c8b82;"></span>
+            <span id="cost" class="gr"></span>
+            <span><span class="ac">ctrl+p</span> · <span class="ac">/help</span></span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="overlay scan"></div>
+    <div class="overlay roll"></div>
+    <div class="overlay grille"></div>
+    <div class="overlay vignette"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =====================================================================
+   AgentOmega UI — ACP edition, ENHANCED for full keyboard/command parity.
+
+   This is app.html (the working ACP WebSocket driver) PLUS:
+     - multiline auto-growing <textarea> prompts (Enter submits; shift/ctrl/
+       alt+Enter and ctrl+j newline)
+     - prompt history (Up/Down at boundaries, persisted), '!' shell mode,
+       ctrl+c clear/exit, ctrl+d, emacs in-prompt editing, transcript scroll
+       keys, large-paste chips                                  [ROOT-3]
+     - command palette (ctrl+p), '/' & '@' autocomplete, leader chords
+       via command-discovery.js, wired to LIVE WS `ready` data
+     - richer tool rendering (collapsible output, todowrite checklist,
+       task/subagent progress, errors/denied) adapted to ACP tool_call
+       content shapes; the existing diff renderer is kept verbatim
+
+   ONE unified keydown pipeline (registerKeydown + a single capture-phase
+   dispatcher): handlers run high-prio first; a `true` return consumes the
+   event. Surfaces (palette / autocomplete / leader / permission) own keys
+   when open; the per-textarea editor yields whenever window.__ftpModalOpen.
+
+   ALL existing ACP wiring is preserved: WS transport + reconnect, the
+   sessionUpdate router, the interactive PERMISSION panel, model/agent
+   pickers, plan list, usage/cost meter, live connectivity status.
+
+   QUESTION FLOW (investigated): the ACP `SessionUpdate` union has NO
+   "question" variant, so questions never arrive as a session/update. The
+   only ACP question mechanism is `unstable_createElicitation`
+   (agent->client request, method `elicitation/create`, marked UNSTABLE).
+   The sidecar's UIClient implements only requestPermission/sessionUpdate/
+   read+writeTextFile — it does NOT implement unstable_createElicitation —
+   so questions cannot reach this UI today. The opencode `question` tool
+   instead surfaces as a regular `tool_call`, which we render read-only.
+   See the QUESTION-PANEL TODO block near the permission panel for the
+   exact (sidecar + UI) wiring that would make it interactive.
+
+   SECURITY: every model/tool/diff/permission string is HTML-escaped
+   (escapeHtml, hl(), textContent) before it can reach innerHTML.
+   ===================================================================== */
+
+/* ---- config ---- */
+const WORKSPACE_ROOT = ''; // set from the ready message's workdir when available; stripped from displayed paths
+const WS_PORT = (new URLSearchParams(location.search)).get('ws') || '4599';
+const WS_TOKEN = (new URLSearchParams(location.search)).get('token') || '';
+
+const $ = id => document.getElementById(id);
+const home=$('home'), chat=$('chat'), convo=$('convo'), log=$('log');
+const homeInput=$('homeInput'), chatInput=$('chatInput');
+const statusDot=$('statusDot'), statusText=$('statusText'), tok=$('tok'), costEl=$('cost');
+/* expose the textareas so command-discovery.js finds them without eval() */
+window.chatInput=chatInput; window.homeInput=homeInput;
+
+/* ---- state ---- */
+let connOpen=false;        // websocket open AND a session is ready
+let busy=false;            // a turn is active (generating or awaiting a permission)
+let permPending=false;     // a permission panel is awaiting a reply
+let turnProduced=false;    // did this turn emit visible output? (drives no-output fallback)
+
+let thinkingEl=null;       // the live "thinking" bubble
+let thoughtText='';        // accumulated reasoning for the current bubble
+let curAnswerEl=null;      // the current assistant answer segment element
+let curAnswerText='';      // accumulated markdown for the current answer segment
+let planEl=null;           // the plan checklist (replaced wholesale on each plan update)
+let toolEls={};            // toolCallId -> tool/diff wrapper (update in place)
+let toolState={};          // toolCallId -> merged {title,kind,status,content,rawInput,rawOutput,startMs,endMs}
+
+let activePerm=null;       // {toolCallId, options, el, idx, buttons}
+
+/* ---- engine/session metadata (from `ready`) ---- */
+let sessionId=null;
+let models=[];             // [{value,name}]
+let agents=[];             // [{value,name}]
+let engineCommands=[];     // [{name,description}]
+let curModel='', curAgent='';
+
+/* =====================================================================
+   UNIFIED KEYDOWN PIPELINE  (one capture-phase dispatcher)
+   Shared by command-discovery.js (palette / '/'&'@' autocomplete / leader,
+   registered via window.registerKeydown), the permission panel, and the
+   transcript-scroll keys. Handlers run high-prio first; a `true` return
+   consumes the event (stopImmediatePropagation). The per-textarea editor
+   and the scroll handler both yield while a modal/overlay is open via
+   window.__ftpModalOpen. The idle/global ESC is a SEPARATE bubble listener
+   so capture-phase surface-close (palette) and the textarea's shell-exit
+   ESC both take precedence.
+   ===================================================================== */
+const _kd=[];              // {fn,prio}; fn(e) -> true when consumed
+window.registerKeydown=function(fn,prio){ _kd.push({fn,prio:prio||0}); _kd.sort((a,b)=>b.prio-a.prio); };
+Object.defineProperty(window,'__ftpModalOpen',{ configurable:true, get(){
+  if(permPending||activePerm) return true;
+  const C=window.AgentOmegaCommands;
+  if(C){ if(C.palette&&C.palette.open) return true;
+         if(C.autocomplete&&C.autocomplete.visible) return true;
+         if(C.leader&&C.leader.pending) return true; }
+  return false;
+}});
+window.addEventListener('keydown', function(e){
+  if(e.isComposing) return;
+  for(const h of _kd){ try{ if(h.fn(e)){ e.stopImmediatePropagation(); return; } }catch(_){} }
+}, true);
+
+/* ---- host bridge (window controls ONLY) ---- */
+function post(o){ try{ window.chrome.webview.postMessage(o); }catch(e){} }
+function win(action){ post({type:action}); }
+
+/* ---- safety + small formatters ---- */
+function escapeHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function cap(s){ s=String(s||'tool'); return s.charAt(0).toUpperCase()+s.slice(1); }
+function strv(v){ return typeof v==='string' ? v : undefined; }
+function strOf(v){ if(v==null) return ''; if(typeof v==='string') return v; try{ return JSON.stringify(v,null,2); }catch(e){ return String(v); } }
+function stripAnsi(s){ return String(s==null?'':s).replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g,''); }
+function isDenied(err){ err=String(err||''); return err.indexOf('QuestionRejectedError')>=0 || err.indexOf('rejected permission')>=0 || err.indexOf('specified a rule')>=0 || err.indexOf('user dismissed')>=0 || /\brejected\b/i.test(err); }
+/* project-relative path for the cyan tool detail */
+function relPath(p){
+  if(!p) return '';
+  const s=String(p).replace(/\\/g,'/'), low=s.toLowerCase(), root=WORKSPACE_ROOT.toLowerCase();
+  if(low.indexOf(root)===0) return s.slice(WORKSPACE_ROOT.length);
+  const i=low.indexOf('/workspace/'); if(i>=0) return s.slice(i+'/workspace/'.length);
+  const seg=s.split('/').filter(Boolean); return seg.length<=3 ? seg.join('/') : seg.slice(-3).join('/');
+}
+/* last-2 segments for the diff footer */
+function baseName2(p){ if(!p) return ''; const seg=String(p).replace(/\\/g,'/').split('/').filter(Boolean); return seg.slice(-2).join('/') || String(p); }
+function fmtElapsed(s){ if(!s||!s.startMs||!s.endMs) return ''; let ms=s.endMs-s.startMs; if(ms<0)ms=0; return ms>=950 ? (ms/1000).toFixed(1)+'s' : ms+'ms'; }
+
+/* ---- robust auto-scroll: only stick to the floor if already near it ---- */
+function nearBottom(){ return (convo.scrollHeight - convo.scrollTop - convo.clientHeight) < 60; }
+function toBottom(){ requestAnimationFrame(()=>{ convo.scrollTop=convo.scrollHeight; }); }
+function withScroll(fn){ const stick=nearBottom(); fn(); if(stick) toBottom(); }
+
+/* ---- view switching + focus ---- */
+function chatVisible(){ return !chat.classList.contains('hidden'); }
+function showHome(){ chat.classList.add('hidden'); home.classList.remove('hidden'); homeInput.focus(); }
+function showChat(){ home.classList.add('hidden'); chat.classList.remove('hidden'); chatInput.focus(); if(window.ftpInput) window.ftpInput.autosizeAll(); }   // chat was display:none at wire time -> measure now it's visible (no 0px textarea)
+function focusActive(){ const i = chatVisible() ? (chatInput.disabled?null:chatInput) : homeInput; if(i) i.focus(); }
+
+/* ---- status / connectivity (drives the dot + input-enabled state) ----
+   kinds: 'connecting' | 'ready' | 'busy' | 'perm' | 'error' | 'offline' */
+function setStatus(kind){
+  if(kind==='busy'||kind==='perm') busy=true;
+  else if(kind==='ready'||kind==='error'||kind==='offline'||kind==='connecting'){ busy=false; }
+
+  let color='#66dd88', label='ready', inputEnabled=connOpen;
+  switch(kind){
+    case 'connecting': color='#54655b'; label='connecting'; inputEnabled=false; break;
+    case 'busy':       color='#ffb454'; label='generating'; inputEnabled=false; break;
+    case 'perm':       color='#ffb454'; label='permission'; inputEnabled=false; break;
+    case 'error':      color='#ff6b6b'; label='error';      inputEnabled=connOpen; break;
+    case 'offline':    color='#ff6b6b'; label='engine offline'; inputEnabled=false; break;
+    case 'ready': default: color='#66dd88'; label='ready'; inputEnabled=connOpen; break;
+  }
+  if(permPending) inputEnabled=false;
+  statusDot.style.color=color; statusText.textContent=label;
+  document.body.classList.toggle('is-generating', kind==='busy');
+  chatInput.disabled=!inputEnabled;
+  if(inputEnabled && chatVisible()) chatInput.focus();
+}
+function setUsage(used,size){
+  used=used||0;
+  let s = used>=1000 ? (used/1000).toFixed(1)+'K' : (''+used);
+  if(size>0) s += ' ('+Math.min(100,Math.round(used/size*100))+'%)';
+  tok.textContent = s;
+}
+function setCost(c){ costEl.textContent = (typeof c==='number' && c>0) ? '$'+c.toFixed(2) : ''; }
+
+function updateMeta(){
+  const mName = (models.find(m=>m.value===curModel)||{}).name || curModel || '—';
+  const aName = (agents.find(a=>a.value===curAgent)||{}).name || curAgent || 'build';
+  document.querySelectorAll('.metaModel').forEach(e=>e.textContent=mName);
+  document.querySelectorAll('.metaAgent').forEach(e=>e.textContent=aName);
+}
+
+/* ---- spinner driver (drives any .spin glyph: thinking + running tools) ---- */
+const SPIN='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'; let si=0;
+setInterval(()=>{ si=(si+1)%SPIN.length; const a=document.querySelectorAll('.spin'); for(const s of a) s.textContent=SPIN[si]; },90);
+
+/* ---- (1) user message: amber ">" echo ---- */
+function addUser(text){
+  if(!chatVisible()) showChat();
+  const d=document.createElement('div'); d.className='urow';
+  d.innerHTML='<span class="ac" style="margin-right:10px;">&gt;</span><span class="utext" style="flex:1;"></span>';
+  d.querySelector('.utext').textContent=text;   // textContent -> inherently safe
+  log.appendChild(d); toBottom();
+}
+
+/* ---- (2) thinking: pink animated spinner + dim reasoning body ---- */
+function showThinking(label){
+  withScroll(()=>{
+    ensureThinking();
+    if(label!=null && label!=='') thinkingEl.querySelector('.body').textContent=label; // textContent: untrusted reasoning
+  });
+}
+function ensureThinking(){
+  if(!thinkingEl){
+    thinkingEl=document.createElement('div'); thinkingEl.className='think';
+    thinkingEl.innerHTML='<div style="font-size:21px;" class="pk"><span class="spin">⠹</span>&nbsp;thinking</div><div class="body"></div>';
+    log.appendChild(thinkingEl);
+  }
+}
+function clearThinking(){ if(thinkingEl){ thinkingEl.remove(); thinkingEl=null; } }
+
+/* ---- assistant markdown (headings, bullets -> amber ">" markers, bold ->
+        bright, inline code -> cyan, fenced code -> highlighted, closing
+        summary line -> cyan) ---- */
+function mdInline(s){               // s is ALREADY html-escaped
+  const parts=s.split(/(`[^`]*`)/g); let out='';
+  for(let i=0;i<parts.length;i++){
+    const seg=parts[i];
+    if(seg.length>=2 && seg.charAt(0)==='`' && seg.charAt(seg.length-1)==='`'){
+      out += '<span style="color:#5fd3dd;">'+seg.slice(1,-1)+'</span>';                 // inline code -> cyan
+    } else {
+      out += seg.replace(/\*\*([^*]+?)\*\*/g,'<span style="color:#e9f2eb; text-shadow:0 0 6px rgba(190,230,205,.35);">$1</span>')
+                .replace(/__([^_]+?)__/g,'<span style="color:#e9f2eb; text-shadow:0 0 6px rgba(190,230,205,.35);">$1</span>'); // bold -> bright
+    }
+  }
+  return out;
+}
+function renderMarkdown(el, md){
+  el.innerHTML='';
+  const lines=String(md==null?'':md).replace(/\r/g,'').split('\n');
+  const nonEmpty=[]; for(let k=0;k<lines.length;k++) if(lines[k].trim()!=='') nonEmpty.push(k);
+  let closingIdx=-1;
+  if(nonEmpty.length>=2){
+    const li=nonEmpty[nonEmpty.length-1];
+    if(!/^\s*([-*+]|\d+\.)\s+/.test(lines[li])) closingIdx=li;
+  }
+  let inCode=false;
+  for(let i=0;i<lines.length;i++){
+    const ln=lines[i];
+    if(/^\s*```/.test(ln)){ inCode=!inCode; continue; }
+    const div=document.createElement('div');
+    div.style.cssText='min-height:13px; display:flex; align-items:baseline;';
+    if(inCode){
+      div.innerHTML='<span style="flex:1; white-space:pre; color:#c7d3cb; font-size:19px;">'+hl(ln||' ')+'</span>';
+      el.appendChild(div); continue;
+    }
+    if(ln.trim()===''){ div.innerHTML='<span style="flex:1;">&nbsp;</span>'; el.appendChild(div); continue; }
+    const mh=ln.match(/^\s*#{1,6}\s+(.*)$/);
+    const mb=ln.match(/^\s*[-*+]\s+(.*)$/);
+    const mo=ln.match(/^\s*\d+\.\s+(.*)$/);
+    const color=(i===closingIdx)?'#5fd3dd':'#cdd8cf';
+    if(mh){
+      div.innerHTML='<span style="flex:1; color:#e9f2eb; text-shadow:0 0 6px rgba(190,230,205,.35);">'+mdInline(escapeHtml(mh[1]))+'</span>';
+    } else if(mb||mo){
+      div.innerHTML='<span style="color:var(--ac); margin-right:10px;">&gt;</span><span style="flex:1; color:'+color+';">'+mdInline(escapeHtml((mb?mb:mo)[1]))+'</span>';
+    } else {
+      div.innerHTML='<span style="flex:1; color:'+color+';">'+mdInline(escapeHtml(ln))+'</span>';
+    }
+    el.appendChild(div);
+  }
+}
+
+/* ---- syntax highlighter (escapes all input; uses CSS token classes for theme-switchable colors) ---- */
+const KW=['var','func','return','true','false','nil','type','struct','range','if','else','elif','for','while','import','from','package','map','const','interface','go','defer','switch','case','default','break','continue','def','class','self','None','True','False','and','or','not','in','is','lambda','try','except','finally','raise','with','as','pass','yield','async','await','let','new','function','export','public','private','static'];
+const TYP=['string','int','int64','int32','bool','byte','rune','float64','float32','uint','error','number','boolean','void','any','str','float','list','dict','tuple','set'];
+function hl(line){
+  const re=/(\/\/.*)|(#.*)|("[^"]*")|('[^']*')|(\b\d[\d._]*\b)|([A-Za-z_]\w*)|(\s+)|([{}\[\]():,.=*&%+\-<>!|\/]+)|(.)/g;
+  let out='', m;
+  while((m=re.exec(line))){
+    const tk=m[0]; let cls;
+    if(m[1]||m[2])      cls='tk-comment';
+    else if(m[3]||m[4]) cls='tk-string';
+    else if(m[5])       cls='tk-number';
+    else if(m[6])       cls = KW.indexOf(tk)>=0 ? 'tk-keyword' : (TYP.indexOf(tk)>=0 ? 'tk-type' : (/^[A-Z]/.test(tk) ? 'tk-capital' : 'tk-default'));
+    else if(m[7])       { out += escapeHtml(tk); continue; }  // whitespace: inherit
+    else if(m[8])       cls='tk-punct';
+    else                cls='tk-default';
+    out += '<span class="'+cls+'">'+escapeHtml(tk)+'</span>';
+  }
+  return out;
+}
+
+/* ---- diff: unified-patch parser + oldString/newString LCS (used for ACP diffs) ---- */
+function rowsFromPatch(patch){
+  const lines=String(patch).replace(/\r/g,'').split('\n');
+  let oldN=0,newN=0,started=false; const rows=[];
+  for(let i=0;i<lines.length;i++){
+    const ln=lines[i];
+    const hh=ln.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
+    if(hh){ oldN=+hh[1]; newN=+hh[2]; started=true; continue; }
+    if(!started) continue;
+    if(/^(Index:|={3,}|---\s|\+\+\+\s)/.test(ln)){ started=false; continue; }
+    if(ln.charAt(0)==='\\') continue;
+    const c=ln.charAt(0);
+    if(c==='+'){ rows.push({t:'add',n:newN++,x:ln.slice(1)}); }
+    else if(c==='-'){ rows.push({t:'del',n:oldN++,x:ln.slice(1)}); }
+    else if(c===' '){ rows.push({t:'ctx',n:newN,x:ln.slice(1)}); oldN++; newN++; }
+    else { started=false; }
+  }
+  return rows;
+}
+function rowsFromStrings(oldStr,newStr,startLine){
+  const toLines=s=> s==='' ? [] : String(s).replace(/\n$/,'').split('\n');
+  const a=toLines(oldStr), b=toLines(newStr), m=a.length, n=b.length;
+  if(m*n>250000){ const rows=[]; let nn=(startLine||1)-1; for(const x of a) rows.push({t:'del',n:nn+1,x}); for(const x of b) rows.push({t:'add',n:++nn,x}); return rows; }  // giant diff: skip the O(m*n) LCS so the UI can't freeze
+  const dp=[]; for(let i=0;i<=m;i++){ dp[i]=new Array(n+1).fill(0); }
+  for(let i=m-1;i>=0;i--) for(let j=n-1;j>=0;j--) dp[i][j]=a[i]===b[j]?dp[i+1][j+1]+1:Math.max(dp[i+1][j],dp[i][j+1]);
+  const seq=[]; let i=0,j=0;
+  while(i<m&&j<n){ if(a[i]===b[j]){seq.push(['ctx',a[i]]);i++;j++;} else if(dp[i+1][j]>=dp[i][j+1]){seq.push(['del',a[i]]);i++;} else {seq.push(['add',b[j]]);j++;} }
+  while(i<m) seq.push(['del',a[i++]]);
+  while(j<n) seq.push(['add',b[j++]]);
+  const rows=[]; let nn=(startLine||1)-1;
+  seq.forEach(r=>{ if(r[0]==='del'){ rows.push({t:'del',n:nn+1,x:r[1]}); } else { nn++; rows.push({t:r[0],n:nn,x:r[1]}); } });
+  return rows;
+}
+function renderDiffBlock(rows, adds, dels, fileLabel){
+  const wrap=document.createElement('div'); wrap.className='diff';
+  let aC=0,dC=0, html='';
+  rows.forEach(r=>{
+    if(r.t==='add')aC++; else if(r.t==='del')dC++;
+    const sign=r.t==='add'?'+':r.t==='del'?'-':'&nbsp;';
+    html += '<div class="dk-row dk-row-'+r.t+'">'
+      +'<span class="dk-num">'+escapeHtml(String(r.n||''))+'</span>'
+      +'<span class="dk-sign dk-sign-'+r.t+'">'+sign+'</span>'
+      +'<span class="dk-code">'+hl(r.x)+'</span>'
+      +'</div>';
+  });
+  const A=(adds!=null?adds:aC), D=(dels!=null?dels:dC);
+  html += '<div class="dk-foot">'
+    +'<span class="dk-add">+'+escapeHtml(String(A))+'</span>'
+    +'<span class="dk-del">−'+escapeHtml(String(D))+'</span>'
+    +'<span class="dk-file">'+escapeHtml(baseName2(fileLabel||''))+'</span></div>';
+  wrap.innerHTML=html;
+  return wrap;
+}
+
+/* ---- collapsible tool output (textContent -> safe; optional color + open) ---- */
+function collapsible(label, text, opt){
+  opt=opt||{};
+  const box=document.createElement('div'); box.className='out';
+  const head=document.createElement('div'); head.className='out-head';
+  head.innerHTML='<span class="out-arrow"></span>&nbsp;<span class="out-label"></span>';
+  head.querySelector('.out-label').textContent=label;
+  const body=document.createElement('div');
+  const pre=document.createElement('pre'); pre.className='out-pre'; pre.textContent=text;
+  if(opt.color) pre.style.color=opt.color;
+  body.appendChild(pre);
+  const startOpen=!!opt.open;
+  body.style.display = startOpen ? 'block' : 'none';
+  head.querySelector('.out-arrow').textContent = startOpen ? '▾' : '▸';
+  head.onclick=()=>{ const open=body.style.display!=='none'; body.style.display=open?'none':'block'; head.querySelector('.out-arrow').textContent=open?'▸':'▾'; if(!open) toBottom(); };
+  box.appendChild(head); box.appendChild(body);
+  return box;
+}
+
+/* ---- error / no-output rows ---- */
+function addErr(msg){ withScroll(()=>{ clearThinking(); turnProduced=true; const d=document.createElement('div'); d.className='errrow'; d.textContent='⚠ '+msg; log.appendChild(d); }); }
+function addFallback(msg){ withScroll(()=>{ const d=document.createElement('div'); d.className='fallback'; d.textContent='○ '+msg; log.appendChild(d); }); }
+
+/* =====================================================================
+   ACP-driven render layer
+   ===================================================================== */
+
+/* once output (answer text or a tool) begins, drop the thinking bubble and
+   reset the reasoning accumulator so any later reasoning starts a fresh one */
+function noteOutput(){ turnProduced=true; clearThinking(); thoughtText=''; }
+
+/* coalesce the streaming answer + thinking re-renders to one paint per frame */
+let _raf=false, _stick=true, ansDirty=false, thinkDirty=false;
+function paint(){
+  _raf=false;
+  if(thinkDirty){ thinkDirty=false; if(thinkingEl){ const b=thinkingEl.querySelector('.body'); if(b) b.textContent=thoughtText; } }
+  if(ansDirty){ ansDirty=false; if(curAnswerEl) renderMarkdown(curAnswerEl, curAnswerText); }
+  if(_stick) convo.scrollTop=convo.scrollHeight;
+}
+function repaint(){ _stick=nearBottom(); if(_raf) return; _raf=true; requestAnimationFrame(paint); }
+
+function appendAnswer(delta){
+  noteOutput();
+  if(!curAnswerEl){ curAnswerEl=document.createElement('div'); curAnswerEl.className='arow'; log.appendChild(curAnswerEl); curAnswerText=''; }
+  curAnswerText += delta;
+  ansDirty=true; repaint();
+}
+function appendThought(delta){
+  ensureThinking();
+  thoughtText += delta;
+  thinkDirty=true; repaint();
+}
+
+/* =====================================================================
+   Richer tool rendering — keyed by toolCallId, merged + updated in place.
+   Adapted from app.parity.html's per-tool renderers to the ACP shapes:
+     ToolCall/ToolCallUpdate { toolCallId, title, kind, status, content[],
+                               rawInput, rawOutput, locations }
+     content[] items: {type:'content', content:{type:'text',text}}
+                      {type:'diff', oldText, newText, path}
+                      {type:'terminal', ...}            (skipped — no terminal methods)
+   Adds: pending verbs, collapsible output, todowrite checklist, task/
+   subagent progress, tool errors (red, expanded) + denied (strikethrough).
+   The diff renderer (renderDiffBlock/rowsFromStrings) is reused verbatim.
+   ===================================================================== */
+const TOOL_GLYPH ={read:'→',edit:'←',delete:'✕',move:'⇄',search:'✱',execute:'$',think:'✷',fetch:'%',switch_mode:'◇',other:'▸'};
+const TOOL_NAME  ={read:'Read',edit:'Edit',delete:'Delete',move:'Move',search:'Search',execute:'Execute',think:'Think',fetch:'Fetch',switch_mode:'Mode',other:'Tool'};
+const PEND_VERB  ={read:'Reading…',edit:'Editing…',delete:'Deleting…',move:'Moving…',search:'Searching…',execute:'Running…',think:'Thinking…',fetch:'Fetching…',switch_mode:'Switching…',other:'Working…'};
+
+function parseTodos(value){
+  if(!Array.isArray(value)) return [];
+  const out=[];
+  for(const it of value){ if(!it||typeof it!=='object') continue;
+    const status=strv(it.status), content=strv(it.content);
+    if(status&&content) out.push({status,content}); }
+  return out;
+}
+function toolText(content){ let t=''; for(const it of (content||[])){ if(it && it.type==='content' && it.content && it.content.type==='text') t += (t?'\n':'')+(it.content.text||''); } return t; }
+function toolDiffs(content){ return (content||[]).filter(it=> it && it.type==='diff'); }
+
+function upsertTool(u){
+  const id=u.toolCallId; if(!id) return;
+  let s=toolState[id];
+  if(!s){ s={toolCallId:id, title:'', kind:'other', status:'pending', content:[], rawInput:undefined, rawOutput:undefined, startMs:Date.now(), endMs:0}; toolState[id]=s; }
+  if(u.title!=null) s.title=u.title;
+  if(u.kind!=null) s.kind=u.kind;
+  if(u.status!=null){ s.status=u.status; if((u.status==='completed'||u.status==='failed') && !s.endMs) s.endMs=Date.now(); }
+  if(u.content!=null) s.content=u.content;        // ToolCall(Update).content REPLACES the collection
+  if(u.rawInput!==undefined) s.rawInput=u.rawInput;
+  if(u.rawOutput!==undefined) s.rawOutput=u.rawOutput;
+  renderTool(s);
+}
+function renderTool(s){
+  withScroll(()=>{
+    noteOutput();
+    let wrap=toolEls[s.toolCallId];
+    if(!wrap){ wrap=document.createElement('div'); wrap.className='toolwrap'; toolEls[s.toolCallId]=wrap; log.appendChild(wrap); }
+    wrap.innerHTML='';
+
+    const running = s.status==='pending'||s.status==='in_progress';
+    const ri = (s.rawInput && typeof s.rawInput==='object') ? s.rawInput : {};
+    const out = toolText(s.content);
+    const diffs = toolDiffs(s.content);
+
+    const errText = s.status==='failed' ? (out || strOf(s.rawOutput) || 'tool failed') : '';
+    const denied = s.status==='failed' && isDenied(errText);
+    const failed = s.status==='failed' && !denied;
+
+    const todos = parseTodos(ri.todos);
+    const isTask = !!(ri.subagent_type) || /\btask\b/i.test(s.title||'');
+
+    /* ---- header line: glyph + title (or pending verb) + elapsed ---- */
+    const line=document.createElement('div'); line.className='toolline';
+    const ic=document.createElement('span'); ic.className='tglyph'+(running?' spin':'');
+    ic.textContent = running ? '⠹' : (TOOL_GLYPH[s.kind]||'▸');
+    ic.style.color = failed ? '#ff6b6b' : '#ffb454';
+    if(denied) ic.style.textDecoration='line-through';
+    line.appendChild(ic); line.appendChild(document.createTextNode(' '));
+
+    const name=document.createElement('span'); name.className='tname';
+    name.textContent = (running && !s.title) ? (PEND_VERB[s.kind]||'Working…')
+                     : (s.title || TOOL_NAME[s.kind] || 'Tool');
+    if(failed) name.style.color='#ff6b6b';
+    if(denied) name.style.textDecoration='line-through';
+    line.appendChild(name);
+
+    const timeTxt = running ? 'running…' : failed ? 'error' : fmtElapsed(s);
+    if(timeTxt){ const t=document.createElement('span'); t.className='ttime'; t.style.color=failed?'#ff6b6b':'#46544c'; t.textContent=' · '+timeTxt; line.appendChild(t); }
+    wrap.appendChild(line);
+
+    /* ---- todowrite checklist ---- */
+    if(todos.length){
+      const listEl=document.createElement('div'); listEl.className='ttodos';
+      todos.forEach(t=>{
+        const row=document.createElement('div'); row.className='ttodo'+(t.status==='in_progress'?' active':'');
+        const mark = t.status==='completed'?'✓':t.status==='in_progress'?'•':' ';
+        const m=document.createElement('span'); m.className='ttodo-m'; m.textContent='['+mark+'] ';
+        const c=document.createElement('span'); c.textContent=t.content;
+        row.appendChild(m); row.appendChild(c); listEl.appendChild(row);
+      });
+      wrap.appendChild(listEl);
+    }
+
+    /* ---- diffs (edit/write) ---- */
+    diffs.forEach(d=>{
+      const rows=rowsFromStrings(d.oldText||'', d.newText||'', 1);
+      if(rows && rows.length) wrap.appendChild(renderDiffBlock(rows, null, null, d.path||s.title));
+    });
+
+    /* ---- task / subagent progress sub-line ---- */
+    if(isTask){
+      const sub=document.createElement('div'); sub.className='tsub';
+      sub.textContent = running ? '↳ working…' : (s.status==='completed' ? ('↳ '+(fmtElapsed(s)||'done')) : '');
+      if(sub.textContent) wrap.appendChild(sub);
+    }
+
+    /* ---- error (red, expanded) / denied note / normal output (collapsed) ---- */
+    if(failed){
+      wrap.appendChild(collapsible('error', errText, {color:'#ff6b6b', open:true}));
+    } else if(denied){
+      const d=document.createElement('div'); d.className='tsub'; d.style.color='#7c8b82'; d.textContent='↳ denied by user'; wrap.appendChild(d);
+    } else if(!todos.length && out.trim()!==''){
+      const shown = (s.kind==='execute') ? stripAnsi(out) : out;
+      wrap.appendChild(collapsible('output', shown));
+    }
+  });
+}
+
+/* plan checklist — replaced wholesale on each update */
+function renderPlan(entries){
+  withScroll(()=>{
+    noteOutput();
+    if(!planEl){ planEl=document.createElement('div'); planEl.className='plan'; log.appendChild(planEl); }
+    planEl.innerHTML='<div class="plan-title pk">▤ plan</div>';
+    (entries||[]).forEach(e=>{
+      const st=(e&&e.status)||'pending';
+      const mark = st==='completed'?'✓':st==='in_progress'?'▸':'○';
+      const col  = st==='completed'?'#66dd88':st==='in_progress'?'#ffb454':'#54655b';
+      const row=document.createElement('div'); row.className='plan-row';
+      row.innerHTML='<span class="plan-mark" style="color:'+col+';"></span><span class="plan-c" style="flex:1;"></span>';
+      row.querySelector('.plan-mark').textContent=mark;
+      row.querySelector('.plan-c').textContent=(e&&e.content)||'';
+      planEl.appendChild(row);
+    });
+  });
+}
+
+/* ---- ACP sessionUpdate router ---- */
+function onUpdate(u){
+  if(!u || !u.sessionUpdate) return;
+  switch(u.sessionUpdate){
+    case 'agent_message_chunk': { const t=textOf(u.content); if(t!=null) appendAnswer(t); break; }
+    case 'agent_thought_chunk': { const t=textOf(u.content); if(t!=null) appendThought(t); break; }
+    case 'tool_call':           upsertTool(u); break;
+    case 'tool_call_update':     upsertTool(u); break;
+    case 'plan':                 renderPlan(u.entries||[]); break;
+    case 'current_mode_update':  if(u.currentModeId){ curAgent=u.currentModeId; updateMeta(); } break;
+    case 'usage_update':         if(typeof u.used==='number') setUsage(u.used,u.size); if(u.cost && typeof u.cost.amount==='number') setCost(u.cost.amount); break;
+    case 'available_commands_update': engineCommands=u.availableCommands||engineCommands; syncDiscovery(); break;
+    // user_message_chunk (echoed locally), config_option_update, session_info_update -> ignored
+  }
+}
+function textOf(content){
+  if(!content) return null;
+  if(content.type==='text') return content.text||'';
+  return null;
+}
+
+/* =====================================================================
+   Permission panel (the key terminal-parity feature)
+   ===================================================================== */
+function permColor(kind){
+  if(kind==='allow_once') return '#ffb454';
+  if(kind==='allow_always') return '#66dd88';
+  if(kind==='reject_once'||kind==='reject_always') return '#ff6b6b';
+  return '#5fd3dd';
+}
+function showPermission(p){
+  if(!chatVisible()) showChat();
+  if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; }
+  const opts=(p.options||[]);
+  permPending=true;
+
+  const panel=document.createElement('div'); panel.className='perm';
+  const head=document.createElement('div'); head.className='perm-title';
+  const ri=p.rawInput||{};
+  const detail=(ri.command||ri.cmd||ri.script||ri.filePath||ri.filepath||ri.path||ri.url||(p.locations&&p.locations[0]&&p.locations[0].path)||'');
+  const detailStr=String(detail).replace(/\s+/g,' ').trim().slice(0,120);
+  head.textContent='⛨ permission — '+((p.title||p.kind||'tool action'))+(detailStr?(': '+detailStr):'');   // textContent: untrusted (safe — no HTML)
+  panel.appendChild(head);
+
+  const optWrap=document.createElement('div'); optWrap.className='perm-opts';
+  const buttons=[];
+  opts.forEach((o,i)=>{
+    const b=document.createElement('button'); b.type='button'; b.className='perm-btn';
+    const c=permColor(o.kind); b.style.color=c; b.style.borderColor=c;
+    b.textContent=(i+1)+'. '+((o.name||o.optionId));   // textContent: untrusted
+    b.onclick=()=>replyPermission(o.optionId);
+    optWrap.appendChild(b); buttons.push(b);
+  });
+  panel.appendChild(optWrap);
+
+  const hint=document.createElement('div'); hint.className='perm-hint';
+  hint.textContent = opts.length ? ('press 1–'+opts.length+' · or ←/→ then enter · esc aborts the turn') : 'no options provided';
+  panel.appendChild(hint);
+
+  withScroll(()=>{ log.appendChild(panel); });
+  activePerm={ toolCallId:p.toolCallId, options:opts, el:panel, idx:0, buttons };
+  highlightPerm(0);
+  setStatus('perm');
+}
+function highlightPerm(i){
+  if(!activePerm || !activePerm.options.length) return;
+  activePerm.idx=(i+activePerm.options.length)%activePerm.options.length;
+  activePerm.buttons.forEach((b,j)=>{ b.classList.toggle('sel', j===activePerm.idx); });
+}
+function replyPermission(optionId){
+  if(!activePerm) return;
+  const ap=activePerm; activePerm=null; permPending=false;
+  wsSend({type:'permissionReply', toolCallId:ap.toolCallId, optionId});
+  const chosen=(ap.options.find(o=>o.optionId===optionId)||{}).name || optionId;
+  ap.el.classList.remove('perm'); ap.el.className='perm';
+  ap.el.innerHTML='';
+  const d=document.createElement('div'); d.className='perm-title'; d.style.color='#7c8b82';
+  d.textContent='⛨ permission — '+chosen;   // textContent: untrusted
+  ap.el.appendChild(d);
+  setStatus('busy');   // the turn continues
+}
+/* permission keyboard ownership: highest priority in the unified pipeline */
+function permissionKeydown(e){
+  if(!activePerm) return false;
+  const k=e.key;
+  if(k>='1' && k<='9'){ const i=+k-1; if(i<activePerm.options.length){ e.preventDefault(); replyPermission(activePerm.options[i].optionId); return true; } return false; }
+  if(k==='ArrowRight'||k==='ArrowDown'){ e.preventDefault(); highlightPerm(activePerm.idx+1); return true; }
+  if(k==='ArrowLeft'||k==='ArrowUp'){ e.preventDefault(); highlightPerm(activePerm.idx-1); return true; }
+  if(k==='Enter'){ e.preventDefault(); if(activePerm.options.length) replyPermission(activePerm.options[activePerm.idx].optionId); return true; }
+  if(k==='Escape'){ e.preventDefault(); doAbort(); return true; }
+  return false;
+}
+window.registerKeydown(permissionKeydown, 100);
+
+/* =====================================================================
+   QUESTION PANEL — finding + TODO (deliberately NOT wired; non-speculative)
+   ---------------------------------------------------------------------
+   Does the agent's "question" flow surface over ACP? Investigation result:
+
+     - SessionUpdate has NO "question" variant (see schema/types.gen.d.ts
+       line 4331): questions never arrive as a session/update.
+     - The ONLY ACP question mechanism is `unstable_createElicitation`
+       (Client method, method id "elicitation/create"), marked UNSTABLE/
+       experimental. It is an agent->client REQUEST that expects a
+       CreateElicitationResponse ({action:'accept', content:{...}} | decline
+       | cancel).
+     - sidecar.mjs's UIClient implements ONLY requestPermission /
+       sessionUpdate / writeTextFile / readTextFile. It does NOT implement
+       unstable_createElicitation, so elicitations never reach this UI.
+     - opencode's interactive `question` tool therefore surfaces here as an
+       ordinary `tool_call` (kind:'other'), which renderTool() shows
+       read-only (title + any text content). It is visible but not
+       answerable from the UI.
+
+   Per the brief, since questions do NOT currently surface interactively,
+   nothing speculative is added. To make questions interactive later
+   (REQUIRES a sidecar change — out of scope for this file):
+
+     1) sidecar.mjs UIClient: add
+          async unstable_createElicitation(p){
+            const id = 'q_'+(qSeq++)
+            broadcast({type:'question', id, message:p.message,
+                       mode:p.mode, schema:p.requestedSchema || null,
+                       toolCallId:(p.toolCallId||null)})
+            return await new Promise(res=>pendingQ.set(id, res))
+          }
+        and a ws case 'questionReply' that resolves pendingQ.get(id) with
+          { action:'accept', content:{...} }  (or {action:'decline'}).
+        Also advertise it in initialize():
+          clientCapabilities.elicitation = { form:{}, url:{} }
+     2) THIS file: add  case 'question': showQuestion(m);  to onWs(), and a
+        showQuestion() that mirrors showPermission()/replyPermission()
+        (build a form from m.schema.properties, send {type:'questionReply',
+        id, action, content}). It would reuse the .perm panel styling and
+        register its keys at pipeline prio 100 exactly like permissionKeydown.
+
+   The seam is intentionally documented, not stubbed, so the public repo
+   ships no half-working panel.
+   ===================================================================== */
+
+/* =====================================================================
+   Model / agent pickers
+   ===================================================================== */
+function pickerPanel(kind){
+  if(!chatVisible()) showChat();
+  const items = kind==='model' ? models : agents;
+  const current = kind==='model' ? curModel : curAgent;
+  withScroll(()=>{
+    const panel=document.createElement('div'); panel.className='panel';
+    const t=document.createElement('div'); t.className='panel-title';
+    t.textContent = kind==='model' ? ('select model  ('+items.length+')') : ('select agent  ('+items.length+')');
+    panel.appendChild(t);
+    if(!items.length){ const e=document.createElement('div'); e.className='pick'; e.textContent='(none reported by engine)'; panel.appendChild(e); }
+    items.forEach((it,i)=>{
+      const row=document.createElement('div'); row.className='pick';
+      row.innerHTML='<span class="pk-key"></span><span class="pk-name" style="flex:1;"></span>';
+      row.querySelector('.pk-key').textContent = (i<9 ? ('['+(i+1)+']') : '•');
+      row.querySelector('.pk-name').textContent = it.name || it.value;
+      if(it.value===current){ const c=document.createElement('span'); c.className='pk-cur'; c.textContent='● current'; row.appendChild(c); }
+      row.onclick=()=>{ choosePick(kind, it.value, it.name||it.value); panel.remove(); };   // remove the menu on pick (the "model → X" line is the record), don't leave it greyed
+      panel.appendChild(row);
+    });
+    log.appendChild(panel);
+  });
+}
+function choosePick(kind, value, name){
+  if(kind==='model'){ wsSend({type:'setModel', model:value}); sysLine('model → <span style="color:#5fd3dd">'+escapeHtml(name)+'</span>'); }
+  else { wsSend({type:'setAgent', agent:value}); sysLine('agent → <span style="color:var(--ac)">'+escapeHtml(name)+'</span>'); }
+}
+function selectByArg(kind, arg){
+  const items = kind==='model' ? models : agents;
+  const a=arg.trim().toLowerCase();
+  let it = items.find(x=>String(x.value).toLowerCase()===a) || items.find(x=>String(x.name).toLowerCase()===a)
+        || items.find(x=>String(x.value).toLowerCase().indexOf(a)>=0) || items.find(x=>String(x.name).toLowerCase().indexOf(a)>=0);
+  if(!it){ sysLine('no '+kind+' matches <span style="color:#ff6b6b">'+escapeHtml(arg)+'</span> — try <span style="color:var(--ac)">/'+kind+'</span> to list'); return; }
+  choosePick(kind, it.value, it.name||it.value);
+}
+
+/* =====================================================================
+   Slash commands
+   ===================================================================== */
+const THEMES={ amber:'#ffb454', green:'#66dd88', cyan:'#5fd3dd', pink:'#ff79c6', mix:'#ffb454' };
+function sysLine(html){ if(!chatVisible()) showChat(); withScroll(()=>{ const d=document.createElement('div'); d.className='arow'; d.style.color='#7c8b82'; d.style.fontSize='20px'; d.innerHTML=html; log.appendChild(d); }); }
+function setTheme(arg){ const n=(arg||'').trim().toLowerCase(); if(!THEMES[n]){ sysLine('themes — '+Object.keys(THEMES).map(t=>'<span style="color:var(--ac)">'+t+'</span>').join(' · ')); return; } document.documentElement.style.setProperty('--ac',THEMES[n]); sysLine('theme → <span style="color:var(--ac)">'+n+'</span>'); }
+function showStatus(){
+  sysLine('<span style="color:#e9f2eb">status</span><br>'+
+    'agent <span class="ac">'+escapeHtml(curAgent||'build')+'</span> · model <span class="cy">'+escapeHtml((models.find(m=>m.value===curModel)||{}).name||curModel||'—')+'</span><br>'+
+    'session '+(sessionId?('<span class="cy">'+escapeHtml(sessionId)+'</span>'):'<span style="color:#7c8b82">none</span>')+
+    ' · engine '+(connOpen?'<span class="gr">online</span>':'<span style="color:#ff6b6b">offline</span>'));
+}
+function showHelp(){
+  let base='<span style="color:#e9f2eb">commands</span><br>'+
+    '<span style="color:var(--ac)">/new</span> reset · <span style="color:var(--ac)">/help</span> · '+
+    '<span style="color:var(--ac)">/model</span> [name] · <span style="color:var(--ac)">/agent</span> [name] · '+
+    '<span style="color:var(--ac)">/theme</span> [amber|green|cyan|pink] · <span style="color:var(--ac)">/skin</span> [crt|modern] · <span style="color:var(--ac)">/status</span>';
+  if(engineCommands && engineCommands.length){
+    base+='<br><span style="color:#7c8b82">engine</span> '+engineCommands.map(c=>'<span style="color:var(--ac)">/'+escapeHtml((c&&c.name)||c)+'</span>').join(' · ');
+  } else {
+    base+='<br><span style="color:var(--ac)">/init</span> · <span style="color:var(--ac)">/review</span> · <span style="color:var(--ac)">/tdd</span> · <span style="color:var(--ac)">/debugging</span> · <span style="color:var(--ac)">/skill-creator</span>';
+  }
+  base+='<br><span style="color:#54655b">ctrl+p</span> palette · <span style="color:#54655b">/</span> commands · <span style="color:#54655b">@</span> mentions · <span style="color:#54655b">ctrl+x</span> leader · <span style="color:#54655b">!</span> shell · <span style="color:#54655b">esc</span> stops / new';
+  sysLine(base);
+}
+function runEngineCommand(name,args){
+  if(busy) return;
+  if(!connOpen){ sysLine('engine offline — reconnecting…'); return; }
+  addUser('/'+name+(args?(' '+args):''));
+  resetTurn();
+  setStatus('busy');
+  wsSend({type:'command', name, args:args||''});
+}
+function handleCommand(text){
+  const m=text.match(/^\/(\S+)\s*([\s\S]*)$/); if(!m){ sysLine('type a command after /'); return; }
+  const name=m[1].toLowerCase(), args=(m[2]||'').trim();
+  switch(name){
+    case 'help': case '?': showHelp(); break;
+    case 'new': case 'clear': case 'reset': wsSend({type:'new'}); resetSession(); break;
+    case 'theme': case 'themes': setTheme(args); break;
+    case 'skin': {
+      const s=(args||'').trim().toLowerCase();
+      if(s==='crt'||s==='modern'){ window.setSkin(s); sysLine('skin → <span style="color:var(--ac)">'+s+'</span>'); }
+      else { const cur=document.body.classList.contains('theme-modern')?'modern':'crt'; sysLine('/skin <span style="color:var(--ac)">crt</span> &nbsp;|&nbsp; <span style="color:var(--ac)">modern</span> &nbsp;&nbsp;<span style="color:#54655b;">current: '+escapeHtml(cur)+'</span>'); }
+      break;
+    }
+    case 'status': showStatus(); break;
+    case 'model': case 'models': case 'mo': if(args) selectByArg('model',args); else pickerPanel('model'); break;
+    case 'agent': case 'agents': if(args) selectByArg('agent',args); else pickerPanel('agent'); break;
+    default: runEngineCommand(name,args);   // /init /review /tdd /debugging /skill-creator + custom -> engine
+  }
+}
+
+/* ---- send a turn ---- */
+function send(text){
+  text=(text||'').trim();
+  if(!text || busy) return;
+  if(text.charAt(0)==='/'){ handleCommand(text); return; }
+  if(!connOpen){ const inp=chatVisible()?chatInput:homeInput; inp.placeholder='engine offline — reconnecting…'; return; }
+  if(!chatVisible()) showChat();
+  addUser(text);
+  resetTurn();
+  setStatus('busy');
+  wsSend({type:'prompt', text});
+}
+/* '!' shell mode → existing prompt path with a leading '!' shell marker
+   (the sidecar is unchanged: opencode's prompt handler interprets a leading
+   '!' as a shell command, exactly as the terminal does). */
+function submitShell(text){
+  text=(text||'').trim();
+  if(!text || busy) return;
+  if(!connOpen){ const inp=chatVisible()?chatInput:homeInput; inp.placeholder='engine offline — reconnecting…'; return; }
+  if(!chatVisible()) showChat();
+  addUser('$ '+text);
+  resetTurn();
+  setStatus('busy');
+  wsSend({type:'prompt', text:'!'+text});
+}
+
+/* ---- reset the per-turn accumulators (DOM history is kept) ---- */
+function resetTurn(){
+  clearThinking();
+  thoughtText=''; curAnswerEl=null; curAnswerText='';
+  toolEls={}; toolState={}; planEl=null;
+  turnProduced=false; ansDirty=false; thinkDirty=false;
+}
+
+/* ---- ESC / new: clear the session and return home ---- */
+function resetSession(){
+  log.innerHTML='';
+  resetTurn();
+  if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; }
+  permPending=false;
+  tok.textContent=''; costEl.textContent='';
+  chatInput.value=''; homeInput.value='';
+  if(window.ftpInput){ window.ftpInput.exitShell(); window.ftpInput.autosizeAll(); }
+  setStatus(connOpen?'ready':'offline');
+  showHome();
+}
+function doAbort(){
+  wsSend({type:'abort'});
+  if(activePerm){
+    const ap=activePerm; activePerm=null; permPending=false;
+    ap.el.innerHTML='';
+    const d=document.createElement('div'); d.className='perm-title'; d.style.color='#ff6b6b'; d.textContent='⛨ permission — aborted';
+    ap.el.appendChild(d);
+  }
+  // the sidecar will follow with turn-end / error -> setStatus('ready')
+}
+
+/* =====================================================================
+   WebSocket transport (unchanged from app.html)
+   ===================================================================== */
+let ws=null, reconnectT=null;
+function wsSend(o){ try{ if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); }catch(e){} }
+function scheduleReconnect(){ if(reconnectT) return; reconnectT=setTimeout(()=>{ reconnectT=null; connect(); }, 1200); }
+function connect(){
+  setStatus('connecting');
+  try{ ws=new WebSocket('ws://127.0.0.1:'+WS_PORT+(WS_TOKEN?'?token='+encodeURIComponent(WS_TOKEN):'')); }
+  catch(e){ scheduleReconnect(); return; }
+  ws.onopen=()=>{ /* wait for `ready` before flipping connOpen */ };
+  ws.onmessage=e=>{ let m; try{ m=JSON.parse(e.data); }catch(err){ return; } onWs(m); };
+  ws.onerror=()=>{ try{ ws.close(); }catch(e){} };
+  ws.onclose=()=>{ connOpen=false; permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('offline'); scheduleReconnect(); };  // clear any open permission panel so a reconnect never strands the input locked
+}
+function onWs(m){
+  if(!m || !m.type) return;
+  if(window.AgentOmegaSettings){ try{ if(window.AgentOmegaSettings.onWs(m)) return; }catch(e){} }   // settings menu consumes councilConfig/vaultKeys (peeks ready)
+  switch(m.type){
+    case 'ready':
+      sessionId=m.sessionId||sessionId;
+      models=Array.isArray(m.models)?m.models:models;
+      agents=Array.isArray(m.agents)?m.agents:agents;
+      engineCommands=Array.isArray(m.commands)?m.commands:engineCommands;
+      if(m.model!=null) curModel=m.model;
+      if(m.agent!=null) curAgent=m.agent;
+      connOpen=true; updateMeta(); syncDiscovery();
+      if(!busy) setStatus('ready');
+      break;
+    case 'update':       onUpdate(m.update); break;
+    case 'permission':   showPermission(m); break;
+    case 'commands':     engineCommands=Array.isArray(m.commands)?m.commands:engineCommands; syncDiscovery(); break;
+    case 'turn-start':   resetTurn(); setStatus('busy'); break;
+    case 'turn-end':
+      if(!turnProduced) addFallback('turn ended with no output'+(m.stopReason?(' ('+m.stopReason+')'):''));
+      clearThinking(); permPending=false;
+      if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; }   // no leftover permission box for an ended turn
+      setStatus('ready');
+      break;
+    case 'model':        if(m.model!=null){ curModel=m.model; updateMeta(); } break;
+    case 'agent':        if(m.agent!=null){ curAgent=m.agent; updateMeta(); } break;
+    case 'error':        addErr(m.message||'engine error'); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('error'); break;
+    case 'engine-down':  connOpen=false; addErr('engine offline: '+(m.message||'process exited')); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('offline'); break;
+  }
+}
+
+/* =====================================================================
+   ROOT-3  Input + keyboard subsystem (adapted from app.parity.html)
+   - auto-growing <textarea> prompts; Enter submits; shift/ctrl/alt+Enter
+     and ctrl+j insert newlines
+   - Up/Down prompt-history recall (persisted) ; '!' shell mode
+   - ctrl+c clear/exit-chord ; ctrl+d delete-fwd/exit
+   - transcript scroll keys (registered into the unified pipeline)
+   - in-prompt emacs editing (ctrl+a/e/k/u/w + word moves)
+   - paste: preserve newlines + "[Pasted ~N lines]" chip for big pastes
+   Buffer-home/end stay on native Ctrl+Home/Ctrl+End so plain Home/End drive
+   transcript scroll (matches keybind.ts' messages_first/last home/end).
+   ===================================================================== */
+(function(){
+  const HISTORY_KEY='ftp.promptHistory', MAX_HISTORY=50;
+  const PASTE_LINES_MIN=3, PASTE_CHARS_MIN=150;
+  const shellHint=$('shellHint');
+
+  /* ---------- prompt history (persisted, dedup-consecutive, max 50) ---------- */
+  let hist=[]; try{ const r=JSON.parse(localStorage.getItem(HISTORY_KEY)||'[]'); if(Array.isArray(r)) hist=r; }catch(e){}
+  hist=hist.slice(-MAX_HISTORY);
+  let histIndex=0;   // 0 = live; negative walks back (-1 = most recent)
+  function histPersist(){ try{ localStorage.setItem(HISTORY_KEY, JSON.stringify(hist.slice(-MAX_HISTORY))); }catch(e){} }
+  function histAppend(text){
+    text=String(text==null?'':text).replace(/\s+$/,'');
+    if(text===''){ histIndex=0; return; }
+    if(hist.length && hist[hist.length-1]===text){ histIndex=0; return; }   // dedup consecutive
+    hist.push(text); if(hist.length>MAX_HISTORY) hist=hist.slice(-MAX_HISTORY);
+    histIndex=0; histPersist();
+  }
+  function histMove(dir, cur){
+    if(!hist.length) return null;
+    const shown = histIndex===0 ? '' : hist[hist.length+histIndex];
+    if(shown!==cur && cur.length) return null;        // user edited -> don't lose it
+    const next=histIndex+dir;
+    if(Math.abs(next)>hist.length) return null;
+    if(next>0) return null;
+    histIndex=next;
+    return histIndex===0 ? '' : hist[hist.length+histIndex];
+  }
+
+  /* ---------- shell mode (global) ---------- */
+  let shellMode=false;
+  function setShell(on){
+    shellMode=!!on;
+    document.body.classList.toggle('shellmode', shellMode);
+    const m1=$('homeMark'), m2=$('chatMark');
+    if(m1) m1.textContent = shellMode?'$':'>';
+    if(m2) m2.textContent = shellMode?'$':'>';
+    if(shellHint) shellHint.classList.toggle('hidden', !shellMode);
+  }
+
+  /* ---------- exit chord (ctrl+c on empty) ---------- */
+  let exitArmed=false, exitTimer=null, savedPH=null;
+  function armExit(ta){
+    if(exitArmed){ post({type:'close'}); return; }
+    exitArmed=true; savedPH=ta.getAttribute('placeholder');
+    ta.setAttribute('placeholder','press Ctrl+C again to exit');
+    clearTimeout(exitTimer); exitTimer=setTimeout(()=>disarmExit(ta),1800);
+  }
+  function disarmExit(ta){ if(!exitArmed) return; exitArmed=false; clearTimeout(exitTimer);
+    if(ta && savedPH!=null) ta.setAttribute('placeholder',savedPH); savedPH=null; }
+
+  /* ---------- autosize ---------- */
+  function autosize(ta){ ta.style.height='auto';
+    ta.style.height=Math.min(ta.scrollHeight, Math.round(window.innerHeight*0.34))+'px'; }
+  function autosizeAll(){ autosize(homeInput); autosize(chatInput); }
+
+  /* ---------- large-paste chips: chip text <-> stored real text ---------- */
+  let pasteSeq=0; const pastes=Object.create(null);
+  function expandPastes(s){ let out=String(s); for(const tok in pastes) out=out.split(tok).join(pastes[tok]); return out; }
+  function clearPastes(){ for(const k in pastes) delete pastes[k]; }
+
+  /* ---------- text helpers on a textarea ---------- */
+  function lineStart(v,p){ const i=v.lastIndexOf('\n',p-1); return i<0?0:i+1; }
+  function lineEnd(v,p){ const i=v.indexOf('\n',p); return i<0?v.length:i; }
+  function wordBack(v,p){ let i=p; while(i>0&&/\s/.test(v[i-1]))i--; while(i>0&&!/\s/.test(v[i-1]))i--; return i; }
+  function wordFwd(v,p){ let i=p,n=v.length; while(i<n&&/\s/.test(v[i]))i++; while(i<n&&!/\s/.test(v[i]))i++; return i; }
+  function caretAnchor(ta){ if(ta.selectionStart===ta.selectionEnd) return ta.selectionStart;
+    return ta.selectionDirection==='backward'?ta.selectionEnd:ta.selectionStart; }
+  function moveCaret(ta,target,shift){
+    if(!shift){ ta.setSelectionRange(target,target); return; }
+    const a=caretAnchor(ta);
+    if(target<a) ta.setSelectionRange(target,a,'backward'); else ta.setSelectionRange(a,target,'forward');
+  }
+  function insert(ta,text){ const s=ta.selectionStart,e=ta.selectionEnd;
+    ta.value=ta.value.slice(0,s)+text+ta.value.slice(e); const c=s+text.length;
+    ta.setSelectionRange(c,c); autosize(ta); }
+  function replaceRange(ta,s,e){ ta.value=ta.value.slice(0,s)+ta.value.slice(e);
+    ta.setSelectionRange(s,s); autosize(ta); }
+
+  /* ---------- submit ---------- */
+  function doSubmit(ta){
+    if(busy) return;
+    const raw=ta.value;
+    if(expandPastes(raw).trim()===''){ try{ ta.classList.add('ao-shake'); setTimeout(()=>{ try{ta.classList.remove('ao-shake');}catch(e){} },320); }catch(e){} return; }   // empty submit: a small shake instead of silent nothing
+    histAppend(raw);
+    const full=expandPastes(raw);
+    ta.value=''; autosize(ta); clearPastes(); histIndex=0; disarmExit(ta);
+    if(shellMode){ setShell(false); submitShell(full.trim()); }
+    else { send(full); }                       // send() keeps slash-command routing + its own trim
+  }
+
+  /* ---------- paste ---------- */
+  function onPaste(e, ta){
+    const cd=e.clipboardData; if(!cd) return;
+    let text=cd.getData('text'); if(text==null||text==='') return;
+    if(text.length>4000000){ text=text.slice(0,4000000); }   // hard-cap a runaway paste so it can't freeze the UI
+    text=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+    const trimmed=text.trim();
+    const lineCount=(trimmed.match(/\n/g)||[]).length+1;
+    e.preventDefault();
+    if(lineCount>=PASTE_LINES_MIN || trimmed.length>PASTE_CHARS_MIN){
+      const tok='[Pasted #'+(++pasteSeq)+' ~'+lineCount+' lines]';
+      pastes[tok]=text; insert(ta, tok);                            // chip in the field; expanded on submit
+    } else {
+      insert(ta, text);                                            // small paste: newlines preserved
+    }
+  }
+
+  /* ---------- per-textarea keydown ---------- */
+  function onKey(e, ta){
+    if(e.isComposing) return;                 // don't break IME
+    if(window.__ftpModalOpen) return;         // palette/autocomplete/leader/permission get first dibs
+    const ek=e.key, key=ek.length===1?ek.toLowerCase():ek;
+    const ctrl=e.ctrlKey, alt=e.altKey, shift=e.shiftKey;
+    const v=ta.value, ss=ta.selectionStart, se=ta.selectionEnd, hasSel=ss!==se;
+
+    /* Enter: submit (plain) / newline (shift|ctrl|alt) ; ctrl+j newline */
+    if(ek==='Enter'){
+      if(shift||ctrl||alt){ e.preventDefault(); insert(ta,'\n'); }
+      else { e.preventDefault(); doSubmit(ta); }
+      return;
+    }
+    if(ctrl && !alt && !shift && key==='j'){ e.preventDefault(); insert(ta,'\n'); return; }
+
+    /* Escape: exit shell mode (and stop), else fall through to the global ESC */
+    if(ek==='Escape'){
+      if(shellMode){ e.preventDefault(); e.stopPropagation(); setShell(false); }
+      else disarmExit(ta);
+      return;
+    }
+
+    /* shell mode enter/exit */
+    if(key==='!' && !ctrl && !alt && !shellMode && v===''){ e.preventDefault(); setShell(true); return; }
+    if(shellMode && ek==='Backspace' && ss===0 && se===0){ e.preventDefault(); setShell(false); return; }
+
+    /* ctrl+c: copy (selection) / clear (non-empty) / exit chord (empty) */
+    if(ctrl && !alt && !shift && key==='c'){
+      if(hasSel) return;                      // let native copy run
+      e.preventDefault();
+      if(v!==''){ ta.value=''; autosize(ta); histIndex=0; } else armExit(ta);
+      return;
+    }
+    /* ctrl+d: delete-forward (with text) / exit (empty) */
+    if(ctrl && !alt && !shift && key==='d'){
+      e.preventDefault();
+      if(v===''){ post({type:'close'}); return; }
+      if(hasSel) replaceRange(ta,ss,se); else if(ss<v.length) replaceRange(ta,ss,ss+1);
+      return;
+    }
+
+    /* emacs line nav / kill — ctrl, never with alt (alt = transcript family) */
+    if(ctrl && !alt){
+      if(key==='a'){ e.preventDefault(); moveCaret(ta, lineStart(v,ss), shift); return; } // overrides select-all
+      if(key==='e'){ e.preventDefault(); moveCaret(ta, lineEnd(v,ss),  shift); return; }
+      if(key==='k'){ e.preventDefault(); let s=ss,en=lineEnd(v,ss); if(en===s&&s<v.length)en=s+1; replaceRange(ta,s,en); return; }
+      if(key==='u'){ e.preventDefault(); replaceRange(ta, lineStart(v,ss), ss); return; }
+      if(key==='w'){ e.preventDefault(); replaceRange(ta, wordBack(v,ss), ss); return; }
+      if(ek==='Backspace'){ e.preventDefault(); replaceRange(ta, wordBack(v,ss), ss); return; }
+      if(ek==='Delete'){ e.preventDefault(); replaceRange(ta, ss, wordFwd(v,ss)); return; }
+      if(ek==='ArrowLeft'){ e.preventDefault(); moveCaret(ta, wordBack(v,ss), shift); return; }
+      if(ek==='ArrowRight'){ e.preventDefault(); moveCaret(ta, wordFwd(v,ss), shift); return; }
+    }
+    /* word moves / delete via alt */
+    if(alt && !ctrl){
+      if(key==='b'||ek==='ArrowLeft'){ e.preventDefault(); moveCaret(ta, wordBack(v,ss), shift); return; }
+      if(key==='f'||ek==='ArrowRight'){ e.preventDefault(); moveCaret(ta, wordFwd(v,ss), shift); return; }
+      if(key==='d'||ek==='Delete'){ e.preventDefault(); replaceRange(ta, ss, wordFwd(v,ss)); return; }
+      if(ek==='Backspace'){ e.preventDefault(); replaceRange(ta, wordBack(v,ss), ss); return; }
+    }
+
+    /* Up/Down: prompt history at the input boundary, else move the caret */
+    if(ek==='ArrowUp' && !ctrl && !alt && !shift){
+      const flEnd=v.indexOf('\n'), onFirst = ss<=(flEnd<0?v.length:flEnd);
+      if(ss!==0){ if(onFirst){ e.preventDefault(); ta.setSelectionRange(0,0); } return; }
+      const item=histMove(-1, v); if(item===null) return;
+      e.preventDefault(); ta.value=item; ta.setSelectionRange(0,0); autosize(ta); return;
+    }
+    if(ek==='ArrowDown' && !ctrl && !alt && !shift){
+      const lsStart=lineStart(v,v.length), onLast = ss>=lsStart;
+      if(ss!==v.length){ if(onLast){ e.preventDefault(); ta.setSelectionRange(v.length,v.length); } return; }
+      const item=histMove(1, v); if(item===null) return;
+      e.preventDefault(); ta.value=item; const c=item.length; ta.setSelectionRange(c,c); autosize(ta); return;
+    }
+  }
+
+  /* ---------- transcript scroll keys — registered into the unified pipeline
+       (low prio) so they run after palette/autocomplete/leader/permission and
+       work even while the input is disabled (generating). Consumes -> true. */
+  function onScrollKey(e){
+    if(e.isComposing || window.__ftpModalOpen) return false;
+    const ek=e.key, ctrl=e.ctrlKey, alt=e.altKey, shift=e.shiftKey;
+    const c=convo; if(!c) return false;
+    const lineH=parseFloat(getComputedStyle(c).lineHeight)||30;
+    const page=c.clientHeight*0.5, half=c.clientHeight*0.25;
+    let d=null;
+    if(!ctrl && !alt && !shift){
+      if(ek==='PageUp')   d=-page;
+      else if(ek==='PageDown') d= page;
+      else if(ek==='Home'){ e.preventDefault(); c.scrollTop=0; return true; }            // transcript top
+      else if(ek==='End'){  e.preventDefault(); c.scrollTop=c.scrollHeight; return true; } // transcript bottom
+    } else if(ctrl && alt){                                                              // ctrl+alt family
+      if(ek==='b') d=-page; else if(ek==='f') d=page;
+      else if(ek==='u') d=-half; else if(ek==='d') d=half;
+      else if(ek==='y') d=-lineH; else if(ek==='e') d=lineH;
+      else if(ek==='g'){ e.preventDefault(); c.scrollTop=c.scrollHeight; return true; }   // last (ctrl+alt+g)
+    } else if(ctrl && !alt && ek==='g'){ e.preventDefault(); c.scrollTop=0; return true; } // first (ctrl+g)
+    if(d!=null){ e.preventDefault(); c.scrollTop+=d; return true; }
+    return false;
+  }
+
+  /* ---------- wire it up ---------- */
+  function wire(ta){
+    ta.addEventListener('input', ()=>{ autosize(ta); histIndex=0; disarmExit(ta); });
+    ta.addEventListener('paste', e=>onPaste(e,ta));
+    ta.addEventListener('keydown', e=>onKey(e,ta));
+    autosize(ta);
+  }
+  wire(homeInput); wire(chatInput);
+  window.registerKeydown(onScrollKey, -10);   // unified pipeline (below palette/leader/permission)
+  window.addEventListener('resize', autosizeAll);
+
+  /* expose a tiny API for the rest of the app (resetSession) */
+  window.ftpInput = { autosizeAll, setShell, exitShell:()=>setShell(false) };
+})();
+
+/* ---- global ESC (bubble phase): preserves app.html's semantics. Capture-
+        phase surfaces (palette/permission close) and the textarea shell-exit
+        ESC both stopPropagation, so they take precedence over this. ---- */
+window.addEventListener('keydown', e=>{
+  if(e.key!=='Escape') return;
+  e.preventDefault();
+  if(busy){ doAbort(); }                                          // turn active -> abort
+  else if(chatVisible()){ wsSend({type:'new'}); resetSession(); } // idle -> new + home
+  else { homeInput.value=''; if(window.ftpInput) window.ftpInput.autosizeAll(); homeInput.focus(); }
+});
+
+/* clicking chrome/margins (not the log, titlebar, or an input) returns focus
+   to the active field; selecting log text + open overlays are preserved */
+document.addEventListener('mousedown', e=>{
+  if(window.__ftpModalOpen) return;
+  if(e.target.closest('.titlebar') || e.target.closest('.convo') || /^(INPUT|TEXTAREA|BUTTON)$/.test(e.target.tagName)) return;
+  if(window.getSelection && window.getSelection().toString()) return;
+  if(chatVisible() ? !chatInput.disabled : true){ e.preventDefault(); focusActive(); }
+});
+window.addEventListener('focus', focusActive);
+window.addEventListener('DOMContentLoaded', ()=>homeInput.focus());
+
+/* =====================================================================
+   Command-discovery bridge — feed command-discovery.js from LIVE WS data
+   and route its actions through this app's real functions. command-discovery
+   normally fetches /api/command + /api/agent over HTTP; in the ACP build
+   there is no serve, so those fetches fail harmlessly (Array.isArray guards
+   mean a failed fetch never clobbers what we inject here). We push the
+   `ready` message's commands + agents straight into its registry instead.
+   ===================================================================== */
+function syncDiscovery(){
+  const C=window.AgentOmegaCommands; if(!C || !C.registry) return;
+  const R=C.registry;
+  // engine slash-commands (from `ready` / available_commands_update)
+  R.engine = (engineCommands||[]).map(c=>{
+    const name=(c&&c.name)||c;
+    return { kind:'engine', id:'engine:'+name, name, slash:name, aliases:[],
+             title:name, desc:(c&&c.description)||'', category:'Command', source:'command', keys:null };
+  });
+  // agents offered to the '@' dropdown (sidecar lists session agents/modes;
+  // file mentions are not available yet — see the '@' TODO in the changelog)
+  R.agents = (agents||[]).map(a=>({ name:(a.name||a.value), description:'' }));
+  try{ R.index(); }catch(e){}
+  try{ if(C.palette && C.palette.open) C.palette.render(); }catch(e){}
+  try{ if(C.autocomplete && C.autocomplete.visible) C.autocomplete.render(); }catch(e){}
+}
+function wireDiscovery(){
+  const C=window.AgentOmegaCommands; if(!C) return;
+  // Route built-in palette/leader/autocomplete actions to real functions.
+  // Supported over the ACP sidecar: new, model, agent, theme, help, status,
+  // exit, copy-last-message. Everything else reports honestly (no silent no-op).
+  const notAvail = (label)=>()=>sysLine('<span style="color:#7c8b82;">'+escapeHtml(label)+' is not available in the Agent Omega (ACP) build yet</span>');
+  C.setActions({
+    'session.new':     ()=>{ wsSend({type:'new'}); resetSession(); },
+    'model.list':      ()=>pickerPanel('model'),
+    'agent.list':      ()=>pickerPanel('agent'),
+    'theme.switch':    ()=>setTheme(''),
+    'help.show':       ()=>showHelp(),
+    'opencode.status': ()=>showStatus(),
+    'app.exit':        ()=>post({type:'close'}),
+    // messages.copy keeps command-discovery's default (copies the last .arow)
+    'session.list':    notAvail('session switching'),
+    'session.share':   notAvail('/share'),
+    'session.unshare': notAvail('/unshare'),
+    'session.rename':  notAvail('/rename'),
+    'session.timeline':notAvail('/timeline'),
+    'session.fork':    notAvail('/fork'),
+    'session.compact': notAvail('/compact'),
+    'session.undo':    notAvail('/undo'),
+    'session.redo':    notAvail('/redo'),
+    'session.copy':    notAvail('transcript copy'),
+    'session.export':  notAvail('/export'),
+    'session.sidebar.toggle': notAvail('the sidebar'),
+    'mcp.list':        notAvail('the MCP picker'),
+    'variant.list':    notAvail('model variants'),
+    'variant.cycle':   notAvail('variant cycling'),
+    'model.cycle_recent': notAvail('model cycling'),
+    'agent.cycle':     notAvail('agent cycling'),
+    'provider.connect':notAvail('/connect'),
+    'editor.open':     notAvail('an external editor')
+  });
+  syncDiscovery();   // push whatever `ready` data has already arrived
+}
+
+/* =====================================================================
+   SKIN SYSTEM  (CRT ↔ Modern runtime toggle)
+   window.setSkin('crt'|'modern') — toggles body.theme-modern, updates
+   --ac on :root (so omega-globe.js picks up the right accent colour),
+   and persists to localStorage('ao.skin').  Applies automatically on load.
+   ===================================================================== */
+window.setSkin = function(skin){
+  skin = (skin === 'modern') ? 'modern' : 'crt';
+  document.body.classList.toggle('theme-modern', skin === 'modern');
+  /* omega-globe.js reads --ac from documentElement, so mirror the value there */
+  if(skin === 'modern'){
+    document.documentElement.style.setProperty('--ac', '#6e7bff');
+  } else {
+    /* restore amber; getComputedStyle falls back to :root value once inline is removed */
+    document.documentElement.style.setProperty('--ac', '#ffb454');
+  }
+  localStorage.setItem('ao.skin', skin);
+  /* suppress the boot-slide on already-loaded switches */
+  document.body.classList.add('skin-loaded');
+};
+/* apply persisted skin immediately (before first paint) */
+(function(){
+  var saved = localStorage.getItem('ao.skin');
+  if(saved === 'modern') window.setSkin('modern');
+})();
+
+/* ---- boot ---- */
+updateMeta();
+homeInput.focus();
+connect();
+</script>
+
+<!-- Command discovery (ctrl+p palette / '/'&'@' autocomplete / ctrl+x leader).
+     Self-mounting; registers its masterKeydown through window.registerKeydown
+     (defined above) so it shares the ONE unified keydown pipeline. -->
+<script src="command-discovery.js"></script>
+<script src="crt-settings.js"></script>
+<script src="omega-globe.js"></script>
+<!-- Agent Omega boot sequence (Concept 3 · phosphor power-on). Self-mounting:
+     plays over the app during engine warm-up, reveals on the sidecar's `ready`. -->
+<script src="ao-boot-3.js"></script>
+<script>
+/* command-discovery.js sets window.AgentOmegaCommands synchronously on load,
+   then defers boot() to DOMContentLoaded. Wire actions + inject live data
+   either way (boot mounts the DOM; our wiring only mutates its registry +
+   action table, which is safe before boot). syncDiscovery() also re-runs on
+   every `ready` / available_commands_update. */
+if(window.AgentOmegaCommands){ wireDiscovery(); }
+else { window.addEventListener('DOMContentLoaded', ()=>{ if(window.AgentOmegaCommands) wireDiscovery(); }); }
+</script>
+</body>
+</html>

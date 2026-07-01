@@ -1,0 +1,854 @@
+/* ===================================================================
+   Agent Omega — MODERN THEME
+   All rules scoped under body.theme-modern.
+   CRT rules are never touched. This file only adds.
+   Globe: omega-globe.js reads --ac from documentElement;
+   setSkin() also sets the property on documentElement so the globe
+   re-tints correctly in both directions.
+   =================================================================== */
+
+/* ---- Hide Modern-only elements by default (CRT shows nothing new) ---- */
+.m-trafficlights,
+.m-brand,
+.m-cmdkpill,
+.m-home-content,
+.m-modelpill-row,
+.m-sendbtn,
+.m-chips,
+.m-homefoot,
+.m-spinner {
+  display: none;
+}
+
+/* ===================================================================
+   BASE / SHELL
+   =================================================================== */
+body.theme-modern {
+  --ac: #6e7bff;
+  font-family: 'Geist', 'Segoe UI', system-ui, sans-serif;
+  color: #d4d8de;
+  background: #0a0b0e;
+}
+
+body.theme-modern .win {
+  background: #0a0b0e;
+  border-radius: 15px;
+  border: 1px solid rgba(255,255,255,.09);
+  box-shadow: 0 40px 100px -20px rgba(0,0,0,.7), 0 0 0 1px rgba(0,0,0,.5);
+  overflow: hidden;
+}
+
+/* ---- Kill CRT overlays ---- */
+body.theme-modern .scan,
+body.theme-modern .roll,
+body.theme-modern .grille,
+body.theme-modern .vignette {
+  display: none !important;
+}
+
+/* ---- Kill CRT phosphor flicker ---- */
+body.theme-modern .screen {
+  animation: none;
+  background: radial-gradient(120% 100% at 50% -10%, #14161c 0%, #0c0d11 55%, #0a0b0e 100%);
+  box-shadow: none;
+}
+
+/* ---- Content layer ---- */
+body.theme-modern .content {
+  font-family: 'Geist', 'Segoe UI', system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.62;
+  letter-spacing: normal;
+  text-shadow: none;
+  color: #d4d8de;
+}
+
+/* ===================================================================
+   TITLEBAR
+   =================================================================== */
+body.theme-modern .titlebar {
+  height: 46px;
+  background: rgba(255,255,255,.018);
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  padding: 0 16px;
+  position: relative;
+}
+
+/* Hide CRT titlebar content */
+body.theme-modern .crt-tb-brand,
+body.theme-modern .crt-tb-controls {
+  display: none !important;
+}
+
+/* Traffic lights */
+body.theme-modern .m-trafficlights {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  z-index: 2;
+}
+body.theme-modern .m-tl {
+  width: 12.5px;
+  height: 12.5px;
+  border-radius: 50%;
+  cursor: default;
+  flex-shrink: 0;
+  box-shadow:
+    inset 0 1px .5px rgba(255,255,255,.42),
+    inset 0 -1px 1px rgba(0,0,0,.2),
+    0 .5px 1.5px rgba(0,0,0,.32);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: filter .1s;
+}
+body.theme-modern .m-tl:hover { filter: brightness(1.1); }
+body.theme-modern .m-tl svg { opacity: 0; transition: opacity .1s; }
+body.theme-modern .m-trafficlights:hover .m-tl svg { opacity: 1; }
+
+body.theme-modern .m-tl-close {
+  background: radial-gradient(circle at 40% 35%, rgba(247,152,141,.9), rgba(230,96,79,.88) 60%, rgba(196,69,58,.9));
+}
+body.theme-modern .m-tl-min {
+  background: radial-gradient(circle at 40% 35%, rgba(255,218,126,.9), rgba(243,186,67,.88) 60%, rgba(212,153,42,.9));
+}
+body.theme-modern .m-tl-zoom {
+  background: radial-gradient(circle at 40% 35%, rgba(147,224,130,.9), rgba(88,191,75,.88) 60%, rgba(58,158,48,.9));
+}
+
+/* Center brand */
+body.theme-modern .m-brand {
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 13px;
+  font-family: 'Geist', sans-serif;
+  white-space: nowrap;
+  pointer-events: none;
+}
+body.theme-modern .m-brand-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ac);
+  box-shadow: 0 0 6px var(--ac);
+  flex-shrink: 0;
+}
+body.theme-modern .m-brand-name { color: #c5c9cf; font-weight: 500; }
+body.theme-modern .m-brand-sep { color: #4a4f57; }
+body.theme-modern .m-brand-branch { color: #6b7178; }
+
+/* ⌘K pill */
+body.theme-modern .m-cmdkpill {
+  display: flex !important;
+  align-items: center;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.07);
+  border-radius: 7px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  color: #6b7178;
+  cursor: default;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+/* ===================================================================
+   HOME — CRT elements to suppress
+   =================================================================== */
+body.theme-modern .crt-wordmark,
+body.theme-modern .crt-tagline,
+body.theme-modern .crt-cmdhints,
+body.theme-modern .crt-tip,
+body.theme-modern .crt-home-meta {
+  display: none !important;
+}
+/* Suppress CRT prompt markers and box labels globally */
+body.theme-modern .promptmark { display: none !important; }
+body.theme-modern .box-label  { display: none !important; }
+
+/* ===================================================================
+   HOME — Modern hero section
+   =================================================================== */
+body.theme-modern .m-home-content {
+  display: flex !important;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  width: 100%;
+  margin-bottom: 32px;
+}
+
+/* Ambient indigo glow */
+body.theme-modern .m-ambient {
+  position: absolute;
+  width: 620px;
+  height: 370px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(110,123,255,.14) 0%, transparent 70%);
+  filter: blur(50px);
+  pointer-events: none;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 0;
+}
+
+/* A/O kicker */
+body.theme-modern .m-kicker {
+  font-family: 'Geist', sans-serif;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 7px;
+  color: #9197a0;
+  text-transform: uppercase;
+  margin-bottom: 18px;
+  position: relative;
+  z-index: 1;
+}
+body.theme-modern .m-kicker-slash { color: var(--ac); }
+
+/* /agent-omega hero */
+body.theme-modern .m-hero {
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 48px;
+  font-weight: 500;
+  color: #f2f4f7;
+  line-height: 1;
+  display: flex;
+  align-items: baseline;
+  position: relative;
+  z-index: 1;
+}
+body.theme-modern .m-hero-slash {
+  color: var(--ac);
+  text-shadow: 0 0 16px rgba(110,123,255,.45);
+}
+
+/* Accent caret bar */
+@keyframes mblink { 0%,49%{opacity:1}50%,100%{opacity:0} }
+body.theme-modern .m-caret {
+  display: inline-block;
+  width: 2.5px;
+  height: 38px;
+  background: var(--ac);
+  vertical-align: middle;
+  margin-left: 6px;
+  animation: mblink 1.05s steps(1) infinite;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+/* ===================================================================
+   HOME — Glassy input box
+   =================================================================== */
+body.theme-modern #home .box {
+  border: 1px solid rgba(255,255,255,.1);
+  background: rgba(255,255,255,.035);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow:
+    0 12px 40px -12px rgba(0,0,0,.6),
+    inset 0 1px 0 rgba(255,255,255,.04);
+  width: 640px;
+  max-width: calc(100% - 48px);
+  margin-top: 16px !important; /* override inline 58px; hero provides most gap */
+  position: relative;
+  z-index: 1;
+}
+
+/* Input row inside home box: textarea + send button */
+body.theme-modern #home .box > div.home-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  min-height: 28px;
+}
+
+body.theme-modern #home .inp {
+  font-family: 'Geist', sans-serif;
+  font-size: 15px !important;   /* overrides the inline font-size:23px */
+  color: #e8eaed;
+  caret-color: var(--ac);
+  letter-spacing: normal;
+  line-height: 1.5;
+  text-shadow: none;
+}
+body.theme-modern #home .inp::placeholder { color: #5a606a; }
+
+/* Send button */
+body.theme-modern .m-sendbtn {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  background: var(--ac);
+  border-radius: 9px;
+  box-shadow: 0 4px 16px -4px var(--ac);
+  cursor: default;
+  transition: filter .1s;
+}
+body.theme-modern .m-sendbtn:hover { filter: brightness(1.1); }
+
+/* Model pill row */
+body.theme-modern .m-modelpill-row {
+  display: flex !important;
+  align-items: center;
+  margin-top: 10px;
+  padding: 0 2px;
+}
+body.theme-modern .m-modelpill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255,255,255,.045);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: 'Geist', sans-serif;
+  color: #9197a0;
+  cursor: default;
+}
+body.theme-modern .m-modelpill-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #3ecf8e;
+  flex-shrink: 0;
+}
+body.theme-modern .m-modelpill-name { color: #c5c9cf; }
+body.theme-modern .m-modelpill-sep  { color: #4a4f57; }
+body.theme-modern .m-modelpill-local{ color: #6b7178; }
+
+/* Suggestion chips */
+body.theme-modern .m-chips {
+  display: flex !important;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 16px;
+  position: relative;
+  z-index: 1;
+  width: 640px;
+  max-width: calc(100% - 48px);
+}
+body.theme-modern .m-chip {
+  background: rgba(255,255,255,.03);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 9px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-family: 'Geist', sans-serif;
+  color: #8b9097;
+  cursor: default;
+  transition: border-color .15s, color .15s;
+  white-space: nowrap;
+}
+body.theme-modern .m-chip:hover {
+  border-color: var(--ac);
+  color: #c5c9cf;
+}
+
+/* Footer */
+body.theme-modern .m-homefoot {
+  display: flex !important;
+  gap: 24px;
+  margin-top: 20px;
+  font-size: 12.5px;
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  color: #4d525a;
+  position: relative;
+  z-index: 1;
+}
+
+/* ===================================================================
+   CHAT — conversation log
+   =================================================================== */
+
+/* Scrollbar */
+body.theme-modern .convo::-webkit-scrollbar { width: 6px; }
+body.theme-modern .convo::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.08);
+  border-radius: 3px;
+}
+
+/* User bubble — right-aligned, max 74% */
+body.theme-modern .urow {
+  justify-content: flex-end;
+  font-size: 15px !important;  /* overrides inline font-size:22px */
+  color: #e8eaed;
+  text-shadow: none;
+}
+body.theme-modern .urow > .ac { display: none !important; } /* hide ">" */
+body.theme-modern .urow .utext {
+  max-width: 74%;
+  flex: none !important;  /* !important overrides the inline flex:1 set by JS */
+  background: rgba(110,123,255,.13);
+  border: 1px solid rgba(110,123,255,.26);
+  border-radius: 14px 14px 4px 14px;
+  padding: 10px 15px;
+  white-space: pre-wrap;
+}
+
+/* ===================================================================
+   THINKING — 3 pulsing dots via CSS on the CRT .think structure
+   Original .think HTML: <div class="pk"><span class="spin">⠹</span>&nbsp;thinking</div><div class="body"></div>
+   We turn .pk into a 3-dot container using the .spin span + two pseudo-elements.
+   =================================================================== */
+@keyframes mpulse {
+  0%,80%,100%{ transform:scale(.7); opacity:.4 }
+  40%{ transform:scale(1); opacity:1 }
+}
+body.theme-modern .think {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 1;
+  text-shadow: none;
+}
+body.theme-modern .think .pk {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0;         /* hide " thinking" text node */
+  color: transparent;
+  text-shadow: none;
+}
+/* dot 1 — pseudo before */
+body.theme-modern .think .pk::before {
+  content: '';
+  display: inline-block;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: #8b9097;
+  animation: mpulse 1.2s ease-in-out infinite;
+  animation-delay: 0s;
+}
+/* dot 2 — the .spin span (repurposed) */
+body.theme-modern .think .pk .spin {
+  font-size: 0;
+  display: inline-block;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: #8b9097;
+  animation: mpulse 1.2s ease-in-out infinite;
+  animation-delay: .18s;
+}
+/* dot 3 — pseudo after */
+body.theme-modern .think .pk::after {
+  content: '';
+  display: inline-block;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: #8b9097;
+  animation: mpulse 1.2s ease-in-out infinite;
+  animation-delay: .36s;
+}
+/* hide thought body in Modern (wall of debug text isn't part of the design) */
+body.theme-modern .think .body { display: none !important; }
+
+/* ===================================================================
+   ANSWER TEXT
+   =================================================================== */
+body.theme-modern .arow {
+  font-family: 'Geist', sans-serif;
+  font-size: 15px !important;  /* overrides inline font-size:22px set by JS */
+  line-height: 1.62;
+  color: #d4d8de;
+  text-shadow: none;
+}
+/* Bullet markers: the JS emits amber ">" spans; override to accent dots */
+body.theme-modern .arow > div > span[style*="color:var(--ac)"],
+body.theme-modern .arow > div > span[style*="color:#ffb454"] {
+  /* Replace ">" glyph with a dot via font-size:0 + ::before */
+  font-size: 0;
+  display: inline-block;
+  width: 1em;  /* keep the margin-right spacing */
+  position: relative;
+}
+body.theme-modern .arow > div > span[style*="color:var(--ac)"]::before,
+body.theme-modern .arow > div > span[style*="color:#ffb454"]::before {
+  content: '';
+  display: inline-block;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--ac);
+  vertical-align: middle;
+  margin-top: -1px;
+  font-size: 0;
+}
+
+/* ===================================================================
+   TOOL CARD
+   =================================================================== */
+body.theme-modern .toolwrap {
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.022);
+  border-radius: 11px;
+  padding: 10px 14px;
+  font-family: 'Geist', sans-serif;
+}
+body.theme-modern .toolline {
+  font-size: 13px;
+  color: #9197a0;
+  align-items: center;
+  text-shadow: none;
+}
+body.theme-modern .tglyph {
+  color: var(--ac);
+  font-size: 12px;
+}
+body.theme-modern .tname {
+  color: #d4d8de;
+  font-family: 'Geist', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  text-shadow: none;
+}
+body.theme-modern .ttime {
+  font-size: 11px;
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  background: rgba(255,255,255,.05);
+  border-radius: 5px;
+  padding: 1px 6px;
+  color: #6b7178;
+}
+body.theme-modern .tsub {
+  font-size: 13px;
+  font-family: 'Geist', sans-serif;
+  color: #6b7178;
+  text-shadow: none;
+}
+body.theme-modern .ttodo {
+  font-size: 13px;
+  font-family: 'Geist', sans-serif;
+  color: #6b7178;
+  text-shadow: none;
+}
+body.theme-modern .ttodo.active { color: var(--ac); }
+
+/* ===================================================================
+   DIFF CARD
+   =================================================================== */
+body.theme-modern .diff {
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.018);
+  border-radius: 10px;
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow: hidden;
+}
+
+/* ===================================================================
+   OUTPUT / COLLAPSIBLE
+   =================================================================== */
+body.theme-modern .out-head {
+  font-family: 'Geist', sans-serif;
+  font-size: 13px;
+  color: #6b7178;
+  text-shadow: none;
+}
+body.theme-modern .out-head:hover { color: #9197a0; }
+body.theme-modern .out-pre {
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 13px;
+  background: rgba(0,0,0,.35);
+  border: 1px solid rgba(255,255,255,.06);
+  border-radius: 8px;
+  color: #9197a0;
+  text-shadow: none;
+}
+body.theme-modern .out-pre::-webkit-scrollbar { width: 6px; }
+body.theme-modern .out-pre::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.08);
+  border-radius: 3px;
+}
+
+/* ===================================================================
+   ERROR / FALLBACK
+   =================================================================== */
+body.theme-modern .errrow {
+  font-family: 'Geist', sans-serif;
+  font-size: 15px !important;  /* overrides inline font-size:22px */
+  color: #ff6369;
+  text-shadow: none;
+}
+body.theme-modern .fallback {
+  font-family: 'Geist', sans-serif;
+  font-size: 14px;
+  color: #6b7178;
+  text-shadow: none;
+}
+
+/* ===================================================================
+   PLAN
+   =================================================================== */
+body.theme-modern .plan {
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.022);
+  border-radius: 11px;
+  box-shadow: none;
+}
+body.theme-modern .plan-title {
+  font-family: 'Geist', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: #9197a0;
+  text-shadow: none;
+}
+body.theme-modern .plan-row {
+  font-family: 'Geist', sans-serif;
+  font-size: 14px;
+  text-shadow: none;
+}
+
+/* ===================================================================
+   MODEL / AGENT PICKER PANEL
+   =================================================================== */
+body.theme-modern .panel {
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(22,24,29,.97);
+  border-radius: 12px;
+  box-shadow: 0 18px 44px -12px rgba(0,0,0,.7);
+  backdrop-filter: blur(8px);
+}
+body.theme-modern .panel-title {
+  font-family: 'Geist', sans-serif;
+  font-size: 10.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: #6b7178;
+  margin-bottom: 6px;
+  text-shadow: none;
+}
+body.theme-modern .pick {
+  font-family: 'Geist', sans-serif;
+  font-size: 13px;
+  border-radius: 8px;
+  padding: 6px 10px;
+  text-shadow: none;
+}
+body.theme-modern .pick:hover { background: rgba(255,255,255,.06); color: #e8eaed; }
+body.theme-modern .pk-key {
+  color: var(--ac);
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 12px;
+  text-shadow: none;
+}
+body.theme-modern .pk-cur {
+  color: #3ecf8e;
+  font-size: 12px;
+  text-shadow: none;
+}
+
+/* ===================================================================
+   PERMISSION PANEL
+   =================================================================== */
+body.theme-modern .perm {
+  border: 1px solid rgba(255,215,100,.2);
+  background: rgba(22,24,29,.97);
+  border-radius: 11px;
+  box-shadow: none;
+  backdrop-filter: blur(8px);
+}
+body.theme-modern .perm-title {
+  font-family: 'Geist', sans-serif;
+  font-size: 14px;
+  color: #f2c97d;
+  text-shadow: none;
+}
+body.theme-modern .perm-btn {
+  font-family: 'Geist', sans-serif;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.1);
+  background: rgba(255,255,255,.04);
+  text-shadow: none;
+}
+body.theme-modern .perm-btn:hover { background: rgba(255,255,255,.08); }
+body.theme-modern .perm-hint {
+  font-family: 'Geist', sans-serif;
+  font-size: 12px;
+  color: #6b7178;
+  text-shadow: none;
+}
+
+/* ===================================================================
+   CHAT INPUT BOX
+   =================================================================== */
+body.theme-modern #chat .box {
+  border: 1px solid rgba(255,255,255,.1);
+  background: rgba(255,255,255,.035);
+  border-radius: 16px;
+  padding: 14px 16px 12px;
+  box-shadow:
+    0 8px 32px -8px rgba(0,0,0,.5),
+    inset 0 1px 0 rgba(255,255,255,.04);
+}
+body.theme-modern #chat .inp {
+  font-family: 'Geist', sans-serif;
+  font-size: 14px !important;   /* overrides the inline font-size:22px */
+  letter-spacing: normal;
+  color: #e8eaed;
+  caret-color: var(--ac);
+  text-shadow: none;
+}
+body.theme-modern #chat .inp::placeholder { color: #5a606a; }
+
+/* The meta line (agent · model · local) inside chat box */
+body.theme-modern #chat .box > div:last-child {
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 12px;
+  color: #4d525a;
+  text-shadow: none;
+  padding-left: 0;
+}
+body.theme-modern #chat .box > div:last-child .metaAgent { color: var(--ac); }
+body.theme-modern #chat .box > div:last-child .metaModel { color: #6b7178; }
+body.theme-modern #chat .box > div:last-child .cy { color: #6b7178; }
+
+/* Shell hint */
+body.theme-modern .shellhint {
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 12px;
+  border: 1px solid rgba(255,255,255,.1);
+  background: rgba(255,255,255,.04);
+  border-radius: 6px;
+  color: #8b9097;
+  padding: 2px 8px;
+  letter-spacing: normal;
+}
+
+/* ===================================================================
+   STATUS LINE
+   =================================================================== */
+body.theme-modern #chat > div:last-child {
+  font-family: 'Geist', sans-serif;
+  font-size: 13px;
+  color: #5a606a;
+  text-shadow: none;
+}
+body.theme-modern #statusText {
+  font-family: 'Geist', sans-serif;
+  font-size: 13px;
+  color: #8b9097;
+  text-shadow: none;
+}
+body.theme-modern #statusDot { font-size: 10px; }
+
+body.theme-modern #tok {
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 12px;
+  background: rgba(255,255,255,.05);
+  border-radius: 6px;
+  padding: 2px 8px;
+  color: #6b7178;
+  text-shadow: none;
+}
+body.theme-modern #cost {
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 12px;
+  background: rgba(62,207,142,.06);
+  border-radius: 6px;
+  padding: 2px 8px;
+  color: #3ecf8e;
+  text-shadow: none;
+}
+/* ctrl+p / /help hint in status line */
+body.theme-modern #chat > div:last-child .ac {
+  color: var(--ac);
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 11px;
+  text-shadow: none;
+}
+
+/* ===================================================================
+   SETTINGS OVERLAY (crt-settings.js) in Modern
+   =================================================================== */
+body.theme-modern .ftpset-overlay {
+  background: rgba(10,11,14,.8);
+  backdrop-filter: blur(8px);
+}
+/* The settings panel itself stays CRT-styled (it's a separate overlay) */
+
+/* ===================================================================
+   BOOT ANIMATION (subtle fade/rise)
+   =================================================================== */
+@keyframes mboot {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0);    }
+}
+body.theme-modern .win {
+  animation: mboot 520ms ease-out both;
+}
+/* Don't re-animate when already loaded */
+body.theme-modern.skin-loaded .win {
+  animation: none;
+}
+
+/* ===================================================================
+   SYNTAX TOKEN COLORS — Modern (Tokyo Night)
+   Overrides the CRT color values set in app.html's <style> block.
+   =================================================================== */
+body.theme-modern .tk-comment { color: #6b7280; }
+body.theme-modern .tk-string  { color: #9ece6a; }
+body.theme-modern .tk-number  { color: #ff9e64; }
+body.theme-modern .tk-keyword { color: #bb9af7; }
+body.theme-modern .tk-type    { color: #7dcfff; }
+body.theme-modern .tk-capital { color: #7aa2f7; }
+body.theme-modern .tk-default { color: #c0c5ce; }
+body.theme-modern .tk-punct   { color: #828a96; }
+
+/* ===================================================================
+   DIFF ROW STRUCTURE — Modern
+   42px gutter, 18px sign col; row-background tints instead of CRT's
+   opacity fade on deletions.
+   =================================================================== */
+body.theme-modern .dk-num  { width: 42px; color: #4d525a; }
+body.theme-modern .dk-sign { width: 18px; }
+/* Modern: no opacity fade on deleted lines — row tint does the job */
+body.theme-modern .dk-row-del .dk-code { opacity: 1; }
+/* Row-background tints (add = subtle green, del = subtle red) */
+body.theme-modern .dk-row-add { background: rgba(62,207,142,.09); }
+body.theme-modern .dk-row-del { background: rgba(255,99,105,.09); }
+/* Footer border and filename chip */
+body.theme-modern .dk-foot { border-top-color: rgba(255,255,255,.06); }
+body.theme-modern .dk-file { color: #4d525a; }
+
+/* ===================================================================
+   GENERATING STATUS — spinning ring (mspin)
+   Applied via body.is-generating (set/cleared in setStatus() in app.html).
+   Replaces #statusDot's dot glyph with a CSS spinner ring.
+   =================================================================== */
+@keyframes mspin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+body.theme-modern.is-generating #statusDot {
+  font-size: 0;          /* hide the "●" text character */
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.12);
+  border-top-color: var(--ac);
+  animation: mspin .7s linear infinite;
+  vertical-align: middle;
+  /* override the inline color set by setStatus() */
+  color: transparent !important;
+}
+
+/* ===================================================================
+   CRT-ONLY HOME FOOTER — hidden in Modern
+   =================================================================== */
+body.theme-modern .crt-homefoot { display: none !important; }

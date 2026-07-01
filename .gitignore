@@ -1,0 +1,36 @@
+# Agent Omega .gitignore
+# Covers the Node.js sidecar, the .NET (C#/WinForms/WebView2) app, and the
+# Python web bridge. The engine binary is NOT tracked here -- it ships as a
+# GitHub Release download and is fetched at install time.
+
+# --- Node.js ---
+node_modules/
+
+# --- .NET build output ---
+bin/
+obj/
+*.user
+
+# --- Python ---
+__pycache__/
+
+# --- Databases / persisted state ---
+*.db
+*.db-wal
+*.db-shm
+*.sqlite*
+
+# --- Logs & structured logs ---
+*.log
+*.jsonl
+
+# --- Runtime / working data ---
+workspace/
+
+# --- Secrets & local env ---
+.env
+
+# --- Engine binary (shipped via GitHub Release, never committed) ---
+*.exe
+
+# Note: config-template/ is shipped source and is intentionally tracked.
