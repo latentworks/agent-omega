@@ -32,7 +32,11 @@
        AgentOmegaCommands.refresh()            // re-fetch engine commands/agents
    ===================================================================== */
 (function () {
-  const BASE = "http://127.0.0.1:4577";
+  // Engine HTTP API base. The sidecar announces the real port in its `ready`
+  // frame (app.html sets window.AO_API_BASE); the old hardcoded 4577 was a
+  // dead port that silently disabled every apiGet feature.
+  const BASE_FALLBACK = "http://127.0.0.1:4577";
+  const BASE = { toString() { return (typeof window !== "undefined" && window.AO_API_BASE) || BASE_FALLBACK; } };
   const LEADER_TIMEOUT = 2000; // matches LeaderTimeoutDefault
 
   /* ---------- tiny utils (reuse app's escapeHtml if available) ---------- */
@@ -162,7 +166,8 @@
       { id: "model.list", slash: "models", aliases: ["mo"], title: "Switch model", category: "Agent", suggested: true },
       { id: "agent.list", slash: "agents", title: "Switch agent", category: "Agent" },
       { id: "mcp.list", slash: "mcps", title: "Toggle MCPs", category: "Agent" },
-      { id: "variant.list", slash: "variants", title: "Switch model variant", category: "Agent" },
+      { id: "effort.set", slash: "effort", aliases: ["variants", "variant"], title: "Reasoning effort", category: "Agent" },
+      { id: "thinking.toggle", slash: "thinking", aliases: ["thoughts"], title: "Toggle thinking traces", category: "System" },
       { id: "model.cycle_recent", title: "Model cycle", category: "Agent", hidden: true },
       { id: "agent.cycle", title: "Agent cycle", category: "Agent", hidden: true },
       { id: "variant.cycle", title: "Variant cycle", category: "Agent", hidden: true },
@@ -171,6 +176,7 @@
       // --- System ---
       { id: "opencode.status", slash: "status", title: "View status", category: "System" },
       { id: "theme.switch", slash: "themes", title: "Switch theme", category: "System" },
+      { id: "skin.switch", slash: "skin", aliases: ["modern", "crt"], title: "Switch skin (CRT ↔ Modern)", category: "System", suggested: true },
       { id: "help.show", slash: "help", title: "Help", category: "System" },
       { id: "docs.open", title: "Open docs", category: "System" },
       { id: "editor.open", title: "Open external editor", category: "System", hidden: true },
@@ -185,6 +191,15 @@
     "model.list": () => { const f = appFn("setModelCmd"); if (f) return f(""); notice("model picker not wired yet"); },
     "agent.list": () => { const f = appFn("setAgentCmd"); if (f) return f(""); notice("agent picker not wired yet"); },
     "theme.switch": () => { const f = appFn("setTheme"); if (f) return f(""); notice("theme picker not wired yet"); },
+    "skin.switch": (args) => {
+      const f = appFn("setSkin");
+      if (!f) return notice("skin switch not available");
+      const cur = document.body.classList.contains("theme-modern") ? "modern" : "crt";
+      const a = String(args || "").toLowerCase();
+      const want = a.indexOf("modern") >= 0 ? "modern" : a.indexOf("crt") >= 0 ? "crt" : cur === "crt" ? "modern" : "crt";
+      f(want);
+      notice("skin → " + want);
+    },
     "help.show": () => { const f = appFn("showHelp"); if (f) return f(); notice("type / to discover commands, or press ctrl+p"); },
     "app.exit": () => { const p = appFn("post"); if (p) p({ type: "close" }); },
     "docs.open": () => { try { window.open("https://opencode.ai/docs", "_blank"); } catch (e) { notice("Agent Omega runs on the opencode engine — engine docs: https://opencode.ai/docs"); } },
@@ -197,23 +212,24 @@
     },
     // Commands below land with other parity waves (session actions B1, pickers
     // A11/B2/B3); until an agent registers them they report honestly.
-    "session.list": () => notice("session list lands with A11"),
-    "session.share": () => notice("/share lands with session actions (B1)"),
-    "session.unshare": () => notice("/unshare lands with session actions (B1)"),
-    "session.rename": () => notice("/rename lands with session actions (B1)"),
-    "session.timeline": () => notice("/timeline lands with session actions (B1)"),
-    "session.fork": () => notice("/fork lands with session actions (B1)"),
-    "session.compact": () => notice("/compact lands with session actions (B1)"),
-    "session.undo": () => notice("/undo lands with session actions (B1)"),
-    "session.redo": () => notice("/redo lands with session actions (B1)"),
-    "session.copy": () => notice("/copy lands with session actions (B1)"),
-    "session.export": () => notice("/export lands with session actions (B1)"),
+    "session.list": () => { const f = appFn("showSessions"); if (f) return f(); notice("session list unavailable"); },
+    "session.share": () => { const f = appFn("shareSession"); if (f) return f(); notice("share unavailable"); },
+    "session.unshare": () => { const f = appFn("unshareSession"); if (f) return f(); notice("unshare unavailable"); },
+    "session.rename": () => { const f = appFn("insertSlashText"); if (f) return f("/rename "); notice("rename unavailable"); },
+    "session.timeline": () => { const f = appFn("timelinePanel"); if (f) return f(); notice("timeline unavailable"); },
+    "session.fork": () => { const f = appFn("forkSession"); if (f) return f(); notice("fork unavailable"); },
+    "session.compact": () => { const f = appFn("compactSession"); if (f) return f(); notice("compact unavailable"); },
+    "session.undo": () => { const f = appFn("undoLast"); if (f) return f(); notice("undo unavailable"); },
+    "session.redo": () => { const f = appFn("redoLast"); if (f) return f(); notice("redo unavailable"); },
+    "session.copy": () => { const f = appFn("copySessionTranscript"); if (f) return f(); notice("copy unavailable"); },
+    "session.export": () => { const f = appFn("exportSession"); if (f) return f(); notice("export unavailable"); },
     "session.sidebar.toggle": () => notice("sidebar lands later"),
     "mcp.list": () => notice("MCP picker lands later"),
-    "variant.list": () => notice("variant picker lands later"),
+    "effort.set": (args) => { const f = appFn("effortCmd"); if (f) return f(args || ""); notice("effort control unavailable"); },
+    "thinking.toggle": (args) => { const f = appFn("thinkingCmd"); if (f) return f(args || ""); notice("thinking toggle unavailable"); },
     "model.cycle_recent": () => notice("model cycle lands with B22"),
     "agent.cycle": () => notice("agent cycle lands with B21"),
-    "variant.cycle": () => notice("variant cycle lands with C15"),
+    "variant.cycle": () => { const f = appFn("effortCmd"); if (f) return f(""); notice("effort control unavailable"); },
     "provider.connect": () => notice("/connect lands later"),
     "opencode.status": () => notice("/status lands later"),
     "editor.open": () => notice("external editor unavailable"),
@@ -276,14 +292,15 @@
         if (run) return run(name, args || "");
         return notice("engine command runner unavailable");
       }
-      // quick-switch slots 1..9
+      // quick-switch slots 1..9 -> Nth most recent session
       if (/^session\.quick_switch\.\d$/.test(id)) {
-        const slot = id.slice(-1);
-        const f = ACTIONS[id]; if (f) return f();
-        return notice("quick-switch " + slot + " lands with A11");
+        const slot = Number(id.slice(-1));
+        const f = appFn("quickSwitchSession");
+        if (f) return f(slot);
+        return notice("quick-switch " + slot + " unavailable");
       }
       const f = ACTIONS[id];
-      if (f) return f();
+      if (f) return f(args);
       return notice("command not wired: " + id);
     },
   };
@@ -511,6 +528,7 @@
 
     show(mode, idx) {
       this.visible = mode; this.mode = mode; this.triggerIdx = idx; this.sel = 0;
+      this.navigated = false;
       this.el.classList.remove("hidden");
       this.render();
       if (mode === "@") this.refreshFiles();
@@ -584,7 +602,7 @@
         this.listEl.querySelectorAll(".ftp-drop-row").forEach((r) => {
           const i = +r.getAttribute("data-i");
           r.addEventListener("mousemove", () => { if (this.sel !== i) { this.sel = i; this.paint(); } });
-          r.addEventListener("mousedown", (e) => { e.preventDefault(); this.sel = i; this.complete(false); });
+          r.addEventListener("mousedown", (e) => { e.preventDefault(); this.sel = i; this.complete(false, true); });
         });
       }
       this.position();
@@ -605,6 +623,7 @@
     },
     move(dir) {
       if (!this.items.length) return;
+      this.navigated = true; // arrow keys = a deliberate pick; Enter may fire it
       this.sel = (this.sel + dir + this.items.length) % this.items.length;
       this.paint();
     },
@@ -621,17 +640,31 @@
 
     // tab=true means "complete" (directories expand, slashes insert text);
     // else "select" (Enter) which also runs built-in slash commands.
-    complete(tab) {
+    // deliberate=true when the row was chosen by arrow keys or click.
+    complete(tab, deliberate) {
       const it = this.items[this.sel];
       if (!it) { this.hide(); return; }
       if (this.visible === "/") {
         const c = it.cmd;
+        const q = this.query().toLowerCase();
+        // Enter only fires what the user MEANT: a deliberate pick, an empty
+        // query, or a typed prefix of the command's name/alias. A loose fuzzy
+        // hit (e.g. "/thinking" landing on an unrelated command) must never run.
+        if (!tab && !(deliberate || this.navigated) && q) {
+          const names = [c.slash, ...(c.aliases || [])].map((s) => String(s).toLowerCase());
+          if (!names.some((n) => n.startsWith(q))) {
+            notice("no matching command: /" + q);
+            this.hide();
+            return;
+          }
+        }
         if (c.kind === "builtin") {
           // run immediately (matches useCommandSlashes onSelect -> dispatchCommand)
+          const typedArgs = q;
           this.input.value = "";
           this.input.dispatchEvent(new Event("input", { bubbles: true }));
           this.hide();
-          Registry.dispatch(c.id);
+          Registry.dispatch(c.id, typedArgs);
           return;
         }
         // engine/server command -> insert "/name " so the user can add args

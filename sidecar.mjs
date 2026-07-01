@@ -20,12 +20,14 @@ const BUN = process.env.AGENT_OMEGA_BUN || 'bun'
 const OPENCODE_SRC = process.env.AGENT_OMEGA_OPENCODE_SRC || ''
 const WORKDIR = process.argv[2] || path.join(os.homedir(), '.agent-omega', 'workspace')
 const WS_PORT = Number(process.argv[3]) || 4599
+const API_PORT = WS_PORT + 1   // engine HTTP API rides one above the control socket (unique per instance)
 const DEFAULT_MODEL = process.argv[4] || '' // explicit launch override; empty => honor opencode.json's model
 
 fs.mkdirSync(WORKDIR, { recursive: true })
 
 let conn = null, sessionId = null, engineProc = null, restarting = false, lastEngineDown = null
 let models = [], agents = [], commands = [], curModel = DEFAULT_MODEL, curAgent = null
+let agentConfigId = 'mode', effortConfigId = 'effort', curEffort = '', effortLevels = []   // reasoning-effort config, surfaced where the model supports it
 let busy = false
 const pendingPerms = new Map()   // toolCallId -> resolve fn
 
@@ -194,7 +196,12 @@ function extractConfig(co) {
   if (!curModel && modelOpt && modelOpt.currentValue) curModel = modelOpt.currentValue // adopt the model the engine loaded from opencode.json
   const modeOpt = co.find(o => o.id === 'mode' || o.id === 'agent' || o.category === 'mode')
   agents = (modeOpt && modeOpt.options || []).map(o => ({ value: o.value, name: o.name }))
-  if (modeOpt) curAgent = modeOpt.currentValue
+  if (modeOpt) { curAgent = modeOpt.currentValue; agentConfigId = modeOpt.id || agentConfigId }
+  // reasoning-effort option — only present for models that support it (empty list => hide in UI)
+  const effOpt = co.find(o => o.id === 'effort' || o.category === 'thought_level')
+  effortLevels = (effOpt && effOpt.options || []).map(o => ({ value: o.value, name: o.name }))
+  if (effOpt) { curEffort = effOpt.currentValue || curEffort; effortConfigId = effOpt.id || effortConfigId }
+  else { effortLevels = []; curEffort = '' }
 }
 
 async function newSession() {
@@ -218,7 +225,9 @@ async function start() {
     : [ENGINE, []]
   log('engine:', cmd, baseArgs.join(' '))
   const { AO_WS_TOKEN: _wsTok, ...engineEnv } = process.env // never expose the control-socket token to the engine/model shell
-  const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: { ...engineEnv, ...vaultEnv() } })
+  // Pin the engine's HTTP API port (deterministic, per-instance) so the UI can call
+  // the session API directly; without --port the engine lands on 4096-or-random silently.
+  const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR, '--port', String(API_PORT)], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: { ...engineEnv, ...vaultEnv() } })
   engineProc = proc
   proc.on('error', e => { log('spawn error', e.message); if (!restarting) { lastEngineDown = { type: 'engine-down', message: e.message }; broadcast(lastEngineDown) } })
   proc.on('exit', c => { log('engine exited', c); if (!restarting) { lastEngineDown = { type: 'engine-down', message: 'engine exited ' + c }; broadcast(lastEngineDown) } })
@@ -229,17 +238,29 @@ async function start() {
   lastEngineDown = null
   broadcast(readyMsg())
 }
-function readyMsg() { return { type: 'ready', sessionId, model: curModel, agent: curAgent, models, agents, commands } }
+function readyMsg() { return { type: 'ready', sessionId, model: curModel, agent: curAgent, models, agents, commands, effort: curEffort, effortLevels, apiPort: API_PORT, workdir: WORKDIR } }
 
 // Re-spawn the engine so a just-changed vault key takes effect (the engine reads keys once, at spawn).
 async function restartEngine() {
   restarting = true
+  const prev = sessionId   // restore the active session after the respawn instead of dumping the user into a fresh one
   drainPerms(); busy = false
   try { if (engineProc) engineProc.kill() } catch {}
   conn = null; sessionId = null
   await new Promise((r) => setTimeout(r, 350))
   restarting = false
   await start()   // fresh vaultEnv() -> the new/removed key is now reflected
+  if (prev && conn) {
+    broadcast({ type: 'replay-start', sessionId: prev })
+    try {
+      const r = await conn.loadSession({ sessionId: prev, cwd: WORKDIR, mcpServers: [] })
+      sessionId = prev
+      curModel = ''
+      extractConfig(r && r.configOptions)
+      broadcast({ type: 'replay-end', sessionId })
+      broadcast(readyMsg())
+    } catch (e) { log('restore-session', e.message); broadcast({ type: 'replay-end', sessionId: prev }) }
+  }
 }
 
 wss.on('connection', (ws) => {
@@ -278,7 +299,8 @@ wss.on('connection', (ws) => {
           break
         }
         case 'setModel': { const prev = curModel; curModel = m.model; try { await conn.unstable_setSessionModel({ sessionId, modelId: curModel }) } catch (e) { curModel = prev; log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + m.model + '" — ' + e.message }) } broadcast({ type: 'model', model: curModel }); break }
-        case 'setAgent': { const prev = curAgent; curAgent = m.agent; try { await conn.setSessionConfigOption({ sessionId, type: 'mode', value: curAgent }) } catch (e) { curAgent = prev; log('setAgent', e.message); broadcast({ type: 'error', message: 'Could not switch agent — ' + e.message }) } broadcast({ type: 'agent', agent: curAgent }); break }
+        case 'setAgent': { const prev = curAgent; curAgent = m.agent; try { await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: curAgent }) } catch (e) { curAgent = prev; log('setAgent', e.message); broadcast({ type: 'error', message: 'Could not switch agent — ' + e.message }) } broadcast({ type: 'agent', agent: curAgent }); break }
+        case 'setEffort': { if (!effortLevels.length) { broadcast({ type: 'error', message: 'This model has no effort levels.' }); break } const prev = curEffort; curEffort = m.value; try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: curEffort }) } catch (e) { curEffort = prev; log('setEffort', e.message); broadcast({ type: 'error', message: 'Could not set effort — ' + e.message }) } broadcast({ type: 'effort', effort: curEffort }); break }
         case 'getCouncilConfig': {
           try { send(ws, { type: 'councilConfig', config: readCouncil() }) }
           catch (e) { log('getCouncilConfig', e.message); send(ws, { type: 'councilConfig', error: e.message }) }
@@ -325,6 +347,25 @@ wss.on('connection', (ws) => {
         case 'new': {
           if (busy) { try { await conn.cancel({ sessionId }) } catch {} drainPerms(); busy = false }   // don't orphan an in-flight turn
           try { await newSession() } catch (e) { log('new', e.message) } broadcast(readyMsg()); break
+        }
+        case 'load': {
+          // Switch to an existing session. The engine replays its full history as
+          // ordinary update frames between replay-start / replay-end brackets.
+          if (typeof m.sessionId !== 'string' || !m.sessionId.trim()) break
+          if (busy) { try { await conn.cancel({ sessionId }) } catch {} drainPerms(); busy = false }
+          broadcast({ type: 'replay-start', sessionId: m.sessionId })
+          try {
+            const r = await conn.loadSession({ sessionId: m.sessionId, cwd: WORKDIR, mcpServers: [] })
+            sessionId = m.sessionId          // loadSession's response does not echo the id
+            curModel = ''                    // adopt the loaded session's own model from configOptions
+            extractConfig(r && r.configOptions)
+            broadcast({ type: 'replay-end', sessionId })
+            broadcast(readyMsg())
+          } catch (e) {
+            log('load', e.message)
+            broadcast({ type: 'replay-end', sessionId: m.sessionId, error: friendlyError(e.message) })
+          }
+          break
         }
       }
     } catch (e) { log('msg error', e.message) }
