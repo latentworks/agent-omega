@@ -14,7 +14,7 @@
 import { tool } from '@opencode-ai/plugin'
 import { recall as storeRecall, factsAbout, addFact, stats } from './store.mjs'
 import { projectOf } from './capture.mjs'
-import { createEngram, DB_PATH, log } from './engine.mjs'
+import { createEngram, DB_PATH, log, readMemoryIndex } from './engine.mjs'
 
 const z = tool.schema
 
@@ -66,6 +66,10 @@ const EngramPlugin = async ({ client, directory }) => {
       try {
         const sessionID = input && input.sessionID
         if (!sessionID || !output || !Array.isArray(output.system)) return
+        // Curated file-based memory index (memory/MEMORY.md) — the "loaded each session" index
+        // AGENTS.md promises. Injected every turn (it's small); absent file => nothing added.
+        const memIndex = readMemoryIndex()
+        if (memIndex) output.system.push(`## Curated memory index (memory/MEMORY.md)\nYour standing notes across sessions. When a task relates to a listed entry, read that memory file before acting.\n\n${memIndex}`)
         const query = await latestUserText(sessionID)
         if (!query || query.length < 4) return
         const cached = recallCache.get(sessionID)
