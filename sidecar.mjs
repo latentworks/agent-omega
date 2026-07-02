@@ -67,6 +67,22 @@ const wss = new WebSocketServer({
   },
 })
 wss.on('error', (e) => { console.error('[sidecar] wss error (port in use? second instance?)', e.message); process.exit(1) })  // fail cleanly, no unhandled crash
+
+// Attach descriptor: a user-only file so a terminal client the owner opens over SSH (see
+// scripts/attach.mjs) can find this instance's loopback port + token + engine API port and join
+// the LIVE session. It exposes nothing to the network — the socket stays loopback-bound; the file
+// is readable only by the logged-in user (same trust level as that user, who can already reach
+// loopback). Overwritten each launch, removed on exit so it never points at a dead port.
+const ATTACH_FILE = process.env.AGENT_OMEGA_ATTACH || path.join(os.homedir(), '.agent-omega', 'attach.json')
+function writeAttachDescriptor() {
+  try {
+    fs.mkdirSync(path.dirname(ATTACH_FILE), { recursive: true })
+    fs.writeFileSync(ATTACH_FILE, JSON.stringify({ port: WS_PORT, apiPort: API_PORT, token: WS_TOKEN, pid: process.pid, cwd: WORKDIR }), { mode: 0o600 })
+  } catch (e) { console.error('[sidecar] attach descriptor write failed', e.message) }
+}
+function removeAttachDescriptor() { try { fs.unlinkSync(ATTACH_FILE) } catch {} }
+writeAttachDescriptor()
+
 const clients = new Set()
 function send(ws, m) { try { if (ws.readyState === 1) ws.send(JSON.stringify(m)) } catch {} }
 function broadcast(m) { const s = JSON.stringify(m); for (const c of clients) { try { if (c.readyState === 1) c.send(s) } catch {} } }
@@ -539,8 +555,8 @@ wss.on('connection', (ws) => {
 // ourselves if the shell that launched us dies abnormally (crash / kill) without firing its
 // normal child-cleanup — otherwise the engine + the bound ports would be orphaned.
 function killEngine() { try { if (engineProc) engineProc.kill() } catch {} }
-process.on('exit', killEngine)
-for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => { killEngine(); process.exit(0) })
+process.on('exit', () => { killEngine(); removeAttachDescriptor() })
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => { killEngine(); removeAttachDescriptor(); process.exit(0) })
 if (PARENT_PID) {
   setInterval(() => {
     try { process.kill(PARENT_PID, 0) }   // signal 0 = liveness probe, never actually signals
