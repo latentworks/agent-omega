@@ -73,6 +73,7 @@ async function pickInstance() {
 
 const d = await pickInstance()
 let sessionId = null, apiPort = d.apiPort, curModel = '', busy = false, historyDone = false, ws = null, quitting = false
+let commands = [], cmdsHinted = false   // the engine's available slash commands (from ready / commands broadcast)
 let atLineStart = true   // track whether the cursor is at the start of a line (for clean interleaving)
 
 function out(s) { process.stdout.write(s); atLineStart = s.endsWith('\n') }
@@ -162,8 +163,11 @@ function onMessage(data) {
   switch (m.type) {
     case 'ready':
       sessionId = m.sessionId; apiPort = m.apiPort || apiPort; curModel = m.model || curModel
+      if (Array.isArray(m.commands)) commands = m.commands
       if (!historyDone) { line(dim(`attached to ${sessionId}  ·  model ${curModel}`)); replayHistory() }
+      hintCommands()
       break
+    case 'commands': if (Array.isArray(m.commands)) { commands = m.commands; hintCommands() } break
     case 'update': renderUpdate(m.update); break
     case 'permission': renderPermission(m); break
     case 'turn-start': busy = true; break
@@ -179,28 +183,58 @@ function onMessage(data) {
   }
 }
 
+// Local (client) commands vs the ENGINE's slash commands: anything that isn't one of these local
+// ones is forwarded to the agent as a real slash command (/tdd, /verify, /init, /compact, …).
+const LOCAL_CMDS = new Set(['quit', 'q', 'abort', 'new', 'model', 'help', 'h', 'commands', 'cmds'])
 const HELP = [
-  'commands:',
-  '  /quit  /q      detach (leaves the desktop session running)',
-  '  /abort         stop the current turn',
-  '  /new           start a fresh session (careful — leaves the current one)',
-  '  /model         show the current model',
-  '  /help          this',
-  'anything else you type is sent to the agent as a prompt.',
+  'client commands:',
+  '  /commands /cmds   list the agent\'s slash commands',
+  '  /abort            stop the current turn',
+  '  /new              start a fresh session (leaves the current one)',
+  '  /model            show the current model',
+  '  /quit  /q         detach (leaves the desktop session running)',
+  '  /help             this',
+  'any other /command is sent to the agent (e.g. /tdd, /verify).',
+  'anything without a leading / is sent as a prompt.',
 ].join('\n')
+
+function cmdName(c) { return String((c && (c.name || c.command)) || '').replace(/^\//, '') }
+function hintCommands() {
+  if (cmdsHinted || !commands.length) return
+  cmdsHinted = true
+  line(dim(`(${commands.length} slash commands available — type /commands to list)`))
+}
+function listCommands() {
+  if (!commands.length) { line(dim('(no slash commands reported by this session)')); return }
+  line(dim('agent slash commands:'))
+  for (const c of commands) {
+    const n = cmdName(c); if (!n) continue
+    const desc = (c && (c.description || c.desc)) || ''
+    line('  /' + n + (desc ? dim('  — ' + desc) : ''))
+  }
+}
 
 function handleInput(raw) {
   const t = raw.trim()
   if (!t) return
   if (pendingPerm) { answerPermission(t); return }
   if (t.startsWith('/')) {
-    const cmd = t.slice(1).toLowerCase()
-    if (cmd === 'quit' || cmd === 'q') { quitting = true; line(dim('detached.')); try { ws.close() } catch {}; rl.close(); process.exit(0) }
-    else if (cmd === 'abort') { ws.send(JSON.stringify({ type: 'abort' })); line(dim('· abort sent ·')) }
-    else if (cmd === 'new') { ws.send(JSON.stringify({ type: 'new' })); line(dim('· new session ·')) }
-    else if (cmd === 'model') line(dim('model: ' + curModel))
-    else if (cmd === 'help' || cmd === 'h') line(dim(HELP))
-    else line(dim('unknown command; /help'))
+    const [head, ...rest] = t.slice(1).split(/\s+/)
+    const name = head.toLowerCase()
+    const args = rest.join(' ')
+    if (name === 'quit' || name === 'q') { quitting = true; line(dim('detached.')); try { ws.close() } catch {}; rl.close(); process.exit(0) }
+    else if (name === 'abort') { ws.send(JSON.stringify({ type: 'abort' })); line(dim('· abort sent ·')) }
+    else if (name === 'new') { ws.send(JSON.stringify({ type: 'new' })); line(dim('· new session ·')) }
+    else if (name === 'model') line(dim('model: ' + curModel))
+    else if (name === 'commands' || name === 'cmds') listCommands()
+    else if (name === 'help' || name === 'h') line(dim(HELP))
+    else {
+      // forward to the agent as a real slash command
+      if (busy) { line(dim('(a turn is in progress — wait for "· ready ·" or /abort)')); return }
+      ws.send(JSON.stringify({ type: 'command', name: head, args }))
+      line(cyan('you  ') + '/' + head + (args ? ' ' + args : ''))
+      atLineStart = true
+    }
     return
   }
   if (busy) { line(dim('(a turn is in progress — wait for "· ready ·" or /abort)')); return }
