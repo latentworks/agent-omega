@@ -202,23 +202,31 @@ const HELP = [
 
 function listModels() {
   if (!models.length) { line(dim('(no models reported by this session)')); return }
-  line(dim('models  (/model <number> or <name> to switch):'))
   models.forEach((m, i) => {
-    const mark = (m.value === curModel || m.name === curModel) ? cyan(' ← current') : ''
-    line('  ' + String(i + 1).padStart(2) + '. ' + (m.name || m.value) + dim('  ' + m.value) + mark)
+    const cur = (m.value === curModel || m.name === curModel)
+    const num = String(i + 1).padStart(2)
+    line('  ' + (cur ? cyan(num) : bold(num)) + '. ' + (m.name || m.value) + dim('  ' + m.value) + (cur ? cyan('  ← current') : ''))
   })
+  line(dim('to switch, type the NUMBER:  /model <number>   (e.g.  /model 5)'))
 }
 function switchModel(arg) {
   if (!models.length) { line(dim('(no models available to switch to)')); return }
+  const a = arg.trim().toLowerCase()
   let target = null
+  // 1) a number is the easy, unambiguous path
   const n = parseInt(arg, 10)
-  if (String(n) === arg && n >= 1 && n <= models.length) target = models[n - 1]
-  else {
-    const a = arg.toLowerCase()
-    const hits = models.filter((m) => (m.value || '').toLowerCase().includes(a) || (m.name || '').toLowerCase().includes(a))
-    if (hits.length === 1) target = hits[0]
-    else if (hits.length > 1) { line(dim(`"${arg}" matches ${hits.length} — be more specific:`)); hits.forEach((m) => line('  ' + (m.name || m.value) + dim('  ' + m.value))); return }
-    else { line(dim(`no model matches "${arg}" — /model to list`)); return }
+  if (String(n) === arg.trim() && n >= 1 && n <= models.length) target = models[n - 1]
+  // 2) an EXACT id/name match wins over substrings (so "gpt-5.5" doesn't clash with "gpt-5.5-pro")
+  if (!target) target = models.find((m) => (m.value || '').toLowerCase() === a || (m.name || '').toLowerCase() === a)
+  // 3) fall back to substring; if several match, show their NUMBERS so the choice is one keystroke
+  if (!target) {
+    const hits = models.map((m, i) => ({ m, i })).filter(({ m }) => (m.value || '').toLowerCase().includes(a) || (m.name || '').toLowerCase().includes(a))
+    if (hits.length === 1) target = hits[0].m
+    else if (hits.length > 1) {
+      line(dim(`"${arg}" matches ${hits.length} — type the number:`))
+      hits.forEach(({ m, i }) => line('  ' + bold('/model ' + (i + 1)) + '   ' + (m.name || m.value) + dim('  ' + m.value)))
+      return
+    } else { line(dim(`no model matches "${arg}" — type /model to see the list`)); return }
   }
   ws.send(JSON.stringify({ type: 'setModel', model: target.value }))
   line(dim('switching → ' + (target.name || target.value)))
