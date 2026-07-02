@@ -127,6 +127,11 @@ binary are in place, add at least one model (a local one needs nothing but the m
 running; a cloud one needs its key in the vault), and launch. The window comes up,
 the sidecar starts the engine, and you're talking to it.
 
+Running a local model? The default configuration is the **evidence-backed 30–35B
+tune** — which models to use, the serving flags that matter (thinking mode is not
+optional on reasoning models), and the benchmark rigor behind it all live in
+**[TUNES.md](TUNES.md)**. Tunes for larger models (DeepSeek-class) are next.
+
 ---
 
 ## Coming soon (V3)
