@@ -74,6 +74,7 @@ async function pickInstance() {
 const d = await pickInstance()
 let sessionId = null, apiPort = d.apiPort, curModel = '', busy = false, historyDone = false, ws = null, quitting = false
 let commands = [], cmdsHinted = false   // the engine's available slash commands (from ready / commands broadcast)
+let models = []   // available models [{value,name}] from ready — for /model switching
 let atLineStart = true   // track whether the cursor is at the start of a line (for clean interleaving)
 
 function out(s) { process.stdout.write(s); atLineStart = s.endsWith('\n') }
@@ -164,6 +165,7 @@ function onMessage(data) {
     case 'ready':
       sessionId = m.sessionId; apiPort = m.apiPort || apiPort; curModel = m.model || curModel
       if (Array.isArray(m.commands)) commands = m.commands
+      if (Array.isArray(m.models)) models = m.models
       if (!historyDone) { line(dim(`attached to ${sessionId}  ·  model ${curModel}`)); replayHistory() }
       hintCommands()
       break
@@ -185,24 +187,47 @@ function onMessage(data) {
 
 // Local (client) commands vs the ENGINE's slash commands: anything that isn't one of these local
 // ones is forwarded to the agent as a real slash command (/tdd, /verify, /init, /compact, …).
-const LOCAL_CMDS = new Set(['quit', 'q', 'abort', 'new', 'model', 'help', 'h', 'commands', 'cmds'])
+const LOCAL_CMDS = new Set(['quit', 'q', 'abort', 'new', 'model', 'models', 'help', 'h', 'commands', 'cmds'])
 const HELP = [
   'client commands:',
+  '  /model            list models; /model <number|name> to SWITCH the model',
   '  /commands /cmds   list the agent\'s slash commands',
   '  /abort            stop the current turn',
   '  /new              start a fresh session (leaves the current one)',
-  '  /model            show the current model',
   '  /quit  /q         detach (leaves the desktop session running)',
   '  /help             this',
   'any other /command is sent to the agent (e.g. /tdd, /verify).',
   'anything without a leading / is sent as a prompt.',
 ].join('\n')
 
+function listModels() {
+  if (!models.length) { line(dim('(no models reported by this session)')); return }
+  line(dim('models  (/model <number> or <name> to switch):'))
+  models.forEach((m, i) => {
+    const mark = (m.value === curModel || m.name === curModel) ? cyan(' ← current') : ''
+    line('  ' + String(i + 1).padStart(2) + '. ' + (m.name || m.value) + dim('  ' + m.value) + mark)
+  })
+}
+function switchModel(arg) {
+  if (!models.length) { line(dim('(no models available to switch to)')); return }
+  let target = null
+  const n = parseInt(arg, 10)
+  if (String(n) === arg && n >= 1 && n <= models.length) target = models[n - 1]
+  else {
+    const a = arg.toLowerCase()
+    const hits = models.filter((m) => (m.value || '').toLowerCase().includes(a) || (m.name || '').toLowerCase().includes(a))
+    if (hits.length === 1) target = hits[0]
+    else if (hits.length > 1) { line(dim(`"${arg}" matches ${hits.length} — be more specific:`)); hits.forEach((m) => line('  ' + (m.name || m.value) + dim('  ' + m.value))); return }
+    else { line(dim(`no model matches "${arg}" — /model to list`)); return }
+  }
+  ws.send(JSON.stringify({ type: 'setModel', model: target.value }))
+  line(dim('switching → ' + (target.name || target.value)))
+}
 function cmdName(c) { return String((c && (c.name || c.command)) || '').replace(/^\//, '') }
 function hintCommands() {
   if (cmdsHinted || !commands.length) return
   cmdsHinted = true
-  line(dim(`(${commands.length} slash commands available — type /commands to list)`))
+  line(dim(`(/model to change model · /commands for the ${commands.length} agent commands · /help)`))
 }
 function listCommands() {
   if (!commands.length) { line(dim('(no slash commands reported by this session)')); return }
@@ -225,7 +250,7 @@ function handleInput(raw) {
     if (name === 'quit' || name === 'q') { quitting = true; line(dim('detached.')); try { ws.close() } catch {}; rl.close(); process.exit(0) }
     else if (name === 'abort') { ws.send(JSON.stringify({ type: 'abort' })); line(dim('· abort sent ·')) }
     else if (name === 'new') { ws.send(JSON.stringify({ type: 'new' })); line(dim('· new session ·')) }
-    else if (name === 'model') line(dim('model: ' + curModel))
+    else if (name === 'model' || name === 'models') { if (args) switchModel(args); else { line(dim('current model: ' + curModel)); listModels() } }
     else if (name === 'commands' || name === 'cmds') listCommands()
     else if (name === 'help' || name === 'h') line(dim(HELP))
     else {
