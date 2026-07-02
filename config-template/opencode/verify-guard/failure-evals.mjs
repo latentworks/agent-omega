@@ -126,12 +126,10 @@ export function buildBehaviorEvalRecord({ sessionID, event, classification, args
   }
 }
 
-export function detectDoneWithoutVerification(text = '', { editedFilesCount = 0, sawRuntimeEvidence = false } = {}) {
-  if (sawRuntimeEvidence || editedFilesCount < 1) return false
-  const claimsDone = /\b(done|fixed|implemented|working|resolved|completed)\b/i.test(text)
-  const citesEvidence = /\b(ran|observed|captured|output|exit code|screenshot|curl|http|browser|cli|api|request|response)\b/i.test(text)
-  return claimsDone && !citesEvidence
-}
+// NOTE: "claimed done without verifying" is enforced STRUCTURALLY by iterate-loop's idle gate
+// (code changed + no passing EXECUTING run -> re-prompt), which a model can't game by wording.
+// A text-regex over the assistant's own message was strictly weaker and unused, so it was
+// removed rather than shipped as dead code.
 
 export function buildHarnessMessage(classification) {
   const header = `[${CLASSIFIER_TAG} failure-classifier] ${classification.category}: ${classification.summary}`

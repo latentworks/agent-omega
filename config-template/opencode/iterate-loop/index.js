@@ -9,7 +9,7 @@
 // Env switches:
 //   ITERATE_LOOP_DRYRUN=1   log "WOULD ..." instead of re-prompting
 //   ITERATE_MAX_SHOTS=N     failed verify cycles before escalating strategy (default 3)
-//   ITERATE_HARD_CAP=N      total re-prompts before giving up (default 7)
+//   ITERATE_HARD_CAP=N      total re-prompts before giving up (default 12)
 //   ITERATE_LOOP_LOG=<path> activity log (default <tmp>/iterate-loop.log)
 
 import { appendFileSync } from 'node:fs'

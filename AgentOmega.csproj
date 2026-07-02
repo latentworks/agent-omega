@@ -7,9 +7,9 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>agent-omega</AssemblyName>
     <ApplicationIcon>agent-omega.ico</ApplicationIcon>
-    <Version>2.1.0</Version>
-    <AssemblyVersion>2.1.0.0</AssemblyVersion>
-    <FileVersion>2.1.0.0</FileVersion>
+    <Version>2.2.1</Version>
+    <AssemblyVersion>2.2.1.0</AssemblyVersion>
+    <FileVersion>2.2.1.0</FileVersion>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4022.49" />
@@ -26,8 +26,10 @@
     <None Include="scripts\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <!-- Vendor the sidecar's node deps beside the exe so a relocated/copied build stays self-contained.
-       Offline-friendly: copies the repo-root node_modules; `& exit 0` keeps robocopy's success codes from failing the build. -->
+       robocopy exit codes 0-7 are success (bits); 8+ is a real failure. `if errorlevel N` is a cmd
+       construct evaluated at RUN time (unlike %ERRORLEVEL%, which expands at parse time and would be
+       stale) — so a genuine copy failure (>=8) fails the build instead of the old `& exit 0` mask. -->
   <Target Name="VendorSidecarDeps" AfterTargets="Build" Condition="Exists('node_modules')">
-    <Exec Command="robocopy node_modules &quot;$(TargetDir)node_modules&quot; /E /NFL /NDL /NJH /NJS /NC /NS /NP &amp; exit 0" />
+    <Exec Command="robocopy node_modules &quot;$(TargetDir)node_modules&quot; /E /NFL /NDL /NJH /NJS /NC /NS /NP &amp; if errorlevel 8 (exit /b 1) else (exit /b 0)" />
   </Target>
 </Project>

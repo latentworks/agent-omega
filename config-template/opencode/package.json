@@ -1,4 +1,5 @@
 {
+  "type": "module",
   "dependencies": {
     "@ai-sdk/anthropic": "3.0.82",
     "@ai-sdk/google": "3.0.73",

@@ -1,6 +1,6 @@
 {
   "name": "agent-omega",
-  "version": "2.1.0",
+  "version": "2.2.1",
   "private": true,
   "scripts": {
     "check:linux-portability": "node scripts/linux-portability-check.mjs",

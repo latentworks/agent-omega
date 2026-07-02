@@ -115,6 +115,13 @@ def main():
     if len(a) < 2 or a[0] not in ("search", "read"):
         sys.stderr.write('usage: web.py search "<query>" [n]  |  web.py read "<url>"\n')
         sys.exit(2)
+    # The key-free web search needs the optional anon-web component, which isn't part of the
+    # default build. Say so plainly (a clear, recognizable signal) instead of a cryptic launch error.
+    if not VENV or not os.environ.get("AGENT_OMEGA_ANONWEB", ""):
+        print("web search unavailable — the optional anon-web component isn't installed in this "
+              "build (set AGENT_OMEGA_ANONWEB and AGENT_OMEGA_ANONWEB_VENV to enable it; see SETUP.md). "
+              "Continue without web search.")
+        return
     if a[0] == "read":
         blocked = _blocked_url(a[1])
         if blocked:

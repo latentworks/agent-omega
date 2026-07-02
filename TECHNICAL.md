@@ -5,7 +5,8 @@ harness built on top of the open-source **opencode** engine and extended with a 
 council, persistent memory, an on-demand skill router, verify-and-iterate loops, an anonymous
 web gateway, and an encrypted local secrets vault.
 
-This document describes the *real* wiring as implemented in the source. Paths are absolute.
+This document describes the *real* wiring as implemented in the source. Paths use `~` for your
+home folder and are otherwise repo-relative.
 
 ---
 
@@ -112,7 +113,13 @@ sides.
 ### 3.2 Engine driver (ACP)
 
 - The engine is the Bun-compiled binary `engine/opencode.exe`, spawned as
-  `opencode acp --cwd <WORKDIR>` with `stdio: ['pipe','pipe','inherit']`.
+  `opencode acp --cwd <WORKDIR> --port <API_PORT>` with `stdio: ['pipe','pipe','inherit']`.
+  `WORKDIR` defaults to `%LOCALAPPDATA%\AgentOmega\workspace` and is overridable via `--workdir`
+  / `AGENT_OMEGA_WORKDIR` (open a real project). The shell (`Program.cs`) picks a free loopback
+  port *pair* at launch — control socket on `P`, engine API on `P+1` — so a stale/second instance
+  on 4599 can't wedge startup, and it redirects the sidecar+engine stderr to
+  `~/.agent-omega\logs\sidecar.log` so a boot crash is diagnosable. The sidecar self-exits if the
+  shell dies abnormally (`AO_PARENT_PID` liveness probe), so the engine is never orphaned.
   - **Test mode:** setting `AGENT_OMEGA_OPENCODE_SRC` to the `packages/opencode` dir runs the
     engine from source via `bun run … src/index.ts` instead, picking up engine edits without a
     binary rebuild. Unset in production → the compiled exe is used.
@@ -331,17 +338,26 @@ Flow and the deliberate asymmetry:
 
 1. **Injection.** At engine spawn, `sidecar.mjs vaultEnv()` shells out to `secrets.ps1 get <name>`
    for each mapping in `VAULT_TO_ENV` and sets the corresponding environment variable on the
-   engine process (e.g. vault `KIMI_API_KEY` → engine `MOONSHOT_API_KEY`, vault `OPENAI_API` →
-   engine `OPENAI_API_KEY`). A missing/failed key is silently skipped — the provider just stays
-   dark, never faked. Values are never logged (only the key *names* are).
+   engine process (e.g. vault `KIMI_API_KEY` → engine `MOONSHOT_API_KEY`, vault `OPENAI_API_KEY`
+   → engine `OPENAI_API_KEY`). The vault key *names* are the canonical ones the in-app Vault UI
+   and `setup.mjs` write (so a key you add there actually reaches the engine); the two renamed in
+   2.3 (`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`) also fall back to their pre-2.3 short names on read.
+   A missing/failed key is silently skipped — the provider just stays dark, never faked. Values are
+   never logged (only the key *names* are), and on a vault write failure the error surfaced to the
+   UI is a fixed generic message — the key value passes on STDIN, never as a command argument, so it
+   cannot appear in any error string.
 2. **Provider layer sees the keys.** The AI-SDK / provider layer (and council's `providers.mjs`)
    read these from `process.env` to authenticate cloud calls.
-3. **The model's shell does NOT see the keys.** The engine's shell tool
-   (`opencode-fork/…/tool/shell.ts`) builds the child env as `{ ...process.env, ...extra.env }`
+3. **The model's shell does NOT see the keys.** This is enforced INSIDE the engine (the opencode
+   fork this repo ships as a prebuilt binary — the modified source lives in the fork repo, not in
+   this distribution repo): the shell tool builds the child env as `{ ...process.env, ...extra.env }`
    and then **blanks every var matching `/_API_KEY$/i`** before spawning. (It blanks rather than
    omits because the spawn wrapper re-merges `process.env`; overlaying an empty value is what
    actually removes it.) So a shell command the model runs cannot read a cloud key, while the
-   HTTP/provider layer is untouched.
+   HTTP/provider layer is untouched. Because this lives in the binary rather than in source you can
+   read here, you can VERIFY it at runtime: add a dummy `TEST_API_KEY` in the vault, then ask the
+   agent to run `echo $env:TEST_API_KEY` (PowerShell) / `echo $TEST_API_KEY` (bash) — it should come
+   back blank.
 
 Vault management also flows through the sidecar (`vaultList`/`vaultSet`/`vaultRemove`). A
 settings write with an empty value is rejected up front, so `secrets.ps1` never runs a pointless
@@ -402,6 +418,6 @@ Agent Omega's safety posture is defense-in-depth across the layers above:
 | `…\opencode\iterate-loop\` | Verify-and-iterate ladder (`index.js`, `loop.mjs`) |
 | `…\opencode\verify-guard\` | Post-action failure classifier (`index.js`, `core.mjs`, `failure-evals.mjs`) |
 | `…\opencode\web.py` | Anonymous web gateway (SSRF-guarded) |
-| `engine/opencode.exe | The Bun-compiled engine binary |
+| `engine/opencode.exe` | The Bun-compiled engine binary |
 | `~\.agent-omega\secrets.ps1` | DPAPI secrets vault |
 | `~/.config/opencode/opencode.json` | Provider/model endpoints (local + cloud) |
