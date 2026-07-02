@@ -63,9 +63,26 @@ timeout. In llama-swap terms: put the agent models in a group with `swap: false`
 
 ---
 
+## DeepSeek-class, budget tier — validated: the default tune transfers (2026-07)
+
+The same battery and improvement loop were run against **deepseek-v4-flash** (the cheapest
+DeepSeek tier) as the first cloud class. Outcome:
+
+- **24 further enhancement candidates** (curated + frontier-generated) — **zero** beat the
+  default configuration on quality; the safety floor caught and blocked one regression.
+- A **token-cost tie-breaker** was live for this run (a change that keeps quality statistically
+  flat but cuts total tokens ≥10% counts as a win): no candidate qualified — every added
+  instruction *increased* token spend more than it saved.
+- Cross-class scoreboard on identical tasks: **the tuned local 35B (0.844) outscored
+  deepseek-v4-flash (0.781)** — the local tune beats the budget frontier tier outright.
+- Conclusion: use the default tune unchanged with DeepSeek-class budget models. No
+  class-specific configuration earned its way in.
+
+---
+
 ## Roadmap
 
-- **Larger-model tunes are next** (DeepSeek-class and other 70B+ / large-MoE models). Thinking
+- **Larger-model tunes are next** (DeepSeek pro tier and other 70B+ / large-MoE models). Thinking
   policy, tool-call templates, and token budgets all shift at that scale — each tune will ship
   with the same evidence standard before it earns a name here.
 - Tunes are additive: the goal is a small menu where you pick your model class and get a
