@@ -1,0 +1,66 @@
+# Agent Omega — per-commit cross-platform verification.
+#
+# The whole point of the single-trunk / two-host layout: ONE push, TWO jobs, each proving
+# the app compiles and the shared core is sound on its own OS. This is what "shipping the
+# same app on two OSes" looks like in practice — the shared code below runs identically in
+# both jobs; only the host compile step differs.
+#
+# Scope = VERIFY (compile both hosts + static-check shared code). It does NOT produce a full
+# signed release bundle: that needs the opencode engine binary (a release asset, not in git)
+# and, for macOS distribution, an Apple Developer ID — that belongs in a separate, manually
+# triggered release workflow.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  shared:
+    name: shared core (static checks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: install deps
+        run: |
+          npm install
+          npm install --prefix config-template/opencode
+      - name: node --check the sidecar + every plugin
+        run: |
+          node --check sidecar.mjs
+          node --check setup.mjs
+          node --check scripts/smoke.mjs
+          for f in config-template/opencode/*/*.mjs config-template/opencode/*/*.js; do node --check "$f"; done
+      - name: validate opencode.json + package.json type:module
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('config-template/opencode/opencode.json','utf8'))"
+          node -e "if(require('./config-template/opencode/package.json').type!=='module')process.exit(1)"
+
+  macos:
+    name: macOS host (Swift)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: type-check the Swift shell
+        run: xcrun swiftc -parse mac/AgentOmega.swift
+      - name: lint the vault + build scripts
+        run: |
+          sh -n mac/secrets.sh
+          sh -n mac/build-app.sh
+          sh -n mac/run.sh
+      - name: validate Info.plist
+        run: plutil -lint mac/Info.plist
+
+  windows:
+    name: Windows host (.NET)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "8.0.x" }
+      - name: build the WinForms shell
+        run: dotnet build -c Release
