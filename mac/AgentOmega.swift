@@ -445,8 +445,47 @@ func fatalAlert(_ msg: String) -> Never {
     exit(1)
 }
 
+// A main menu is REQUIRED on macOS for any Cmd-shortcut to work: AppKit dispatches
+// Cmd combos through the menu's key equivalents (performKeyEquivalent), so a menu-less
+// app silently drops Cmd+C/V/X/A/Z — copy/paste is dead in the WKWebView without this.
+// The standard Edit selectors are resolved by the responder chain; WKWebView implements
+// them all.
+func buildMainMenu() -> NSMenu {
+    let main = NSMenu()
+
+    let appItem = NSMenuItem(); main.addItem(appItem)
+    let appMenu = NSMenu()
+    appMenu.addItem(withTitle: "Hide Agent Omega", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+    let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+    hideOthers.keyEquivalentModifierMask = [.command, .option]
+    appMenu.addItem(NSMenuItem.separator())
+    appMenu.addItem(withTitle: "Quit Agent Omega", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    appItem.submenu = appMenu
+
+    let editItem = NSMenuItem(); main.addItem(editItem)
+    let edit = NSMenu(title: "Edit")
+    edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+    let redo = edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+    redo.keyEquivalentModifierMask = [.command, .shift]
+    edit.addItem(NSMenuItem.separator())
+    edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+    edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+    edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+    edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    editItem.submenu = edit
+
+    let winItem = NSMenuItem(); main.addItem(winItem)
+    let win = NSMenu(title: "Window")
+    win.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+    win.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+    winItem.submenu = win
+
+    return main
+}
+
 let app = NSApplication.shared
 let shell = Shell()
 app.delegate = shell
+app.mainMenu = buildMainMenu()
 app.setActivationPolicy(.regular)
 app.run()
