@@ -23,7 +23,7 @@
   "provider": {
     "local": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "Local (llama.cpp / Ollama / LM Studio — point baseURL at your server)",
+      "name": "Local (llama.cpp / Ollama / LM Studio — point baseURL at your server; give it a big context, e.g. llama-server -c 32768 --parallel 2, since Agent Omega's system prompt is large)",
       "options": {
         "baseURL": "",
         "apiKey": "local-noauth"

@@ -85,6 +85,8 @@ function friendlyError(msg) {
   }
   if (/ECONNREFUSED|fetch failed|ENOTFOUND|ETIMEDOUT|network|econnreset|connect/i.test(m))
     return 'Could not reach ' + prov + ' — is the server/endpoint running and reachable?  [' + m.slice(0, 160) + ']'
+  if (/context size|context length|exceeded.*(size|token)|size limit|n_ctx|too many tokens|maximum context/i.test(m))
+    return "The local model's context window is too small for Agent Omega's prompt. Restart your server with a larger context and fewer parallel slots — e.g. llama-server -c 32768 --parallel 2 (llama.cpp splits -c across slots, so keep -c/parallel ≥ ~16k).  [" + m.slice(0, 140) + ']'
   return m
 }
 
