@@ -31,6 +31,16 @@ node scripts/attach.mjs
 
 You'll see the last ~20 messages, then a live prompt. Type to send. Commands:
 
+If more than one Agent Omega is running, `attach.mjs` lists the live ones and asks which to join.
+To skip that, pass a selector — a port or a substring of the instance's folder:
+
+```
+node scripts/attach.mjs 4599          # attach to the instance on that port
+node scripts/attach.mjs workspace     # attach to the one whose cwd matches
+```
+
+Once attached:
+
 | command | does |
 |---|---|
 | *(any text)* | send it to the agent as a prompt |
@@ -40,17 +50,20 @@ You'll see the last ~20 messages, then a live prompt. Type to send. Commands:
 | `/model` | show the current model |
 | `/quit` `/q` | detach (the desktop session keeps running) |
 
-Tune history depth with `ATTACH_HISTORY=50 node scripts/attach.mjs`. Tip: set that command as
+Tune history depth with `ATTACH_HISTORY=50 node scripts/attach.mjs`. Tip: set the attach command as
 Termius's on-connect command so SSHing in drops you straight into the agent.
 
 ## How it works (short version)
 
-The running sidecar writes a **user-only** descriptor at `~/.agent-omega/attach.json`
-(`{port, apiPort, token}`) — the loopback port + launch token + the engine's API port. `attach.mjs`
-reads it, connects to the loopback control WebSocket (the same one the desktop UI uses, which is
-already multi-client and always hands a new connection the *current* session), and pulls the
-recent history from the engine's local REST API. So the desktop window and the terminal are two
-live views of one session — type on either, it shows on both.
+Each running sidecar writes a **user-only** descriptor at `~/.agent-omega/instances/<pid>.json`
+(`{port, apiPort, token, pid, cwd}`) — the loopback port + launch token + the engine's API port —
+and removes it on exit. `attach.mjs` scans that folder, keeps only the descriptors whose process is
+still alive (so a stale/clobbered one can't misroute you), then connects to the loopback control
+WebSocket (the same one the desktop UI uses, which is already multi-client and always hands a new
+connection the *current* session) and pulls recent history from the engine's local REST API. So the
+desktop window and the terminal are two live views of one session — type on either, it shows on
+both. Per-instance descriptors mean several Agent Omegas (desktop app, a test, a harness) coexist
+without clobbering each other — you pick which to attach to.
 
 ## Known limits / accepted gaps
 
@@ -63,6 +76,9 @@ live views of one session — type on either, it shows on both.
   only by the logged-in user — the same trust level as that user, who can already reach loopback.
   Reaching the box is SSH's job, not this feature's. (Binding to a network interface would be a
   separate, opt-in step and is intentionally *not* done here.)
+- **Multiple instances coexist.** Each writes its own `instances/<pid>.json`; attach lists the live
+  ones (or takes a port/name selector). Stale descriptors from a crashed instance are ignored
+  (the pid is checked) and cleaned up on the next normal exit.
 - **Text, not graphics.** You lose the diff/syntax rendering of the graphical UI by design.
 - **No desktop "remote attached" indicator yet.** The attach is additive and local-only; a future
   polish could badge the window when a terminal is connected.

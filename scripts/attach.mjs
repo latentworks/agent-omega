@@ -22,7 +22,7 @@ import readline from 'node:readline'
 
 const HISTORY_N = Number(process.env.ATTACH_HISTORY || 20)
 const DEBUG = ['1', 'true'].includes(process.env.ATTACH_DEBUG || '')
-const ATTACH_FILE = process.env.AGENT_OMEGA_ATTACH || path.join(os.homedir(), '.agent-omega', 'attach.json')
+const ATTACH_DIR = process.env.AGENT_OMEGA_ATTACH_DIR || path.join(os.homedir(), '.agent-omega', 'instances')
 
 const dim = (s) => `\x1b[2m${s}\x1b[0m`
 const bold = (s) => `\x1b[1m${s}\x1b[0m`
@@ -30,21 +30,48 @@ const cyan = (s) => `\x1b[36m${s}\x1b[0m`
 const yellow = (s) => `\x1b[33m${s}\x1b[0m`
 const red = (s) => `\x1b[31m${s}\x1b[0m`
 
-function readDescriptor() {
-  let raw
-  try { raw = fs.readFileSync(ATTACH_FILE, 'utf8') }
-  catch { return null }
-  try { return JSON.parse(raw) } catch { return null }
+function pidAlive(pid) { if (!pid) return true; try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
+// Optional selector: `attach.mjs <arg>` where arg is a descriptor .json path, a port, or a
+// substring of the instance's cwd — to go straight to one instance among several.
+const ARG = process.argv[2] || process.env.AGENT_OMEGA_ATTACH || ''
+function matchesArg(d) {
+  if (!ARG) return true
+  if (String(d.port) === ARG) return true
+  return !!(d.cwd && d.cwd.toLowerCase().includes(ARG.toLowerCase()))
 }
-
-const d = readDescriptor()
-if (!d || !d.port) {
-  console.error(red('Agent Omega does not appear to be running.'))
-  console.error(dim(`(no attach descriptor at ${ATTACH_FILE} — start the desktop app first, then re-run this.)`))
-  process.exit(1)
+// Discover LIVE instances: scan the per-instance dir (or a pinned .json path), keep only
+// descriptors whose process is still alive (so a clobbered/stale one can't misroute), then filter
+// by the selector arg if given.
+function liveInstances() {
+  const pinned = ARG && ARG.toLowerCase().endsWith('.json') && fs.existsSync(ARG)
+  const files = pinned
+    ? [ARG]
+    : (() => { try { return fs.readdirSync(ATTACH_DIR).filter(f => f.endsWith('.json')).map(f => path.join(ATTACH_DIR, f)) } catch { return [] } })()
+  const out = []
+  for (const f of files) {
+    try { const d = JSON.parse(fs.readFileSync(f, 'utf8')); if (d && d.port && pidAlive(d.pid) && (pinned || matchesArg(d))) out.push(d) } catch {}
+  }
+  return out
 }
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: '' })
+
+async function pickInstance() {
+  const live = liveInstances()
+  if (live.length === 0) {
+    console.error(red('No running Agent Omega instance found.'))
+    console.error(dim(`(nothing live in ${ATTACH_DIR} — start the desktop app first, then re-run this.)`))
+    process.exit(1)
+  }
+  if (live.length === 1) return live[0]
+  console.log(bold('Multiple Agent Omega instances are running — pick one:'))
+  live.forEach((d, i) => console.log(`   [${i + 1}] pid ${d.pid}  port ${d.port}  ${dim(d.cwd || '')}`))
+  const ans = await new Promise((res) => rl.question('choose 1-' + live.length + ': ', res))
+  const n = parseInt(ans, 10)
+  return (n >= 1 && n <= live.length) ? live[n - 1] : live[0]
+}
+
+const d = await pickInstance()
 let sessionId = null, apiPort = d.apiPort, curModel = '', busy = false, historyDone = false, ws = null, quitting = false
 let atLineStart = true   // track whether the cursor is at the start of a line (for clean interleaving)
 

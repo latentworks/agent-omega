@@ -72,8 +72,10 @@ wss.on('error', (e) => { console.error('[sidecar] wss error (port in use? second
 // scripts/attach.mjs) can find this instance's loopback port + token + engine API port and join
 // the LIVE session. It exposes nothing to the network — the socket stays loopback-bound; the file
 // is readable only by the logged-in user (same trust level as that user, who can already reach
-// loopback). Overwritten each launch, removed on exit so it never points at a dead port.
-const ATTACH_FILE = process.env.AGENT_OMEGA_ATTACH || path.join(os.homedir(), '.agent-omega', 'attach.json')
+// loopback). PER-INSTANCE (keyed by pid) so several running instances (desktop app, a test, a
+// harness) don't clobber one shared file; removed on exit. AGENT_OMEGA_ATTACH pins an exact path.
+const ATTACH_DIR = process.env.AGENT_OMEGA_ATTACH_DIR || path.join(os.homedir(), '.agent-omega', 'instances')
+const ATTACH_FILE = process.env.AGENT_OMEGA_ATTACH || path.join(ATTACH_DIR, process.pid + '.json')
 function writeAttachDescriptor() {
   try {
     fs.mkdirSync(path.dirname(ATTACH_FILE), { recursive: true })
