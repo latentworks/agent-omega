@@ -63,11 +63,13 @@ async function main() {
     if (isUpgrade && PRESERVE(rel) && existsSync(d)) return false   // keep the user's config/roster/memory/db
     return true
   }
+  // verbatimSymlinks: node_modules/.bin is symlinks on Linux/macOS — dereferencing them on a
+  // force re-copy EINVALs ("copy to a subdirectory of self"); copy them as symlinks instead.
   if (!existsSync(CFG_DIR)) {
-    cpSync(tmpl, CFG_DIR, { recursive: true, filter: copyFilter(false) })
+    cpSync(tmpl, CFG_DIR, { recursive: true, verbatimSymlinks: true, filter: copyFilter(false) })
     console.log('  installed plugin config -> ' + CFG_DIR)
   } else if (isAgentOmega(CFG_DIR)) {
-    cpSync(tmpl, CFG_DIR, { recursive: true, force: true, filter: copyFilter(true) })
+    cpSync(tmpl, CFG_DIR, { recursive: true, force: true, verbatimSymlinks: true, filter: copyFilter(true) })
     console.log('  upgraded Agent Omega plugin config in ' + CFG_DIR + ' (kept your opencode.json, council roster, and memory)')
   } else {
     console.error('\n  ' + CFG_DIR + ' already exists and is NOT an Agent Omega install')
