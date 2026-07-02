@@ -125,6 +125,11 @@ Agent Omega ships in two modes:
 
 The native Linux desktop shell is not shipped yet. The Linux target here is browser-mode portability for the existing core stack.
 
+Running a local model? The default configuration is the **evidence-backed 30–35B
+tune** — which models to use, the serving flags that matter (thinking mode is not
+optional on reasoning models), and the benchmark rigor behind it all live in
+**[TUNES.md](TUNES.md)**. Tunes for larger models (DeepSeek-class) are next.
+
 ---
 
 ## Coming soon (V3)
