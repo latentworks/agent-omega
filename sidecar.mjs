@@ -29,13 +29,17 @@ const DEFAULT_WORKDIR = process.platform === 'win32'
   : process.platform === 'darwin'
     ? path.join(os.homedir(), 'Library', 'Application Support', 'AgentOmega', 'workspace')
     : path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'agent-omega', 'workspace')
-const WORKDIR = process.env.AGENT_OMEGA_WORKDIR || process.argv[2] || DEFAULT_WORKDIR
+let WORKDIR = process.env.AGENT_OMEGA_WORKDIR || process.argv[2] || DEFAULT_WORKDIR
 const WS_PORT = Number(process.env.AGENT_OMEGA_WS_PORT || process.argv[3]) || 4599
 const API_PORT = WS_PORT + 1   // engine HTTP API rides one above the control socket (unique per instance)
 const DEFAULT_MODEL = process.env.AGENT_OMEGA_DEFAULT_MODEL || process.argv[4] || '' // empty => honor opencode.json's model
 const PARENT_PID = Number(process.env.AO_PARENT_PID || 0)   // shell PID; sidecar self-exits if the shell dies (no orphaned engine)
 
 try { fs.mkdirSync(WORKDIR, { recursive: true }) } catch (e) { if (e.code !== 'EEXIST') throw e }   // a bun-compiled mkdir can spuriously EEXIST on an already-present dir
+// Canonicalize: the engine resolves symlinks in session directories (macOS: /tmp -> /private/tmp),
+// and the UI queries /session?directory=<our WORKDIR>. If the strings disagree the session list
+// comes back empty even though the session exists. realpath AFTER mkdir so the dir resolves.
+try { WORKDIR = fs.realpathSync(WORKDIR) } catch {}
 
 let conn = null, sessionId = null, engineProc = null, restarting = false, lastEngineDown = null
 let models = [], agents = [], commands = [], curModel = DEFAULT_MODEL, curAgent = null
@@ -260,7 +264,13 @@ async function start() {
   const { AO_WS_TOKEN: _wsTok, ...engineEnv } = process.env // never expose the control-socket token to the engine/model shell
   // Pin the engine's HTTP API port (deterministic, per-instance) so the UI can call
   // the session API directly; without --port the engine lands on 4096-or-random silently.
-  const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR, '--port', String(API_PORT)], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: { ...engineEnv, ...vaultEnv() } })
+  // --cors null: the UI is loaded from file:// (WKWebView on macOS, WebView2 on Windows), whose
+  // fetch()es carry the literal Origin "null". The engine's CORS check rejects it by default, which
+  // silently breaks every HTTP-API-backed workflow (/sessions, rename, fork, undo, export, …).
+  // Allowing it is loopback-local and adds no real exposure: the API already accepts any
+  // non-browser local caller, and remote websites still can't reach it (their origin is their
+  // domain, never "null").
+  const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR, '--port', String(API_PORT), '--cors', 'null'], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: { ...engineEnv, ...vaultEnv() } })
   engineProc = proc
   proc.on('error', e => { log('spawn error', e.message); if (!restarting) { lastEngineDown = { type: 'engine-down', message: e.message }; broadcast(lastEngineDown) } })
   proc.on('exit', c => { log('engine exited', c); if (!restarting) { lastEngineDown = { type: 'engine-down', message: 'engine exited ' + c }; broadcast(lastEngineDown) } })
