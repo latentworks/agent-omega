@@ -411,7 +411,7 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                         self.web.evaluateJavaScript("try { window.send('\(turn)'); 'sent' } catch (e) { String(e) }") { rr, _ in print("TURN_SEND \(rr ?? "nil")") }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 22.0) {
-                            self.web.evaluateJavaScript("try { var c=document.querySelector('.convo'); if(c) c.scrollTop=c.scrollHeight; var t=(c&&c.innerText)||document.body.innerText||''; t.slice(-800) } catch(e){ 'ERR '+e }") { rb, _ in
+                            self.web.evaluateJavaScript("try { var c=document.querySelector('#convo'); if(c) c.scrollTop=c.scrollHeight; var t=(c&&c.innerText)||document.body.innerText||''; t.slice(-800) } catch(e){ 'ERR '+e }") { rb, _ in
                                 print("CONVO_TEXT >>>"); print((rb as? String) ?? "nil"); print("<<<")
                                 snap(0.5)
                             }
