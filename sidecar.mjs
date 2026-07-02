@@ -2,7 +2,7 @@
 // Spawns `opencode acp`, speaks ACP as the CLIENT, and bridges to the UI over a
 // local WebSocket. Handles: turns, live updates, interactive PERMISSIONS, model
 // + agent switching, the live command list, and client fs read/write.
-import { spawn, execFileSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { Writable, Readable } from 'node:stream'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -10,9 +10,25 @@ import os from 'node:os'
 import { WebSocketServer } from 'ws'
 import * as acp from '@agentclientprotocol/sdk'
 import { fileURLToPath } from 'node:url'
+import * as vault from './vault/index.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)) // works on Node 18+ (import.meta.dirname needs 20.11+)
-const ENGINE = process.env.AGENT_OMEGA_ENGINE || path.join(HERE, 'engine', 'opencode.exe')
+const IS_WIN = process.platform === 'win32'
+function defaultEnginePath() {
+  if (process.env.AGENT_OMEGA_ENGINE) return process.env.AGENT_OMEGA_ENGINE
+  return IS_WIN ? path.join(HERE, 'engine', 'opencode.exe') : path.join(HERE, 'engine', 'opencode')
+}
+const ENGINE = defaultEnginePath()
+function commandOnPath(name) {
+  const dirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean)
+  for (const dir of dirs) {
+    try {
+      fs.accessSync(path.join(dir, name), fs.constants.X_OK)
+      return true
+    } catch {}
+  }
+  return false
+}
 // Test mode: set AGENT_OMEGA_OPENCODE_SRC to the packages/opencode dir to run the engine
 // FROM SOURCE via bun — picks up engine edits without a binary rebuild. Unset in
 // production → the compiled exe is used.
@@ -54,45 +70,14 @@ function friendlyError(msg) {
   return m
 }
 
-// Vault -> engine env: read cloud API keys from the DPAPI vault (secrets.ps1) and
-// pass them to `opencode acp`, so cloud providers (anthropic/openai/...) and frontier
-// council members light up. Honest: a missing/failed key is simply skipped (the
-// provider stays dark), never faked. Env var name <- vault key name.
-const SECRETS_PS1 = process.env.AGENT_OMEGA_VAULT || path.join(os.homedir(), '.agent-omega', 'secrets.ps1')
-// Self-heal the vault script: if it isn't installed yet, drop the shipped copy in place so the
-// in-app Vault + key injection work even if the user never ran setup.mjs.
-function ensureVault() {
-  try {
-    if (!fs.existsSync(SECRETS_PS1)) {
-      const src = path.join(HERE, 'scripts', 'secrets.ps1')
-      if (fs.existsSync(src)) { fs.mkdirSync(path.dirname(SECRETS_PS1), { recursive: true }); fs.copyFileSync(src, SECRETS_PS1) }
-    }
-  } catch {}
-  return fs.existsSync(SECRETS_PS1)
-}
 const COUNCIL_JSON = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode', 'council', 'council.json') // honors XDG_CONFIG_HOME so an isolated instance reads its own council config
-const VAULT_TO_ENV = {
-  ANTHROPIC_API_KEY: 'ANTHROPIC_API_KEY',
-  OPENAI_API_KEY: 'OPENAI_API',
-  DEEPSEEK_API_KEY: 'DEEPSEEK_API',
-  ZAI_API_KEY: 'ZAI_API_KEY',
-  MOONSHOT_API_KEY: 'KIMI_API_KEY',
-  GOOGLE_GENERATIVE_AI_API_KEY: 'GEMINI_API_KEY',
-}
 function vaultEnv() {
-  const out = {}
-  ensureVault()
-  for (const [envName, vaultName] of Object.entries(VAULT_TO_ENV)) {
-    try {
-      const v = execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', SECRETS_PS1, 'get', vaultName], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-      if (v) out[envName] = v
-    } catch {}
-  }
+  const out = vault.env()
   log('vault -> engine env: ' + (Object.keys(out).join(', ') || '(none)'))
   return out
 }
 
-// ---- Settings layer: council.json (read/merge/write) + vault (via secrets.ps1) ----
+// ---- Settings layer: council.json (read/merge/write) + vault ----
 // Safe read: a missing or corrupt file yields {} rather than crashing the sidecar.
 function readCouncil() {
   let raw
@@ -149,13 +134,8 @@ function validateCouncilPatch(patch) {
   }
   return { ok: true, clean }
 }
-// List vault key NAMES only (never values). secrets.ps1 prints one name per line, or the
-// sentinel "(vault empty)". Args go through execFileSync's array form (no shell) so a key
-// name can't inject a command.
 function vaultListNames() {
-  ensureVault()
-  const out = execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', SECRETS_PS1, 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-  return out.split(/\r?\n/).map(s => s.trim()).filter(s => s && s !== '(vault empty)')
+  return vault.list()
 }
 
 class UIClient {
@@ -209,13 +189,26 @@ async function newSession() {
 }
 
 async function start() {
-  if (!OPENCODE_SRC && !fs.existsSync(ENGINE)) {   // engine preflight — clear message instead of a raw ENOENT
-    lastEngineDown = { type: 'engine-down', message: 'Engine not found at ' + ENGINE + ' — download opencode.exe into an engine/ folder (see SETUP.md) or set AGENT_OMEGA_ENGINE.' }
+  const engineIsPath = ENGINE.includes(path.sep) || (path.sep === '\\' && ENGINE.includes('/'))
+  const usePathEngine = !IS_WIN && !process.env.AGENT_OMEGA_ENGINE && !fs.existsSync(ENGINE)
+  if (!OPENCODE_SRC && usePathEngine && !commandOnPath('opencode')) {
+    lastEngineDown = { type: 'engine-down', message: 'Engine not found — put opencode at ./engine/opencode, set AGENT_OMEGA_ENGINE, or install opencode on PATH.' }
+    log('engine missing: ./engine/opencode and PATH opencode'); broadcast(lastEngineDown); return
+  }
+  if (!OPENCODE_SRC && engineIsPath && !usePathEngine && !fs.existsSync(ENGINE)) {   // engine preflight — clear message instead of a raw ENOENT
+    lastEngineDown = { type: 'engine-down', message: 'Engine not found at ' + ENGINE + ' — put opencode at ./engine/' + (IS_WIN ? 'opencode.exe' : 'opencode') + ', set AGENT_OMEGA_ENGINE, or install opencode on PATH.' }
     log('engine missing:', ENGINE); broadcast(lastEngineDown); return
+  }
+  if (!OPENCODE_SRC && !IS_WIN && engineIsPath && !usePathEngine) {
+    try { fs.accessSync(ENGINE, fs.constants.X_OK) }
+    catch {
+      lastEngineDown = { type: 'engine-down', message: 'Engine exists but is not executable: ' + ENGINE + ' — run chmod +x ' + ENGINE }
+      log('engine not executable:', ENGINE); broadcast(lastEngineDown); return
+    }
   }
   const [cmd, baseArgs] = OPENCODE_SRC
     ? [BUN, ['run', '--cwd', OPENCODE_SRC, '--conditions=browser', 'src/index.ts']]
-    : [ENGINE, []]
+    : [usePathEngine ? 'opencode' : ENGINE, []]
   log('engine:', cmd, baseArgs.join(' '))
   const { AO_WS_TOKEN: _wsTok, ...engineEnv } = process.env // never expose the control-socket token to the engine/model shell
   const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: { ...engineEnv, ...vaultEnv() } })
@@ -302,9 +295,8 @@ wss.on('connection', (ws) => {
         case 'vaultSet': {
           try {
             if (typeof m.name !== 'string' || !m.name.trim()) { send(ws, { type: 'vaultKeys', error: 'name required' }); break }
-            // Empty value would make secrets.ps1 drop to an interactive Read-Host prompt and HANG the sidecar.
             if (typeof m.value !== 'string' || m.value === '') { send(ws, { type: 'vaultKeys', error: 'value required' }); break }
-            execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', SECRETS_PS1, 'set', m.name, m.value], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+            vault.set(m.name, m.value)
             const note = busy ? 'Key saved — restart the app to apply it (a turn is in progress).' : 'Key saved — engine reloaded. If your first cloud call still fails, restart the app.'
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))   // pick up the new key without a manual restart
@@ -314,7 +306,7 @@ wss.on('connection', (ws) => {
         case 'vaultRemove': {
           try {
             if (typeof m.name !== 'string' || !m.name.trim()) { send(ws, { type: 'vaultKeys', error: 'name required' }); break }
-            execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', SECRETS_PS1, 'remove', m.name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+            vault.remove(m.name)
             const note = busy ? 'Key removed — restart the app to fully apply.' : 'Key removed — engine reloaded.'
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))
