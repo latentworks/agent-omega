@@ -376,9 +376,45 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
 
+    // ---- menu / responder-chain self-test (dev only): AO_MENU_SELFTEST=1 ----
+    // Verifies the fix for the "no keybindings" bug WITHOUT needing Accessibility to inject real
+    // key events: a menu item firing is exactly NSApp.sendAction(selector) down the responder
+    // chain. We (1) audit the main menu has the standard Edit key-equivalents, then (2) put a
+    // known string in the web input, select-all + copy VIA THE RESPONDER CHAIN, and read the
+    // system pasteboard — proving Cmd+C reaches the WKWebView and copies. Prints MENU_* lines.
+    func installMenuSelfTestIfNeeded() {
+        guard ProcessInfo.processInfo.environment["AO_MENU_SELFTEST"] != nil else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+            // 1) audit menu structure
+            let menu = NSApp.mainMenu
+            let edit = menu?.items.first(where: { $0.submenu?.title == "Edit" })?.submenu
+            let want: [(String, Selector)] = [("Copy", #selector(NSText.copy(_:))), ("Paste", #selector(NSText.paste(_:))), ("Cut", #selector(NSText.cut(_:))), ("Select All", #selector(NSText.selectAll(_:)))]
+            var wired = 0
+            for (title, sel) in want {
+                if let it = edit?.items.first(where: { $0.title == title }), it.action == sel, !it.keyEquivalent.isEmpty { wired += 1 }
+            }
+            print("MENU_STRUCTURE main=\(menu != nil ? "present" : "MISSING") editItems=\(edit?.items.count ?? 0) stdKeyEquivsWired=\(wired)/4")
+            // 2) drive copy through the responder chain (what a menu item / Cmd+C does)
+            let sentinel = "AO-CLIP-SENTINEL-7f3a"
+            NSPasteboard.general.clearContents()
+            self.web.evaluateJavaScript("(function(){var i=document.getElementById('homeInput')||document.querySelector('textarea');if(!i)return 'noinput';i.focus();i.value='\(sentinel)';i.select();return 'set';})()") { r, _ in
+                print("MENU_COPY_SETUP \(r ?? "nil")")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    let ok = NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)   // exactly what the Copy menu item does
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        let clip = NSPasteboard.general.string(forType: .string) ?? ""
+                        print("MENU_COPY_RESULT sentAction=\(ok) pasteboard=\(clip == sentinel ? "MATCH" : "MISMATCH(\(clip.prefix(20)))")")
+                        NSApp.terminate(nil)
+                    }
+                }
+            }
+        }
+    }
+
     // ---- automated-verification hook (dev/CI only): AO_SHELL_TESTSHOT=<s> [+ AO_SHELL_TURN] ----
     func installTestHookIfNeeded() {
         let env = ProcessInfo.processInfo.environment
+        installMenuSelfTestIfNeeded()
         guard let s = env["AO_SHELL_TESTSHOT"], let secs = Double(s) else { return }
         let turn = env["AO_SHELL_TURN"]
         let snap: (Double) -> Void = { delay in
