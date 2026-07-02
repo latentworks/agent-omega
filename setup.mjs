@@ -7,16 +7,17 @@
 //     node setup.mjs --non-interactive --source anthropic --key sk-...
 //     node setup.mjs --non-interactive --source local --url http://127.0.0.1:8080/v1
 import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, copyFileSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import os from 'node:os'
 import readline from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
+import * as vault from './vault/index.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)) // Node 18+ (import.meta.dirname needs 20.11+)
 const HOME = os.homedir()
 const CFG_DIR = path.join(HOME, '.config', 'opencode')
 const VAULT_DIR = path.join(HOME, '.agent-omega')
+const IS_WIN = process.platform === 'win32'
 const args = process.argv.slice(2)
 const NONINT = args.includes('--non-interactive')
 const flag = (n) => { const i = args.indexOf('--' + n); return i >= 0 ? args[i + 1] : undefined }
@@ -52,17 +53,23 @@ async function main() {
     console.log('  ' + CFG_DIR + ' already exists - leaving it (delete it to reinstall from the template)')
   }
 
-  // 2) encrypted vault script -> ~/.agent-omega/secrets.ps1
+  // 2) vault setup
   if (!existsSync(VAULT_DIR)) mkdirSync(VAULT_DIR, { recursive: true })
-  const vaultScript = path.join(VAULT_DIR, 'secrets.ps1')
-  copyFileSync(path.join(HERE, 'scripts', 'secrets.ps1'), vaultScript)
-  console.log('  installed encrypted vault -> ' + vaultScript)
+  if (IS_WIN) {
+    const vaultScript = path.join(VAULT_DIR, 'secrets.ps1')
+    copyFileSync(path.join(HERE, 'scripts', 'secrets.ps1'), vaultScript)
+    console.log('  installed encrypted vault -> ' + vaultScript)
+  } else {
+    console.log('  Linux keys: using environment variables first, optional fallback -> ' + path.join(VAULT_DIR, 'vault.json'))
+  }
 
   // 3) engine check
-  const engine = process.env.AGENT_OMEGA_ENGINE || path.join(HERE, 'engine', 'opencode.exe')
+  const engine = process.env.AGENT_OMEGA_ENGINE || path.join(HERE, 'engine', IS_WIN ? 'opencode.exe' : 'opencode')
   console.log(existsSync(engine)
     ? '  engine found -> ' + engine
-    : '  engine NOT found - download opencode.exe from the release into ./engine/ (see SETUP.md)')
+    : (IS_WIN
+        ? '  engine NOT found - download opencode.exe from the release into ./engine/ (see SETUP.md)'
+        : '  engine NOT found - put opencode at ./engine/opencode, set AGENT_OMEGA_ENGINE, or install opencode on PATH (see SETUP-LINUX.md)'))
 
   // 4) model + key
   let source = flag('source')
@@ -95,10 +102,13 @@ async function main() {
     const info = PROVIDERS[prov]
     const key = flag('key') || await ask(info.label + ' API key (leave blank to add later in the app): ', '')
     if (key) {
-      execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', vaultScript, 'set', info.vault, String(key)], { stdio: ['ignore', 'pipe', 'pipe'] })
-      console.log('  stored key in the encrypted vault (' + info.vault + ')')
+      vault.set(info.vault, String(key))
+      console.log(IS_WIN
+        ? '  stored key in the encrypted vault (' + info.vault + ')'
+        : '  stored key in the local fallback vault (' + info.vault + ')')
     } else {
-      console.log('  no key entered - add it later via the app, or store the ' + info.vault + ' vault entry')
+      const envName = vault.VAULT_TO_ENV[info.vault] || info.vault
+      console.log('  no key entered - add it later via the app, or export ' + envName)
     }
     cfg.model = info.model
     console.log('  model -> ' + info.model)
@@ -106,7 +116,9 @@ async function main() {
 
   writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n')
   console.log('\n  wrote ' + cfgPath)
-  console.log('\nSetup complete. Build + launch:\n  dotnet build -c Release\n  .\\bin\\Release\\net8.0-windows\\agent-omega.exe\n')
+  console.log(IS_WIN
+    ? '\nSetup complete. Build + launch:\n  dotnet build -c Release\n  .\\bin\\Release\\net8.0-windows\\agent-omega.exe\n'
+    : '\nSetup complete. Launch browser mode:\n  npm run start:linux\n')
   if (rl) rl.close()
 }
 

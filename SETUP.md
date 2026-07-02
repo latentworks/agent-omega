@@ -1,8 +1,8 @@
-# Setup
+# Windows Desktop Setup
 
 Agent Omega is a Windows desktop app: a frameless **WebView2 shell** → a **Node sidecar** → the **`opencode` engine**, with a plugin config that lives in `~/.config/opencode`. This gets it running from a clone.
 
-> A macOS build is planned (in progress separately).
+> Linux browser-mode setup is separate: see [SETUP-LINUX.md](SETUP-LINUX.md). The native Linux desktop shell is not shipped yet.
 
 ## 1. Prerequisites
 
