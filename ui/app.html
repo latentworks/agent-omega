@@ -433,7 +433,7 @@ function withScroll(fn){ const stick=nearBottom(); fn(); if(stick) toBottom(); }
 
 /* ---- view switching + focus ---- */
 function chatVisible(){ return !chat.classList.contains('hidden'); }
-function showHome(){ chat.classList.add('hidden'); home.classList.remove('hidden'); homeInput.focus(); }
+function showHome(){ chat.classList.add('hidden'); home.classList.remove('hidden'); homeInput.focus(); if(window.ftpInput) window.ftpInput.autosizeAll(); }   // home may have been display:none (e.g. reset from chat) -> measure now it's visible, else the textarea renders 0px tall
 function showChat(){ home.classList.add('hidden'); chat.classList.remove('hidden'); chatInput.focus(); if(window.ftpInput) window.ftpInput.autosizeAll(); }   // chat was display:none at wire time -> measure now it's visible (no 0px textarea)
 function focusActive(){ const i = chatVisible() ? (chatInput.disabled?null:chatInput) : homeInput; if(i) i.focus(); }
 
