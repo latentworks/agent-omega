@@ -171,9 +171,32 @@ function vaultEnv() {
   return out
 }
 // A turn that "succeeded" with zero output — diagnose instead of showing nothing.
-function emptyTurnError() {
+// The engine swallows provider failures from the ACP stream but DOES write them to its
+// own log; read what it logged during THIS turn so the user sees the provider's exact
+// words (e.g. deepseek's "Authentication Fails, Your api key: ****xxxx is invalid").
+const ENGINE_LOG = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'opencode', 'log', 'opencode.log')
+let turnLogOffset = 0
+function engineLogSize() { try { return fs.statSync(ENGINE_LOG).size } catch { return 0 } }
+function engineErrorSince(offset) {
+  try {
+    const fd = fs.openSync(ENGINE_LOG, 'r')
+    const size = fs.fstatSync(fd).size
+    const start = Math.min(Math.max(offset, size - 262144), size)   // this turn only, capped read
+    const buf = Buffer.alloc(size - start)
+    fs.readSync(fd, buf, 0, buf.length, start)
+    fs.closeSync(fd)
+    const errs = buf.toString('utf8').split('\n').filter(l => l.includes('level=ERROR'))
+    if (!errs.length) return ''
+    const m = errs[errs.length - 1].match(/error(?:\.error)?="((?:[^"\\]|\\.)*)"/)
+    return m ? m[1].replace(/\\"/g, '"').slice(0, 300) : ''
+  } catch { return '' }
+}
+async function emptyTurnError() {
+  await new Promise(r => setTimeout(r, 800))   // the engine flushes its log a beat AFTER the turn resolves — give it that beat
   const prov = (curModel || '').split('/')[0] || 'the provider'
-  return 'The model returned nothing — ' + prov + "'s API most likely rejected the request. Usual causes: an invalid/expired API key (Settings → Vault: re-paste the raw key, no quotes or spaces), an account with no credit, or a model this key can't access. The key is applied on engine reload — if you just added it, try once more."
+  const detail = engineErrorSince(turnLogOffset)
+  if (detail) return prov + ' rejected the request: "' + detail + '"  — fix the key in Settings → Vault (paste the raw value, no quotes/spaces; it applies on engine reload). Full log: ' + ENGINE_LOG
+  return 'The model returned nothing — ' + prov + "'s API most likely rejected the request. Usual causes: an invalid/expired API key (Settings → Vault: re-paste the raw key, no quotes or spaces), an account with no credit, or a model this key can't access. Exact error, if any: " + ENGINE_LOG
 }
 
 // model-id provider prefix -> the env var whose presence means that provider is usable.
@@ -419,19 +442,19 @@ wss.on('connection', (ws) => {
       switch (m.type) {
         case 'prompt': {
           if (busy || !m.text) return
-          busy = true; turnOutput = 0; broadcast({ type: 'turn-start' })
+          busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
           // The engine can swallow a provider failure (e.g. a 401 from a bad API key) and
           // resolve the turn with NO output at all — the user would see pure silence. A
           // completed turn with zero meaningful updates is that case: say so.
-          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: m.text }] }); if (turnOutput === 0) broadcast({ type: 'error', message: emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
+          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: m.text }] }); if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
           catch (e) { broadcast({ type: 'error', message: friendlyError(e.message) }) }
           finally { busy = false }
           break
         }
         case 'command': {
           if (busy || !m.name) return
-          busy = true; turnOutput = 0; broadcast({ type: 'turn-start' })
-          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + m.name + (m.args ? ' ' + m.args : '') }] }); if (turnOutput === 0) broadcast({ type: 'error', message: emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
+          busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
+          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + m.name + (m.args ? ' ' + m.args : '') }] }); if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
           catch (e) { broadcast({ type: 'error', message: friendlyError(e.message) }) }
           finally { busy = false }
           break
