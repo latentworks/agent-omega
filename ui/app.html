@@ -343,8 +343,10 @@
 
 /* ---- config ---- */
 const WORKSPACE_ROOT = ''; // set from the ready message's workdir when available; stripped from displayed paths
-const WS_PORT = (new URLSearchParams(location.search)).get('ws') || '4599';
-const WS_TOKEN = (new URLSearchParams(location.search)).get('token') || '';
+const URL_PARAMS = new URLSearchParams(location.search);
+const WS_PORT = URL_PARAMS.get('ws') || '4599';
+const WS_TOKEN = URL_PARAMS.get('token') || '';
+const HOST_KIND = URL_PARAMS.get('host') || 'webview';
 
 const $ = id => document.getElementById(id);
 const home=$('home'), chat=$('chat'), convo=$('convo'), log=$('log');
@@ -404,8 +406,14 @@ window.addEventListener('keydown', function(e){
 }, true);
 
 /* ---- host bridge (window controls ONLY) ---- */
-function post(o){ try{ window.chrome.webview.postMessage(o); }catch(e){} }
-function win(action){ post({type:action}); }
+function post(o){ try{ if(HOST_KIND==='browser') return; window.chrome.webview.postMessage(o); }catch(e){} }
+function win(action){ if(HOST_KIND==='browser') return; post({type:action}); }
+if(HOST_KIND==='browser'){
+  document.addEventListener('DOMContentLoaded', ()=>{
+    document.body.classList.add('host-browser');
+    document.querySelectorAll('.m-trafficlights,.crt-tb-controls').forEach(el=>{ el.style.visibility='hidden'; });
+  });
+}
 
 /* ---- safety + small formatters ---- */
 function escapeHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }

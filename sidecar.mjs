@@ -11,10 +11,23 @@ import { WebSocketServer } from 'ws'
 import * as acp from '@agentclientprotocol/sdk'
 import { fileURLToPath } from 'node:url'
 import crypto from 'node:crypto'
+import * as fileVault from './vault/file-vault.mjs'
 
 const isWin = process.platform === 'win32'
+const isLinux = !isWin && process.platform !== 'darwin'
 const HERE = path.dirname(fileURLToPath(import.meta.url)) // Node 18+ safe (import.meta.dirname needs 20.11+)
 const ENGINE = process.env.AGENT_OMEGA_ENGINE || path.join(HERE, 'engine', isWin ? 'opencode.exe' : 'opencode')
+// Linux browser mode can also run against an opencode already on PATH (no bundled engine dir).
+function commandOnPath(name) {
+  const dirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean)
+  for (const dir of dirs) {
+    try {
+      fs.accessSync(path.join(dir, name), fs.constants.X_OK)
+      return true
+    } catch {}
+  }
+  return false
+}
 // Test mode: set AGENT_OMEGA_OPENCODE_SRC to the packages/opencode dir to run the engine
 // FROM SOURCE via bun — picks up engine edits without a binary rebuild. Unset in
 // production → the compiled exe is used.
@@ -131,7 +144,13 @@ const VAULT_TO_ENV = {
 // Pre-2.3 installs stored these two under shorter names; fall back to them so an upgrade
 // doesn't silently lose an already-stored key.
 const VAULT_LEGACY = { OPENAI_API_KEY: 'OPENAI_API', DEEPSEEK_API_KEY: 'DEEPSEEK_API' }
+// vault key NAME -> the env var it feeds (reverse of VAULT_TO_ENV; identity for unknown names).
+function envNameOf(vaultName) { const hit = Object.entries(VAULT_TO_ENV).find(([, v]) => v === vaultName); return hit ? hit[0] : vaultName }
 function vaultGet(vaultName) {
+  // Linux has no OS vault: keys come from environment variables (the conventional Linux channel),
+  // with the 0600 JSON file vault (~/.agent-omega/vault.json) as the writable fallback the in-app
+  // Vault UI edits. Env wins so an exported key can't be shadowed by a stale file entry.
+  if (isLinux) return process.env[envNameOf(vaultName)] || fileVault.get(vaultName) || ''
   try {
     const v = execFileSync(VAULT_CMD, [...VAULT_PRE, 'get', vaultName], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
     return /^no secret named/i.test(v) ? '' : v   // secrets.sh prints this sentinel for a missing key; treat as empty so the legacy-name fallback triggers
@@ -140,7 +159,7 @@ function vaultGet(vaultName) {
 let keyedEnv = new Set()   // which provider env vars actually have a value this launch (for model auto-select)
 function vaultEnv() {
   const out = {}
-  ensureVault()
+  if (!isLinux) ensureVault()
   for (const [envName, vaultName] of Object.entries(VAULT_TO_ENV)) {
     let v = vaultGet(vaultName)
     if (!v && VAULT_LEGACY[vaultName]) v = vaultGet(VAULT_LEGACY[vaultName])
@@ -169,7 +188,7 @@ function modelPickable(modelId) {
   return env ? keyedEnv.has(env) : false
 }
 
-// ---- Settings layer: council.json (read/merge/write) + vault (via secrets.ps1) ----
+// ---- Settings layer: council.json (read/merge/write) + vault ----
 // Safe read: a missing or corrupt file yields {} rather than crashing the sidecar.
 function readCouncil() {
   let raw
@@ -226,10 +245,12 @@ function validateCouncilPatch(patch) {
   }
   return { ok: true, clean }
 }
-// List vault key NAMES only (never values). secrets.ps1 prints one name per line, or the
-// sentinel "(vault empty)". Args go through execFileSync's array form (no shell) so a key
-// name can't inject a command.
 function vaultListNames() {
+  if (isLinux) {   // env-provided keys + the file vault, deduped — names only, never values
+    const names = new Set(fileVault.list())
+    for (const [envName, vaultName] of Object.entries(VAULT_TO_ENV)) if (process.env[envName]) names.add(vaultName)
+    return [...names].sort()
+  }
   ensureVault()
   const out = execFileSync(VAULT_CMD, [...VAULT_PRE, 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   return out.split(/\r?\n/).map(s => s.trim()).filter(s => s && s !== '(vault empty)')
@@ -304,14 +325,29 @@ async function newSession() {
 }
 
 async function start() {
-  if (!OPENCODE_SRC && !fs.existsSync(ENGINE)) {   // engine preflight — clear message instead of a raw ENOENT
-    const getEngine = isWin ? 'download opencode.exe into an engine/ folder (see SETUP.md)' : 'build the engine into engine/opencode (see SETUP.md, macOS section)'
+  // A bare command name via AGENT_OMEGA_ENGINE (no path separator) is resolved by spawn from
+  // PATH, so only path-shaped values get the existence preflight.
+  const engineIsPath = ENGINE.includes(path.sep) || (isWin && ENGINE.includes('/'))
+  const usePathEngine = !isWin && !process.env.AGENT_OMEGA_ENGINE && !fs.existsSync(ENGINE)
+  if (!OPENCODE_SRC && usePathEngine && !commandOnPath('opencode')) {
+    lastEngineDown = { type: 'engine-down', message: 'Engine not found — build it into engine/opencode (see SETUP.md), install opencode on PATH, or set AGENT_OMEGA_ENGINE.' }
+    log('engine missing: ./engine/opencode and PATH opencode'); broadcast(lastEngineDown); return
+  }
+  if (!OPENCODE_SRC && engineIsPath && !usePathEngine && !fs.existsSync(ENGINE)) {   // engine preflight — clear message instead of a raw ENOENT
+    const getEngine = isWin ? 'download opencode.exe into an engine/ folder (see SETUP.md)' : 'build the engine into engine/opencode (see SETUP.md)'
     lastEngineDown = { type: 'engine-down', message: 'Engine not found at ' + ENGINE + ' — ' + getEngine + ', or set AGENT_OMEGA_ENGINE.' }
     log('engine missing:', ENGINE); broadcast(lastEngineDown); return
   }
+  if (!OPENCODE_SRC && !isWin && engineIsPath && !usePathEngine) {
+    try { fs.accessSync(ENGINE, fs.constants.X_OK) }
+    catch {
+      lastEngineDown = { type: 'engine-down', message: 'Engine exists but is not executable: ' + ENGINE + ' — run chmod +x ' + ENGINE }
+      log('engine not executable:', ENGINE); broadcast(lastEngineDown); return
+    }
+  }
   const [cmd, baseArgs] = OPENCODE_SRC
     ? [BUN, ['run', '--cwd', OPENCODE_SRC, '--conditions=browser', 'src/index.ts']]
-    : [ENGINE, []]
+    : [usePathEngine ? 'opencode' : ENGINE, []]
   log('engine:', cmd, baseArgs.join(' '))
   // Strip the WS token AND the API password from the env the engine (and thus the model's shell)
   // inherits: neither is the engine's to know, and the model must never read the API password.
@@ -422,7 +458,9 @@ wss.on('connection', (ws) => {
             if (typeof m.value !== 'string' || m.value === '') { send(ws, { type: 'vaultKeys', error: 'value required' }); break }
             // Pass the secret on STDIN, never as an argv element — argv would land in any thrown
             // error string (execFileSync embeds the full command) and could leak the key value.
-            execFileSync(VAULT_CMD, [...VAULT_PRE, 'set', m.name], { input: m.value, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
+            // (Linux: plain 0600 file write, no child process involved.)
+            if (isLinux) fileVault.set(m.name, m.value)
+            else execFileSync(VAULT_CMD, [...VAULT_PRE, 'set', m.name], { input: m.value, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
             const note = busy ? 'Key saved — restart the app to apply it (a turn is in progress).' : 'Key saved — engine reloaded.'
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))   // pick up the new key without a manual restart
@@ -432,7 +470,8 @@ wss.on('connection', (ws) => {
         case 'vaultRemove': {
           try {
             if (typeof m.name !== 'string' || !m.name.trim()) { send(ws, { type: 'vaultKeys', error: 'name required' }); break }
-            execFileSync(VAULT_CMD, [...VAULT_PRE, 'remove', m.name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+            if (isLinux) fileVault.remove(m.name)
+            else execFileSync(VAULT_CMD, [...VAULT_PRE, 'remove', m.name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
             const note = busy ? 'Key removed — restart the app to fully apply.' : 'Key removed — engine reloaded.'
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))

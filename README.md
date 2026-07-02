@@ -118,14 +118,12 @@ for your say-so; reading and local edits just happen.
 
 ## Quick start
 
-Agent Omega runs on Windows and expects .NET 8, Node.js, and the WebView2 runtime.
-Full setup — dependencies, building the shell, wiring your models, and stocking the
-vault — lives in **[SETUP.md](SETUP.md)**.
+Agent Omega ships in two modes:
 
-The short version: build the WinForms app, make sure Node and the opencode engine
-binary are in place, add at least one model (a local one needs nothing but the model
-running; a cloud one needs its key in the vault), and launch. The window comes up,
-the sidecar starts the engine, and you're talking to it.
+- **Windows desktop shell**: WinForms + WebView2. Full setup lives in **[SETUP.md](SETUP.md)**.
+- **Linux browser mode**: the existing HTML UI + Node sidecar + Linux opencode engine in a normal browser. Setup lives in **[SETUP-LINUX.md](SETUP-LINUX.md)**.
+
+The native Linux desktop shell is not shipped yet. The Linux target here is browser-mode portability for the existing core stack.
 
 ---
 
