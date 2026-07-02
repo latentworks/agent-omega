@@ -37,7 +37,7 @@ deps:
 engine:
 ifeq ($(UNAME),Darwin)
 	@test -f engine/opencode && echo "engine present -> engine/opencode" || \
-		{ echo "MISSING engine/opencode — build it: bun run packages/opencode/script/build.ts --single --skip-embed-web-ui (in the fork), then copy to engine/opencode"; exit 1; }
+		{ echo "MISSING engine/opencode — download opencode-darwin-arm64 from the GitHub release assets (verify SHA256SUMS, chmod +x, clear quarantine; see SETUP.md), or build it from the engine fork if you have it"; exit 1; }
 else
 	@test -f engine/opencode && echo "engine present -> engine/opencode" || { command -v opencode >/dev/null && echo "engine on PATH -> opencode"; } || \
 		{ echo "MISSING engine — cross-compile from the fork (OPENCODE_BUILD_OS=linux OPENCODE_BUILD_ARCH=x64 bun run packages/opencode/script/build.ts --single --skip-embed-web-ui), copy to engine/opencode, or install opencode on PATH (see SETUP-LINUX.md)"; exit 1; }
