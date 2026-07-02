@@ -39,6 +39,10 @@ jobs:
         run: |
           node -e "JSON.parse(require('fs').readFileSync('config-template/opencode/opencode.json','utf8'))"
           node -e "if(require('./config-template/opencode/package.json').type!=='module')process.exit(1)"
+      - name: Linux browser-mode smoke (this runner IS the Linux host)
+        run: |
+          node scripts/linux-portability-check.mjs
+          node scripts/smoke-linux.mjs
 
   macos:
     name: macOS host (Swift)

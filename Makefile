@@ -21,8 +21,8 @@ help:
 	@echo "Agent Omega build ($(UNAME))"
 	@echo "  make deps     install sidecar + plugin npm deps (shared, both OSes)"
 	@echo "  make engine   check the opencode engine binary is present (build it per docs/MAC_BRANCH.md if missing)"
-	@echo "  make build    build the app for THIS OS"
-	@echo "  make run      build (if needed) + launch"
+	@echo "  make build    build the app for THIS OS (Linux: validate browser mode — no native shell)"
+	@echo "  make run      build (if needed) + launch (Linux: browser mode)"
 	@echo "  make install  build + install to /Applications (macOS)"
 	@echo "  make clean    remove local build output"
 	@echo ""
@@ -39,14 +39,17 @@ ifeq ($(UNAME),Darwin)
 	@test -f engine/opencode && echo "engine present -> engine/opencode" || \
 		{ echo "MISSING engine/opencode — build it: bun run packages/opencode/script/build.ts --single --skip-embed-web-ui (in the fork), then copy to engine/opencode"; exit 1; }
 else
-	@test -f engine/opencode && echo "engine present" || { echo "MISSING engine/opencode"; exit 1; }
+	@test -f engine/opencode && echo "engine present -> engine/opencode" || { command -v opencode >/dev/null && echo "engine on PATH -> opencode"; } || \
+		{ echo "MISSING engine — cross-compile from the fork (OPENCODE_BUILD_OS=linux OPENCODE_BUILD_ARCH=x64 bun run packages/opencode/script/build.ts --single --skip-embed-web-ui), copy to engine/opencode, or install opencode on PATH (see SETUP-LINUX.md)"; exit 1; }
 endif
 
 build:
 ifeq ($(UNAME),Darwin)
 	sh mac/build-app.sh
 else ifeq ($(UNAME),Linux)
-	@echo "No Linux host yet — the shared core supports Linux (XDG paths), but a Linux shell hasn't been written. See BUILD.md."; exit 1
+	node scripts/linux-portability-check.mjs
+	node scripts/smoke-linux.mjs
+	@echo "Linux is browser-mode (no native shell to compile) — validated. Launch: make run  (see SETUP-LINUX.md)"
 else
 	@echo "On Windows use ./build.ps1 (or: dotnet build -c Release)"; exit 1
 endif
@@ -54,8 +57,10 @@ endif
 run:
 ifeq ($(UNAME),Darwin)
 	sh mac/run.sh
+else ifeq ($(UNAME),Linux)
+	node scripts/run-linux.mjs
 else
-	@echo "run target is macOS-only; on Windows launch .\\bin\\Release\\net8.0-windows\\agent-omega.exe"; exit 1
+	@echo "on Windows launch .\\bin\\Release\\net8.0-windows\\agent-omega.exe"; exit 1
 endif
 
 install:
