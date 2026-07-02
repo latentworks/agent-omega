@@ -1032,14 +1032,16 @@ function selectByArg(kind, arg){
    for reads/metadata; switching goes through the sidecar ({type:'load'}),
    which replays history between replay-start / replay-end frames.
    ===================================================================== */
-let apiPort=0, workdir='', replaying=false, replayMsgId=null, replayUserEl=null;
+let apiPort=0, apiAuth='', workdir='', replaying=false, replayMsgId=null, replayUserEl=null;
 const API={
   base(){ return apiPort ? 'http://127.0.0.1:'+apiPort : null; },
   async call(method, path, body){
     const b=this.base(); if(!b) return { __err:'engine API port unknown (old sidecar?)' };
     try{
-      const r=await fetch(b+path, { method,
-        headers: body!==undefined?{'content-type':'application/json'}:undefined,
+      const headers={};
+      if(body!==undefined) headers['content-type']='application/json';
+      if(apiAuth) headers['authorization']=apiAuth;   // engine Basic auth — without it every call 401s (API is otherwise open)
+      const r=await fetch(b+path, { method, headers,
         body: body!==undefined?JSON.stringify(body):undefined });
       if(!r.ok) return { __err:'HTTP '+r.status };
       const ct=r.headers.get('content-type')||'';
@@ -1132,7 +1134,12 @@ async function redoLast(){
 async function shareSession(){
   if(!sessionId) return sysLine('no active session');
   const r=await API.call('POST','/session/'+encodeURIComponent(sessionId)+'/share');
-  if(!r||r.__err||!r.share||!r.share.url) return sysLine('share unavailable — <span style="color:#ff6b6b">'+escapeHtml((r&&r.__err)||'sharing may be disabled in config')+'</span>');
+  if(!r||r.__err||!r.share||!r.share.url){
+    // The shipped config sets "share":"disabled", so the engine 500s — say that plainly instead of a raw error.
+    const err=(r&&r.__err)||'';
+    if(/500|disab/i.test(err)||!err) return sysLine('sharing is disabled in this build (session sharing is off by default).');
+    return sysLine('share unavailable — <span style="color:#ff6b6b">'+escapeHtml(err)+'</span>');
+  }
   try{ await navigator.clipboard.writeText(r.share.url); }catch(e){}
   sysLine('shared (link copied): <span class="cy">'+escapeHtml(r.share.url)+'</span>');
 }
@@ -1160,14 +1167,35 @@ async function copySessionTranscript(){
   try{ await navigator.clipboard.writeText(md); sysLine('transcript copied ('+md.length+' chars, markdown)'); }
   catch(e){ sysLine('copy failed — <span style="color:#ff6b6b">'+escapeHtml(e.message)+'</span>'); }
 }
+/* Native save bridge: WKWebView blocks blob: downloads, so in the app we hand the file to the
+   Swift host, which writes it to ~/Downloads and acks the real path here. In a plain browser
+   (no host) we fall back to the blob download / clipboard. */
+const _saveReq=new Map(); let _saveRid=0;
+window.__aoSaveFileResult=function(rid, ok, pathOrErr){ const r=_saveReq.get(rid); if(r){ _saveReq.delete(rid); r({ok,pathOrErr}); } };
+function hostSaveFile(name, content){
+  const inShell = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.host);
+  if(!inShell) return Promise.resolve(null);   // not in the native shell -> caller uses the browser fallback
+  return new Promise(res=>{ const rid='s'+(++_saveRid); _saveReq.set(rid,res);
+    try{ post({type:'saveFile', rid, name, content}); }catch(e){ _saveReq.delete(rid); res(null); }
+    setTimeout(()=>{ if(_saveReq.has(rid)){ _saveReq.delete(rid); res({ok:false,pathOrErr:'timeout'}); } }, 8000);
+  });
+}
 async function exportSession(){
   if(!sessionId) return sysLine('no active session');
   const md=await transcriptMarkdown();
   if(!md) return sysLine('transcript unavailable');
+  const name='agent-omega-session-'+(sessionId||'export').slice(-8)+'.md';
+  const host=await hostSaveFile(name, md);
+  if(host){ // native shell answered
+    if(host.ok) sysLine('transcript saved → <span class="cy">'+escapeHtml(host.pathOrErr)+'</span> (revealed in Finder)');
+    else { try{ await navigator.clipboard.writeText(md); sysLine('couldn\'t write the file ('+escapeHtml(host.pathOrErr)+') — transcript copied to clipboard instead'); }catch(_){ sysLine('export failed — <span style="color:#ff6b6b">'+escapeHtml(host.pathOrErr)+'</span>'); } }
+    return;
+  }
+  // browser fallback (WebView2 / a real browser auto-downloads the blob)
   try{
     const a=document.createElement('a');
     a.href=URL.createObjectURL(new Blob([md],{type:'text/markdown'}));
-    a.download='agent-omega-session-'+(sessionId||'export').slice(-8)+'.md';
+    a.download=name;
     document.body.appendChild(a); a.click(); a.remove();
     sysLine('transcript exported (.md)');
   }catch(e){ try{ await navigator.clipboard.writeText(md); sysLine('download blocked — transcript copied instead'); }catch(_){ sysLine('export failed'); } }
@@ -1402,6 +1430,7 @@ function onWs(m){
       engineCommands=Array.isArray(m.commands)?m.commands:engineCommands;
       if(m.model!=null) curModel=m.model;
       if(m.agent!=null) curAgent=m.agent;
+      if(typeof m.apiAuth==='string') apiAuth=m.apiAuth;   // engine Basic-auth header (delivered over the token-gated WS)
       if(m.apiPort && m.apiPort!==apiPort){
         apiPort=m.apiPort;
         window.AO_API_BASE='http://127.0.0.1:'+apiPort;
@@ -1763,7 +1792,7 @@ function wireDiscovery(){
   });
   // Hide the few commands still not wired in the ACP build so nothing shown is broken (kept as
   // actions above for any code that dispatches them directly, but pulled from the palette + '/').
-  try{ const unavail=new Set(['session.sidebar.toggle','mcp.list','variant.cycle','model.cycle_recent','agent.cycle','provider.connect','editor.open']); for(const b of C.registry.builtins){ if(unavail.has(b.id)) b.hidden=true; } C.registry.index(); }catch(e){}
+  try{ const unavail=new Set(['session.sidebar.toggle','mcp.list','variant.cycle','model.cycle_recent','agent.cycle','provider.connect','editor.open','session.share','session.unshare']); for(const b of C.registry.builtins){ if(unavail.has(b.id)) b.hidden=true; } C.registry.index(); }catch(e){}
   syncDiscovery();   // push whatever `ready` data has already arrived
 }
 

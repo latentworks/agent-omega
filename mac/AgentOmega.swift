@@ -88,6 +88,7 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     var web: WKWebView!
     var sidecar: Process?
     var RES = ""
+    var xdgConfigHome = ""   // non-empty => our config is isolated here (a foreign opencode config occupied ~/.config)
     var quitting = false
     var maximized = false
     var restoreFrame = NSRect.zero
@@ -164,22 +165,53 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         try? "".write(toFile: marker, atomically: true, encoding: .utf8)
     }
 
-    // ---- first-run provisioning: install config + vault into the user's home, idempotent ----
+    // Is this dir an existing Agent Omega config (vs a stranger's own opencode config)? Mirrors
+    // setup.mjs isAgentOmega so the app never blindly pollutes someone else's ~/.config/opencode.
+    func isAgentOmega(_ dir: String) -> Bool {
+        let fm = FileManager.default
+        return fm.fileExists(atPath: dir + "/skill-router/index.js") || fm.fileExists(atPath: dir + "/council/index.js")
+    }
+    // User data we must NOT overwrite on upgrade (their config, roster, memory, engram db).
+    func isPreserved(_ rel: String) -> Bool {
+        return rel == "opencode.json" || rel == "council/council.json" || rel.hasPrefix("memory/")
+            || rel.hasSuffix(".db") || rel.hasSuffix(".db-wal") || rel.hasSuffix(".db-shm") || rel.hasSuffix(".log")
+    }
+
+    // ---- first-run provisioning: install/UPGRADE config + vault into the user's home, idempotent ----
     func provisionFirstRun() {
         let fm = FileManager.default
         let home = HOME
-        // 1. config-template/opencode -> ~/.config/opencode  (shallow merge; never clobber user entries)
         let src = RES + "/config-template/opencode"
-        let dst = home + "/.config/opencode"
+        // Choose where our config lives. Default ~/.config/opencode — BUT if that already holds a
+        // stranger's real opencode config (not ours, not empty), don't touch it: run isolated under
+        // ~/.agent-omega/xdg and point the engine there via XDG_CONFIG_HOME (set in startSidecar).
+        let defaultDst = home + "/.config/opencode"
+        var dst = defaultDst
+        let defExists = fm.fileExists(atPath: defaultDst)
+        let defEmpty = ((try? fm.contentsOfDirectory(atPath: defaultDst))?.isEmpty) ?? true
+        if defExists && !defEmpty && !isAgentOmega(defaultDst) {
+            xdgConfigHome = home + "/.agent-omega/xdg"
+            dst = xdgConfigHome + "/opencode"
+        }
         if fm.fileExists(atPath: src) {
             try? fm.createDirectory(atPath: dst, withIntermediateDirectories: true)
-            if let items = try? fm.contentsOfDirectory(atPath: src) {
-                for it in items where !fm.fileExists(atPath: dst + "/" + it) {
-                    try? fm.copyItem(atPath: src + "/" + it, toPath: dst + "/" + it)
+            // Copy the shipped tree: OVERWRITE our own code/skills/prompts (so an upgrade actually
+            // ships bug fixes), but PRESERVE the user's data files, and handle node_modules specially.
+            if let en = fm.enumerator(atPath: src) {
+                while let relAny = en.nextObject() {
+                    guard let rel = relAny as? String else { continue }
+                    if rel == "node_modules" || rel.hasPrefix("node_modules/") { en.skipDescendants(); continue }
+                    let s = src + "/" + rel, d = dst + "/" + rel
+                    var isDir: ObjCBool = false
+                    fm.fileExists(atPath: s, isDirectory: &isDir)
+                    if isDir.boolValue { try? fm.createDirectory(atPath: d, withIntermediateDirectories: true); continue }
+                    if isPreserved(rel) && fm.fileExists(atPath: d) { continue }   // keep the user's data
+                    try? fm.createDirectory(atPath: (d as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+                    if fm.fileExists(atPath: d) { try? fm.removeItem(atPath: d) }
+                    try? fm.copyItem(atPath: s, toPath: d)
                 }
             }
-            // node_modules may pre-exist (a stock opencode install) without our plugin deps —
-            // merge in any bundled package that's missing so council/engram can import.
+            // node_modules: add any missing bundled package (don't churn a big existing tree).
             let srcNM = src + "/node_modules", dstNM = dst + "/node_modules"
             if fm.fileExists(atPath: srcNM) {
                 try? fm.createDirectory(atPath: dstNM, withIntermediateDirectories: true)
@@ -230,6 +262,9 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         env["AGENT_OMEGA_ENGINE"] = RES + "/engine/opencode"
         env["AGENT_OMEGA_WORKDIR"] = WORKDIR
         env["AGENT_OMEGA_WS_PORT"] = String(WS_PORT)
+        // If we isolated our config away from a stranger's ~/.config/opencode, the engine + plugins
+        // must read from there too. XDG_CONFIG_HOME/opencode is where provisionFirstRun installed it.
+        if !xdgConfigHome.isEmpty { env["XDG_CONFIG_HOME"] = xdgConfigHome }
         // Parent-death signal: the sidecar polls this PID and self-exits (killing the engine)
         // if the shell dies abnormally — otherwise both would orphan and hold the ports.
         env["AO_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
@@ -292,8 +327,39 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         case "drag":
             // Transparent native titlebar + isMovableByWindowBackground already drag the window.
             break
+        case "saveFile":
+            // WKWebView blocks blob: downloads, so the UI can't save a transcript on its own.
+            // Write it to ~/Downloads natively, reveal it in Finder, and ack back to the UI so it
+            // reports the truth (real path on success, honest failure otherwise).
+            saveFile(msg.body as? [String: Any])
         default: break
         }
+    }
+
+    func saveFile(_ d: [String: Any]?) {
+        let rid = (d?["rid"] as? String) ?? ""
+        let content = (d?["content"] as? String) ?? ""
+        var name = (d?["name"] as? String) ?? "export.txt"
+        name = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: "..", with: "-")   // no path escape
+        let ack: (Bool, String) -> Void = { [weak self] ok, pathOrErr in
+            let js = "window.__aoSaveFileResult && window.__aoSaveFileResult(\(jsString(rid)), \(ok ? "true" : "false"), \(jsString(pathOrErr)))"
+            DispatchQueue.main.async { self?.web.evaluateJavaScript(js, completionHandler: nil) }
+        }
+        let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: HOME + "/Downloads")
+        var dest = dir.appendingPathComponent(name)
+        // don't clobber: append -1, -2, … if the name is taken
+        if FileManager.default.fileExists(atPath: dest.path) {
+            let ext = dest.pathExtension, stem = dest.deletingPathExtension().lastPathComponent
+            var n = 1
+            repeat { dest = dir.appendingPathComponent(stem + "-\(n)" + (ext.isEmpty ? "" : "." + ext)); n += 1 }
+            while FileManager.default.fileExists(atPath: dest.path) && n < 1000
+        }
+        do {
+            try content.data(using: .utf8)?.write(to: dest)
+            NSWorkspace.shared.activateFileViewerSelecting([dest])   // reveal in Finder
+            ack(true, dest.path)
+        } catch { ack(false, error.localizedDescription) }
     }
 
     func webView(_ w: WKWebView, decidePolicyFor action: WKNavigationAction,
@@ -328,10 +394,20 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
                 }
             }
         }
+        let evalJS = env["AO_SHELL_EVAL"]   // dev-only: run an arbitrary UI expression after boot (exercises host bridges like exportSession)
         DispatchQueue.main.asyncAfter(deadline: .now() + secs) {
             self.web.evaluateJavaScript("try { if (window.AOBoot && !window.AOBoot.done) window.AOBoot.finish(); 'ok' } catch (e) { String(e) }") { r, _ in
                 print("BOOT_FINISH \(r ?? "nil")")
-                if let turn = turn, !turn.isEmpty {
+                if let js = evalJS, !js.isEmpty {
+                    // Fire the (async) UI flow and let it run; the app stays alive until the
+                    // AO_SHELL_TESTSHOT timer snapshots/quits, so pick a TESTSHOT large enough to
+                    // cover it. We check side effects (files, DOM) rather than a JS return value.
+                    let wait = Double(env["AO_SHELL_EVAL_WAIT"] ?? "50") ?? 50
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        self.web.evaluateJavaScript("try { (\(js)); 'started' } catch(e){ 'ERR '+e }") { rr, _ in print("EVAL_STARTED \(rr ?? "nil")") }
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + wait) { snap(0.5) }
+                } else if let turn = turn, !turn.isEmpty {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                         self.web.evaluateJavaScript("try { window.send('\(turn)'); 'sent' } catch (e) { String(e) }") { rr, _ in print("TURN_SEND \(rr ?? "nil")") }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 22.0) {
@@ -347,6 +423,14 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
             }
         }
     }
+}
+
+// JSON-encode a string into a safe JS literal (quotes included) for evaluateJavaScript.
+func jsString(_ s: String) -> String {
+    if let d = try? JSONSerialization.data(withJSONObject: [s]), let j = String(data: d, encoding: .utf8) {
+        return String(j.dropFirst().dropLast())   // ["..."] -> "..."
+    }
+    return "\"\""
 }
 
 func fatalAlert(_ msg: String) -> Never {

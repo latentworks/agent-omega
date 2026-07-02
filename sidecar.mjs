@@ -10,6 +10,7 @@ import os from 'node:os'
 import { WebSocketServer } from 'ws'
 import * as acp from '@agentclientprotocol/sdk'
 import { fileURLToPath } from 'node:url'
+import crypto from 'node:crypto'
 
 const isWin = process.platform === 'win32'
 const HERE = path.dirname(fileURLToPath(import.meta.url)) // Node 18+ safe (import.meta.dirname needs 20.11+)
@@ -47,7 +48,16 @@ let agentConfigId = 'mode', effortConfigId = 'effort', curEffort = '', effortLev
 let busy = false
 const pendingPerms = new Map()   // toolCallId -> resolve fn
 
-const WS_TOKEN = process.env.AO_WS_TOKEN || ''   // per-launch token from Program.cs; only the real app window has it
+const WS_TOKEN = process.env.AO_WS_TOKEN || ''   // per-launch token from the shell; only the real app window has it
+// Per-launch password for the engine's HTTP API (Basic auth). The engine binds 127.0.0.1 but is
+// otherwise UNauthenticated, so without this any local process — including a webpage the user has
+// open (Origin "null" via a sandboxed iframe / downloaded .html) or a DNS-rebinding attacker —
+// could drive the session API and the /pty command endpoint. We pass it to the engine via
+// OPENCODE_SERVER_PASSWORD and hand it to the UI over the token-gated WS `ready` message; only the
+// legitimate window (which holds AO_WS_TOKEN) can connect to the WS and learn it.
+const API_PASSWORD = process.env.AO_API_PASSWORD || crypto.randomUUID().replace(/-/g, '')
+const API_USER = 'agent-omega'
+const API_AUTH = 'Basic ' + Buffer.from(API_USER + ':' + API_PASSWORD).toString('base64')
 const wss = new WebSocketServer({
   host: '127.0.0.1', port: WS_PORT,               // loopback only — never expose the control socket to the LAN
   verifyClient: (info) => {                       // + reject any local process / browser page that lacks the launch token
@@ -65,8 +75,14 @@ function log(...a) { console.error('[sidecar]', ...a) }
 function friendlyError(msg) {
   const m = String(msg || '')
   const prov = (curModel || '').split('/')[0] || 'this provider'
-  if (/401|403|unauthor|authentication|api[_ -]?key|x-api-key|invalid.*key|missing.*key|no auth/i.test(m))
+  if (/401|403|unauthor|authentication|api[_ -]?key|x-api-key|invalid.*key|missing.*key|no auth/i.test(m)) {
+    // If the user has a key for some OTHER provider, the likely problem is the selected model, not a
+    // missing key — point them at model switching instead of telling them to add a key they may have.
+    const haveOthers = [...keyedEnv].map(e => Object.keys(PROVIDER_ENV).find(p => PROVIDER_ENV[p] === e)).filter(Boolean)
+    if (haveOthers.length && !modelUsable(curModel))
+      return 'The selected model (' + prov + ') has no key, but you have a key for ' + haveOthers.join('/') + '. Open Settings (Ctrl+,) → Models (or type /model) and pick a ' + haveOthers[0] + ' model.  [' + m.slice(0, 120) + ']'
     return 'No valid API key for ' + prov + ' — open Settings (Ctrl+,) → Vault and add the key; the engine reloads automatically.  [' + m.slice(0, 160) + ']'
+  }
   if (/ECONNREFUSED|fetch failed|ENOTFOUND|ETIMEDOUT|network|econnreset|connect/i.test(m))
     return 'Could not reach ' + prov + ' — is the server/endpoint running and reachable?  [' + m.slice(0, 160) + ']'
   return m
@@ -119,6 +135,7 @@ function vaultGet(vaultName) {
     return /^no secret named/i.test(v) ? '' : v   // secrets.sh prints this sentinel for a missing key; treat as empty so the legacy-name fallback triggers
   } catch { return '' }
 }
+let keyedEnv = new Set()   // which provider env vars actually have a value this launch (for model auto-select)
 function vaultEnv() {
   const out = {}
   ensureVault()
@@ -127,8 +144,27 @@ function vaultEnv() {
     if (!v && VAULT_LEGACY[vaultName]) v = vaultGet(VAULT_LEGACY[vaultName])
     if (v) out[envName] = v
   }
+  keyedEnv = new Set(Object.keys(out))
   log('vault -> engine env: ' + (Object.keys(out).join(', ') || '(none)'))
   return out
+}
+// model-id provider prefix -> the env var whose presence means that provider is usable.
+const PROVIDER_ENV = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY', deepseek: 'DEEPSEEK_API_KEY', zai: 'ZAI_API_KEY', moonshotai: 'MOONSHOT_API_KEY', google: 'GOOGLE_GENERATIVE_AI_API_KEY' }
+// Is the CURRENT model workable — used to decide whether to leave the user's choice alone. Local
+// counts (an explicit local choice is the user's call) as do free models and any keyed provider.
+function modelUsable(modelId) {
+  const prov = String(modelId || '').split('/')[0]
+  if (prov === 'local' || prov === 'opencode') return true
+  const env = PROVIDER_ENV[prov]
+  return env ? keyedEnv.has(env) : true   // unknown provider -> don't second-guess
+}
+// A safe AUTO-SWITCH target: something we can be sure works without further setup — a provider the
+// user actually has a key for, or a keyless free model. NOT local/* (its baseURL may be unset).
+function modelPickable(modelId) {
+  const prov = String(modelId || '').split('/')[0]
+  if (prov === 'opencode') return true
+  const env = PROVIDER_ENV[prov]
+  return env ? keyedEnv.has(env) : false
 }
 
 // ---- Settings layer: council.json (read/merge/write) + vault (via secrets.ps1) ----
@@ -245,32 +281,46 @@ async function newSession() {
   const s = await conn.newSession({ cwd: WORKDIR, mcpServers: [] })
   sessionId = s.sessionId
   extractConfig(s.configOptions)
+  let forceModel = false
   if (!curModel) curModel = (models[0] && models[0].value) || 'anthropic/claude-opus-4-8'
-  // Only force a model when the launcher explicitly passed one (argv[4]); otherwise the engine
-  // already loaded the model from opencode.json — don't override the user's configured choice.
-  if (DEFAULT_MODEL) { try { await conn.unstable_setSessionModel({ sessionId, modelId: curModel }) } catch (e) { log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + curModel + '" — check that its server is running and the model is loaded. (' + e.message + ')' }) } }
+  // Auto-select a usable model: if the configured default's provider has no key but the user DID
+  // add a key for some other provider, switch to a model that actually works — otherwise a
+  // Gemini-only user who kept the shipped anthropic default would fail every turn with a
+  // "add the anthropic key" message for a key they don't have (and adding one never switched).
+  if (!modelUsable(curModel) && models.length) {
+    const alt = models.find(m => modelPickable(m.value))
+    if (alt && alt.value !== curModel) {
+      log('auto-select model:', curModel, '(no key) ->', alt.value)
+      curModel = alt.value
+      forceModel = true   // we changed it, so push it to the engine below even without an explicit launch override
+    }
+  }
+  // Force the model to the engine when the launcher passed one (argv[4]) OR we just auto-switched;
+  // otherwise leave the engine on the model it loaded from opencode.json.
+  if (DEFAULT_MODEL || forceModel) { try { await conn.unstable_setSessionModel({ sessionId, modelId: curModel }) } catch (e) { log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + curModel + '" — check that its server is running and the model is loaded. (' + e.message + ')' }) } }
   return s
 }
 
 async function start() {
   if (!OPENCODE_SRC && !fs.existsSync(ENGINE)) {   // engine preflight — clear message instead of a raw ENOENT
-    lastEngineDown = { type: 'engine-down', message: 'Engine not found at ' + ENGINE + ' — download opencode.exe into an engine/ folder (see SETUP.md) or set AGENT_OMEGA_ENGINE.' }
+    const getEngine = isWin ? 'download opencode.exe into an engine/ folder (see SETUP.md)' : 'build the engine into engine/opencode (see SETUP.md, macOS section)'
+    lastEngineDown = { type: 'engine-down', message: 'Engine not found at ' + ENGINE + ' — ' + getEngine + ', or set AGENT_OMEGA_ENGINE.' }
     log('engine missing:', ENGINE); broadcast(lastEngineDown); return
   }
   const [cmd, baseArgs] = OPENCODE_SRC
     ? [BUN, ['run', '--cwd', OPENCODE_SRC, '--conditions=browser', 'src/index.ts']]
     : [ENGINE, []]
   log('engine:', cmd, baseArgs.join(' '))
-  const { AO_WS_TOKEN: _wsTok, ...engineEnv } = process.env // never expose the control-socket token to the engine/model shell
-  // Pin the engine's HTTP API port (deterministic, per-instance) so the UI can call
-  // the session API directly; without --port the engine lands on 4096-or-random silently.
-  // --cors null: the UI is loaded from file:// (WKWebView on macOS, WebView2 on Windows), whose
-  // fetch()es carry the literal Origin "null". The engine's CORS check rejects it by default, which
-  // silently breaks every HTTP-API-backed workflow (/sessions, rename, fork, undo, export, …).
-  // Allowing it is loopback-local and adds no real exposure: the API already accepts any
-  // non-browser local caller, and remote websites still can't reach it (their origin is their
-  // domain, never "null").
-  const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR, '--port', String(API_PORT), '--cors', 'null'], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: { ...engineEnv, ...vaultEnv() } })
+  // Strip the WS token AND the API password from the env the engine (and thus the model's shell)
+  // inherits: neither is the engine's to know, and the model must never read the API password.
+  const { AO_WS_TOKEN: _wsTok, AO_API_PASSWORD: _apiPw, ...engineEnv } = process.env
+  // Pin the engine's HTTP API port (deterministic, per-instance) so the UI can call the session
+  // API directly; without --port the engine lands on 4096-or-random silently.
+  // OPENCODE_SERVER_PASSWORD turns on the engine's Basic auth so the API is NOT an open local RCE
+  // (see API_PASSWORD above). --cors null then lets the legitimate file:// UI (Origin "null") read
+  // responses; the password still 401s any unauthenticated null-origin / rebinding / local caller.
+  const engineFullEnv = { ...engineEnv, ...vaultEnv(), OPENCODE_SERVER_PASSWORD: API_PASSWORD, OPENCODE_SERVER_USERNAME: API_USER }
+  const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR, '--port', String(API_PORT), '--cors', 'null'], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: engineFullEnv })
   engineProc = proc
   proc.on('error', e => { log('spawn error', e.message); if (!restarting) { lastEngineDown = { type: 'engine-down', message: e.message }; broadcast(lastEngineDown) } })
   proc.on('exit', c => { log('engine exited', c); if (!restarting) { lastEngineDown = { type: 'engine-down', message: 'engine exited ' + c }; broadcast(lastEngineDown) } })
@@ -281,7 +331,7 @@ async function start() {
   lastEngineDown = null
   broadcast(readyMsg())
 }
-function readyMsg() { return { type: 'ready', sessionId, model: curModel, agent: curAgent, models, agents, commands, effort: curEffort, effortLevels, apiPort: API_PORT, workdir: WORKDIR } }
+function readyMsg() { return { type: 'ready', sessionId, model: curModel, agent: curAgent, models, agents, commands, effort: curEffort, effortLevels, apiPort: API_PORT, apiAuth: API_AUTH, workdir: WORKDIR } }
 
 // Re-spawn the engine so a just-changed vault key takes effect (the engine reads keys once, at spawn).
 async function restartEngine() {

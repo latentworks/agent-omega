@@ -23,6 +23,9 @@ const EXEC_PATTERNS = [
   /\bphpunit\b/, /\brspec\b/, /\bminitest\b/,
   /\bgo\s+(test|run)\b/,
   /\bcargo\s+(test|run)\b/,
+  /\bswift\s+(test|run)\b/,                         // Apple-native: `swift test` / `swift run` actually run
+  /\bxcodebuild\b[^&;|]*\s(test|run)(\s|$)/,        // `xcodebuild test` runs the test bundle
+  /\bxcrun\s+(simctl|xctest)\b/,                    // driving the simulator / xctest runner
   /\b(npm|yarn|pnpm|bun)\s+(run\s+)?(test|start|dev|serve|preview)\b/,
   /\bnpm\s+test\b/,
   /\bdotnet\s+(test|run)\b/,
@@ -49,6 +52,7 @@ const COMPILE_ONLY_PATTERNS = [
   /\btsc\b/, /\beslint\b/, /\bprettier\b/, /\bruff\b/, /\bmypy\b/, /\bflake8\b/,
   /\bgo\s+build\b/, /\bgo\s+vet\b/,
   /\bcargo\s+(build|check|clippy|fmt)\b/,
+  /\bswift\s+build\b/, /\bxcodebuild\s+build\b/,   // Apple-native: building is NOT running
   /\bdotnet\s+build\b/,
   /\b(cmake|ninja)\b/,
   /\b(make|gradle|gradlew|mvn|maven)\b/,   // bare build tools (an explicit test target is caught by EXEC_PATTERNS first)

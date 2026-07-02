@@ -19,11 +19,14 @@ TAB="$(printf '\t')"
 blob() { security find-generic-password -s "$SERVICE" -a "$ACCOUNT" -w 2>/dev/null | base64 -D 2>/dev/null || printf ''; }
 save() { security add-generic-password -U -s "$SERVICE" -a "$ACCOUNT" -w "$(printf '%s' "$1" | base64 | tr -d '\n')" >/dev/null 2>&1; }
 
+# awk's -v assignment C-escape-processes its argument (so a value containing a backslash is
+# corrupted and an embedded \n could inject a phantom record). Pass name/value through the
+# ENVIRONMENT instead — ENVIRON[] is NOT escape-processed — and read them in BEGIN.
 case "${1:-}" in
   get)
     name="${2:-}"
     [ -n "$name" ] || { printf 'no secret named\n'; exit 0; }
-    blob | awk -F"$TAB" -v k="$name" '$1==k{print $2; found=1} END{if(!found) print "no secret named " k}'
+    blob | AWK_K="$name" awk -F"$TAB" 'BEGIN{k=ENVIRON["AWK_K"]} $1==k{print $2; found=1} END{if(!found) print "no secret named " k}'
     ;;
   set)
     name="${2:-}"; val="${3:-}"
@@ -32,8 +35,12 @@ case "${1:-}" in
     # error string the caller logs. $(...) also strips a trailing newline. (argv form kept for manual use.)
     [ -n "$val" ] || val="$(cat)"
     [ -n "$val" ]  || { echo "value required" >&2; exit 1; }
+    # The blob is a TAB/newline-delimited TSV, so a tab or newline in a record would corrupt it.
     case "$name$val" in *"$TAB"*) echo "name/value may not contain a tab character" >&2; exit 1;; esac
-    new="$(blob | awk -F"$TAB" -v k="$name" -v v="$val" '$1!=k && NF{print} END{print k FS v}')"
+    [ "$(printf '%s' "$val" | wc -l | tr -d ' ')" = "0" ] || { echo "value may not contain a newline" >&2; exit 1; }
+    case "$name" in *"
+"*) echo "name may not contain a newline" >&2; exit 1;; esac
+    new="$(blob | AWK_K="$name" AWK_V="$val" awk -F"$TAB" 'BEGIN{k=ENVIRON["AWK_K"]; v=ENVIRON["AWK_V"]} $1!=k && NF{print} END{print k FS v}')"
     save "$new"
     ;;
   list)
@@ -43,7 +50,7 @@ case "${1:-}" in
   rm|remove)
     name="${2:-}"
     [ -n "$name" ] || { echo "name required" >&2; exit 1; }
-    new="$(blob | awk -F"$TAB" -v k="$name" '$1!=k && NF{print}')"
+    new="$(blob | AWK_K="$name" awk -F"$TAB" 'BEGIN{k=ENVIRON["AWK_K"]} $1!=k && NF{print}')"
     save "$new"
     ;;
   *)

@@ -25,7 +25,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Local (llama.cpp / Ollama / LM Studio — point baseURL at your server)",
       "options": {
-        "baseURL": "http://127.0.0.1:8080/v1",
+        "baseURL": "",
         "apiKey": "local-noauth"
       },
       "models": {

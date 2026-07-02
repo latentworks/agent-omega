@@ -11,6 +11,7 @@ APP="$MAC/build/AgentOmega.app"
 ENGINE_BIN="$REPO/engine/opencode"
 export PATH="$HOME/.bun/bin:$PATH"
 
+[ "$(uname -m)" = "arm64" ] || { echo "This build targets Apple Silicon (arm64); you're on $(uname -m). Intel/universal isn't wired yet — see mac/build-app.sh notes."; exit 1; }
 command -v bun >/dev/null 2>&1 || { echo "bun not found on PATH — needed to compile the sidecar"; exit 1; }
 command -v npm >/dev/null 2>&1 || { echo "npm not found on PATH — needed for plugin deps"; exit 1; }
 [ -f "$ENGINE_BIN" ] || { echo "missing $ENGINE_BIN — build the engine first:"; echo "  bun run packages/opencode/script/build.ts --single --skip-embed-web-ui  (in the fork)"; exit 1; }
@@ -33,9 +34,11 @@ cp "$MAC/AgentOmega"  "$APP/Contents/MacOS/AgentOmega"
 cp "$MAC/Info.plist"  "$APP/Contents/Info.plist"
 cp "$MAC/sidecar-bin" "$APP/Contents/Resources/sidecar"; chmod +x "$APP/Contents/Resources/sidecar"
 
-echo "[5/7] icon (ftp.ico -> AgentOmega.icns, best-effort)"
+echo "[5/7] icon (agent-omega.ico -> AgentOmega.icns)"
+ICON_SRC="$REPO/agent-omega.ico"
+[ -f "$ICON_SRC" ] || ICON_SRC="$REPO/ftp.ico"   # tolerate the pre-rename name
 TMP="$(mktemp -d)"
-if sips -s format png "$REPO/ftp.ico" --out "$TMP/icon.png" >/dev/null 2>&1; then
+if [ -f "$ICON_SRC" ] && sips -s format png "$ICON_SRC" --out "$TMP/icon.png" >/dev/null 2>&1; then
   mkdir -p "$TMP/AgentOmega.iconset"
   for s in 16 32 64 128 256 512; do
     sips -z "$s" "$s" "$TMP/icon.png" --out "$TMP/AgentOmega.iconset/icon_${s}x${s}.png" >/dev/null 2>&1 || true
@@ -44,6 +47,8 @@ if sips -s format png "$REPO/ftp.ico" --out "$TMP/icon.png" >/dev/null 2>&1; the
     || sips -s format icns "$TMP/icon.png" --out "$APP/Contents/Resources/AgentOmega.icns" >/dev/null 2>&1 || true
 fi
 rm -rf "$TMP"
+# Info.plist declares CFBundleIconFile=AgentOmega — fail loudly rather than ship a blank-icon app.
+[ -f "$APP/Contents/Resources/AgentOmega.icns" ] || { echo "icon build FAILED: no AgentOmega.icns produced (source: $ICON_SRC)"; exit 1; }
 
 echo "[6/7] resources (ui, config-template incl node_modules, engine, secrets.sh)"
 cp -R "$REPO/ui"              "$APP/Contents/Resources/ui"
