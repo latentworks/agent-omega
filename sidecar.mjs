@@ -59,6 +59,7 @@ let conn = null, sessionId = null, engineProc = null, restarting = false, lastEn
 let models = [], agents = [], commands = [], curModel = DEFAULT_MODEL, curAgent = null
 let agentConfigId = 'mode', effortConfigId = 'effort', curEffort = '', effortLevels = []   // reasoning-effort config, surfaced where the model supports it
 let busy = false
+let turnOutput = 0   // meaningful updates seen this turn — 0 at turn-end means the engine swallowed a provider failure
 const pendingPerms = new Map()   // toolCallId -> resolve fn
 
 const WS_TOKEN = process.env.AO_WS_TOKEN || ''   // per-launch token from the shell; only the real app window has it
@@ -169,6 +170,12 @@ function vaultEnv() {
   log('vault -> engine env: ' + (Object.keys(out).join(', ') || '(none)'))
   return out
 }
+// A turn that "succeeded" with zero output — diagnose instead of showing nothing.
+function emptyTurnError() {
+  const prov = (curModel || '').split('/')[0] || 'the provider'
+  return 'The model returned nothing — ' + prov + "'s API most likely rejected the request. Usual causes: an invalid/expired API key (Settings → Vault: re-paste the raw key, no quotes or spaces), an account with no credit, or a model this key can't access. The key is applied on engine reload — if you just added it, try once more."
+}
+
 // model-id provider prefix -> the env var whose presence means that provider is usable.
 const PROVIDER_ENV = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY', deepseek: 'DEEPSEEK_API_KEY', zai: 'ZAI_API_KEY', moonshotai: 'MOONSHOT_API_KEY', google: 'GOOGLE_GENERATIVE_AI_API_KEY' }
 // Is the CURRENT model workable — used to decide whether to leave the user's choice alone. Local
@@ -272,6 +279,7 @@ class UIClient {
       broadcast({ type: 'commands', commands })
       return
     }
+    if (u && u.sessionUpdate !== 'usage_update') turnOutput++   // text/thought/tool call/plan = real output
     broadcast({ type: 'update', update: u })
   }
   async writeTextFile(p) { try { fs.writeFileSync(p.path, p.content ?? '') } catch (e) { log('writeTextFile', e.message) } return {} }
@@ -411,16 +419,19 @@ wss.on('connection', (ws) => {
       switch (m.type) {
         case 'prompt': {
           if (busy || !m.text) return
-          busy = true; broadcast({ type: 'turn-start' })
-          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: m.text }] }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
+          busy = true; turnOutput = 0; broadcast({ type: 'turn-start' })
+          // The engine can swallow a provider failure (e.g. a 401 from a bad API key) and
+          // resolve the turn with NO output at all — the user would see pure silence. A
+          // completed turn with zero meaningful updates is that case: say so.
+          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: m.text }] }); if (turnOutput === 0) broadcast({ type: 'error', message: emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
           catch (e) { broadcast({ type: 'error', message: friendlyError(e.message) }) }
           finally { busy = false }
           break
         }
         case 'command': {
           if (busy || !m.name) return
-          busy = true; broadcast({ type: 'turn-start' })
-          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + m.name + (m.args ? ' ' + m.args : '') }] }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
+          busy = true; turnOutput = 0; broadcast({ type: 'turn-start' })
+          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + m.name + (m.args ? ' ' + m.args : '') }] }); if (turnOutput === 0) broadcast({ type: 'error', message: emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
           catch (e) { broadcast({ type: 'error', message: friendlyError(e.message) }) }
           finally { busy = false }
           break
