@@ -170,6 +170,20 @@ function vaultEnv() {
   log('vault -> engine env: ' + (Object.keys(out).join(', ') || '(none)'))
   return out
 }
+// Sanitize a pasted API key before it's stored. Copy/paste (esp. from chat apps) drags in
+// junk that the provider then rejects with an opaque 401: surrounding quotes, a zero-width
+// space or BOM, stray whitespace/newlines. Strip all of it. We do NOT alter interior
+// characters (case, dashes) — only remove what can never be part of a real key.
+function sanitizeSecret(raw) {
+  let v = String(raw)
+  v = v.replace(/[\u200B-\u200D\uFEFF\u2060\u00A0]/g, '')   // zero-width chars, BOM, word-joiner, non-breaking space
+  v = v.replace(/[\x00-\x1F\x7F]/g, '')                       // ASCII control chars incl. stray CR / LF / TAB
+  v = v.trim()
+  // strip one layer of surrounding matched quotes (a paste like: "sk-..." or 'sk-...')
+  if (v.length >= 2 && ((v[0] === '"' && v.at(-1) === '"') || (v[0] === "'" && v.at(-1) === "'"))) v = v.slice(1, -1).trim()
+  return v
+}
+
 // A turn that "succeeded" with zero output — diagnose instead of showing nothing.
 // The engine swallows provider failures from the ACP stream but DOES write them to its
 // own log; read what it logged during THIS turn so the user sees the provider's exact
@@ -489,13 +503,15 @@ wss.on('connection', (ws) => {
         case 'vaultSet': {
           try {
             if (typeof m.name !== 'string' || !m.name.trim()) { send(ws, { type: 'vaultKeys', error: 'name required' }); break }
-            if (typeof m.value !== 'string' || m.value === '') { send(ws, { type: 'vaultKeys', error: 'value required' }); break }
+            const cleanVal = sanitizeSecret(m.value)
+            if (typeof m.value !== 'string' || cleanVal === '') { send(ws, { type: 'vaultKeys', error: 'value required' }); break }
+            const scrubbed = cleanVal !== String(m.value).trim()   // paste carried quotes/hidden chars we removed
             // Pass the secret on STDIN, never as an argv element — argv would land in any thrown
             // error string (execFileSync embeds the full command) and could leak the key value.
             // (Linux: plain 0600 file write, no child process involved.)
-            if (isLinux) fileVault.set(m.name, m.value)
-            else execFileSync(VAULT_CMD, [...VAULT_PRE, 'set', m.name], { input: m.value, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
-            const note = busy ? 'Key saved — restart the app to apply it (a turn is in progress).' : 'Key saved — engine reloaded.'
+            if (isLinux) fileVault.set(m.name, cleanVal)
+            else execFileSync(VAULT_CMD, [...VAULT_PRE, 'set', m.name], { input: cleanVal, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
+            const note = (scrubbed ? 'Cleaned stray quotes/hidden characters from the paste. ' : '') + (busy ? 'Key saved — restart the app to apply it (a turn is in progress).' : 'Key saved — engine reloaded.')
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))   // pick up the new key without a manual restart
           } catch (e) { log('vaultSet failed for', m.name, '(exit ' + (e.status ?? '?') + ')'); send(ws, { type: 'vaultKeys', error: 'Could not store key — vault write failed.' }) }
