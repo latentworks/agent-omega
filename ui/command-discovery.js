@@ -780,8 +780,12 @@
     if (Palette.onKey(e)) return true;
     if (Drop.onKey(e)) return true;
     if (Leader.onKey(e)) return true;
-    // Ctrl+P opens the palette (when nothing else claimed it)
-    if (e.ctrlKey && !e.altKey && !e.metaKey && (e.key === "p" || e.key === "P")) {
+    // Ctrl+P opens the palette (when nothing else claimed it). On macOS the native
+    // modifier is Cmd — accept Cmd+P there (the shell's menu defines no Cmd+P key
+    // equivalent, so the event falls through to the page); reject the Win key elsewhere.
+    const isMac = /Mac/.test(navigator.platform || "");
+    const mod = isMac ? (e.metaKey || e.ctrlKey) : (e.ctrlKey && !e.metaKey);
+    if (mod && !e.altKey && (e.key === "p" || e.key === "P")) {
       e.preventDefault(); Palette.show(); return true;
     }
     return false;

@@ -632,7 +632,7 @@
     if (document.getElementById("ftpGearBtn")) return;
     const tb = document.getElementById("titlebar"); if (!tb) return;
     const right = tb.querySelector("div:last-child"); if (!right) return;
-    const g = el("span", "ctl", "⚙"); g.id = "ftpGearBtn"; g.title = "Settings (/settings · Ctrl+,)";
+    const g = el("span", "ctl", "⚙"); g.id = "ftpGearBtn"; g.title = "Settings (/settings · " + (/Mac/.test(navigator.platform || "") ? "⌘," : "Ctrl+,") + ")";
     g.style.cssText = "cursor:default; color:#3f4a44;";
     g.addEventListener("click", (e) => { e.stopPropagation(); open(); });
     right.insertBefore(g, right.firstChild);
@@ -641,7 +641,10 @@
   function wireAccelerator() {
     if (typeof window.registerKeydown === "function") {
       window.registerKeydown((e) => {
-        if (!ST.open && e.ctrlKey && !e.altKey && !e.metaKey && (e.key === "," || e.code === "Comma")) { e.preventDefault(); open(); return true; }
+        // Cmd+, is THE macOS settings convention; Ctrl+, everywhere (Win key rejected off-mac).
+        const isMac = /Mac/.test(navigator.platform || "");
+        const mod = isMac ? (e.metaKey || e.ctrlKey) : (e.ctrlKey && !e.metaKey);
+        if (!ST.open && mod && !e.altKey && (e.key === "," || e.code === "Comma")) { e.preventDefault(); open(); return true; }
         return false;
       }, 96);
     }
