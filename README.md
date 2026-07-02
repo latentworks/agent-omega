@@ -72,10 +72,11 @@ This is a first-class concern, not a footnote.
   hands it to the engine's environment at launch — the key never gets written into
   code, into config you might commit, or into logs. A missing key is simply skipped
   (that provider stays dark); nothing is ever faked to cover a gap.
-- **Key-free anonymous web access.** The agent has no raw internet access. Every
-  web search and page read goes through a local gateway that reaches a private,
-  key-free search engine — no account, no API key, no per-query identity trailing
-  back to you.
+- **Key-free anonymous web access.** *(Requires a separate `anon-web` component that isn't
+  publicly distributed — so web search is **disabled by default** in this build.)* Where present,
+  the agent has no raw internet access; every web search and page read goes through a local
+  gateway that reaches a private, key-free search engine — no account, no API key, no per-query
+  identity trailing back to you.
 - **A fully-local option.** Point Agent Omega at models running on your own machine
   (or your own boxes on your LAN) and your code, your prompts, and your files never
   leave your hardware. No cloud provider sees the work at all.
@@ -128,14 +129,21 @@ the sidecar starts the engine, and you're talking to it.
 
 ---
 
-## Coming in V3
+## Coming soon (V3)
 
-Held back deliberately, because it isn't proven yet:
+Roadmap — flagged as what's ahead, not shipped yet:
 
-- A council that doesn't just discuss but **builds** — carrying a task through to
-  a verified, working result — with real end-to-end examples to back the claim.
+- **A council that doesn't just discuss but builds** — carrying a task through to a verified,
+  working result, with real end-to-end examples to back the claim.
+- **macOS and Linux** — native builds/branches are in progress (the app is already largely
+  cross-platform under the Windows shell).
+- **A richer graphical workspace** — an editor-style view in the spirit of Cursor / Codex,
+  alongside the current terminal-first UI.
+- **More themes** beyond the CRT + Modern pair.
+- **Ongoing improvement testing** — the agent's behavior (skills, tools, verification) is under a
+  continuous test-and-improve loop, so expect steady updates.
 
-When it's real and measured, it'll be documented here. Not before.
+Watch this repo for updates. When something here is real and measured, it gets documented — not before.
 
 ---
 

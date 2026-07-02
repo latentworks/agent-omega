@@ -41,3 +41,9 @@ mac/build/
 _smoke/
 
 # Note: config-template/ is shipped source and is intentionally tracked.
+
+# internal roadmap/testing docs — never publish
+HARNESS_PROPOSALS.md
+HARNESS_RUBRIC.md
+_bench*/
+UI_BACKLOG.md

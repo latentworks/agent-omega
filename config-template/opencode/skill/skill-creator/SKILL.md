@@ -29,8 +29,8 @@ WHERE IT GOES / WIRING IT IN
 2. (Optional but recommended) add a slash-command so the user can force it:
    ~/.config/opencode/command/<name>.md  with frontmatter `description:` and a body of
    "Use the '<name>' skill, then follow it exactly, applied to: $ARGUMENTS".
-3. Keep the short registry in ~/.config/opencode/AGENTS.md in sync if you want it listed
-   there for awareness (optional — the `skill` tool already exposes it).
+   (The skill router also auto-registers it from the frontmatter, so it can fire automatically —
+   there is no separate registry to maintain.)
 
 VERIFY IT WORKS
 - Restart OpenCode, then trigger it on a real example and confirm your `skill` tool now lists it and

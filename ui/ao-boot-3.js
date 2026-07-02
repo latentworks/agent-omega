@@ -76,7 +76,7 @@
   /* ------------------------------------------------------------------ */
   /* type: 'header' | 'ok' | 'auth' | 'nominal' */
   var BOOT_LINES = [
-    /* 0  */ ['AGENT-OMEGA  SECURE BOOT   v2.1.0',   'header' ],
+    /* 0  */ ['AGENT-OMEGA  SECURE BOOT   v2.2.1',   'header' ],
     /* 1  */ ['cpu 16c / 64gb / avx-512',            'ok'     ],
     /* 2  */ ['initializing kernel modules',          'ok'     ],
     /* 3  */ ['mounting /dev/agents',                 'ok'     ],
@@ -326,7 +326,7 @@
     settleFooter = document.createElement('div');
     settleFooter.className = 'aob-footer';
     var fL = document.createElement('span'); fL.textContent = '~/dev/agent-omega';
-    var fR = document.createElement('span'); fR.textContent = 'agent-omega · v2.1.0';
+    var fR = document.createElement('span'); fR.textContent = 'agent-omega · v2.2.1';
     settleFooter.appendChild(fL); settleFooter.appendChild(fR);
 
     /* CRT overlays (highest z) */

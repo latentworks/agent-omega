@@ -6,10 +6,10 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>agent-omega</AssemblyName>
-    <ApplicationIcon>ftp.ico</ApplicationIcon>
-    <Version>2.1.0</Version>
-    <AssemblyVersion>2.1.0.0</AssemblyVersion>
-    <FileVersion>2.1.0.0</FileVersion>
+    <ApplicationIcon>agent-omega.ico</ApplicationIcon>
+    <Version>2.2.1</Version>
+    <AssemblyVersion>2.2.1.0</AssemblyVersion>
+    <FileVersion>2.2.1.0</FileVersion>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4022.49" />
@@ -17,9 +17,19 @@
   <ItemGroup>
     <!-- whole ui/ folder, so any NEW file (new boot scripts, css, etc.) ships automatically -->
     <None Include="ui\**\*" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="ftp.ico" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="agent-omega.ico" CopyToOutputDirectory="PreserveNewest" />
     <!-- the Node sidecar + its manifest ship beside the exe; setup runs `npm install` here and drops the engine in ./engine/ -->
     <None Include="sidecar.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="package.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- the engine binary (dropped in ./engine/ per SETUP) ships beside the exe; empty glob is a no-op if not yet downloaded -->
+    <None Include="engine\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="scripts\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <!-- Vendor the sidecar's node deps beside the exe so a relocated/copied build stays self-contained.
+       robocopy exit codes 0-7 are success (bits); 8+ is a real failure. `if errorlevel N` is a cmd
+       construct evaluated at RUN time (unlike %ERRORLEVEL%, which expands at parse time and would be
+       stale) — so a genuine copy failure (>=8) fails the build instead of the old `& exit 0` mask. -->
+  <Target Name="VendorSidecarDeps" AfterTargets="Build" Condition="Exists('node_modules')">
+    <Exec Command="robocopy node_modules &quot;$(TargetDir)node_modules&quot; /E /NFL /NDL /NJH /NJS /NC /NS /NP &amp; if errorlevel 8 (exit /b 1) else (exit /b 0)" />
+  </Target>
 </Project>

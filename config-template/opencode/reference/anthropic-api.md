@@ -10,7 +10,7 @@ Working reference for calling the Anthropic (Claude) API from code you write —
 | `claude-sonnet-4-6` | high-volume production | $3.00 / $15.00 |
 | `claude-haiku-4-5` | simple, speed-critical (classify, route) | $1.00 / $5.00 |
 
-Context window is 200K. These ids change over time — if a 404 / `NotFoundError` says "model not found," the id is stale; don't guess a new one, ask. Use `web.py` to look up the current id (`python ~/.config/opencode/web.py search "anthropic current claude model ids"`).
+Context window is 200K. These ids change over time — if a 404 / `NotFoundError` says "model not found," the id is stale; don't guess a new one, ask. Use `web.py` to look up the current id (`python3 ~/.config/opencode/web.py search "anthropic current claude model ids"`).
 
 ## Install
 
@@ -21,8 +21,7 @@ npm install @anthropic-ai/sdk      # TypeScript/Node
 
 ## Client init — let it read the key from the environment
 
-The SDK resolves credentials in order: `ANTHROPIC_API_KEY` env var, then `ANTHROPIC_AUTH_TOKEN`. Never hardcode a key in source. If a key is needed and not in the env, pull it from the vault rather than asking or failing:
-`sh ~/.agent-omega/secrets.sh get ANTHROPIC_API_KEY` (Keychain-backed; or directly `security find-generic-password -s agent-omega -a vault -w`)
+The SDK resolves credentials in order: `ANTHROPIC_API_KEY` env var, then `ANTHROPIC_AUTH_TOKEN`. Never hardcode a key in source. When the user has configured an Anthropic key in Agent Omega, the sidecar already injects `ANTHROPIC_API_KEY` into the environment your code runs in — so just let the SDK read it from the env. If it isn't set, ask the user to add it (Settings → Vault); do NOT try to read the vault file directly — the harness blocks that path on purpose.
 
 ```python
 import anthropic

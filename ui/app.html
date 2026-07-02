@@ -62,10 +62,13 @@
   .convo::-webkit-scrollbar{ width:8px; } .convo::-webkit-scrollbar-thumb{ background:#1e2d27; }
   .log{ margin-top:auto; display:flex; flex-direction:column; gap:16px; }
 
-  .urow{ font-size:22px; color:#e6efe8; display:flex; align-items:baseline; padding:2px 0; }
+  .urow{ font-size:22px; color:#ffc178; text-shadow:0 0 7px rgba(255,180,84,.30); display:flex; align-items:baseline; padding:2px 0; } /* user = amber phosphor; the model stays green */
   .utext{ white-space:pre-wrap; word-break:break-word; min-width:0; }   /* preserve newlines in the echoed user message */
   .arow{ font-size:22px; line-height:1.42; }
   .think .body{ font-size:20px; color:#7c8b82; margin-top:6px; max-width:900px; white-space:pre-wrap; }
+  .think-done .pk{ opacity:.72; }                       /* frozen thought header (collapsible) */
+  .think-done.collapsed .body{ display:none; }
+  .thchev{ display:inline-block; width:1em; }
   .diff{ border:1px solid #1b2227; background:rgba(8,12,10,.4); font-size:19px; line-height:1.55; padding:8px 0; overflow:hidden; }
   .errrow{ font-size:22px; line-height:1.42; color:#ff6b6b; white-space:pre-wrap; }
   .fallback{ font-size:21px; color:#7c8b82; }
@@ -252,13 +255,13 @@
         <!-- CRT: version footer -->
         <div class="crt-homefoot" style="font-size:18px; color:#3f4a44; width:680px; max-width:calc(100% - 48px); display:flex; justify-content:space-between; margin-top:24px; padding-top:8px; border-top:1px solid #161c1f;">
           <span>~/dev/agent-omega</span>
-          <span>agent-omega · v2.1.0</span>
+          <span>agent-omega · v2.2.1</span>
         </div>
 
         <!-- Modern: footer (hidden in CRT) -->
         <div class="m-homefoot">
           <span>~/dev/agent-omega</span>
-          <span>agent-omega · v2.1.0</span>
+          <span>agent-omega · v2.2.1</span>
         </div>
       </div>
 
@@ -372,6 +375,7 @@ let models=[];             // [{value,name}]
 let agents=[];             // [{value,name}]
 let engineCommands=[];     // [{name,description}]
 let curModel='', curAgent='';
+let effortLevels=[], curEffort='';   // reasoning-effort levels (empty => model has none)
 
 /* =====================================================================
    UNIFIED KEYDOWN PIPELINE  (one capture-phase dispatcher)
@@ -497,6 +501,24 @@ function ensureThinking(){
   }
 }
 function clearThinking(){ if(thinkingEl){ thinkingEl.remove(); thinkingEl=null; } }
+/* Freeze the LIVE thinking bubble into a collapsed, static "thought" block that
+   stays in the transcript (fixes traces vanishing the instant output starts).
+   Removes it instead if there's no reasoning text or the user turned thoughts off. */
+let keepThoughts=true;
+function settleThinking(){
+  if(!thinkingEl) return;
+  const body=thinkingEl.querySelector('.body');
+  // Use the live accumulator (thoughtText), not the DOM — the body is painted on a rAF, so a
+  // model that emits thought+answer in one tick would otherwise freeze an empty (dropped) thought.
+  const txt=((thoughtText||'')||(body&&body.textContent)||'').trim();
+  const el=thinkingEl; thinkingEl=null;
+  if(!keepThoughts || !txt){ el.remove(); return; }
+  if(body && body.textContent!==txt) body.textContent=txt;   // flush in case the rAF hasn't run
+  el.classList.add('think-done','collapsed');
+  const head=el.querySelector('.pk');
+  if(head){ head.innerHTML='<span class="thchev">▸</span>&nbsp;thought'; head.style.cursor='pointer';
+    head.onclick=()=>{ const c=el.classList.toggle('collapsed'); const ch=el.querySelector('.thchev'); if(ch) ch.textContent=c?'▸':'▾'; }; }
+}
 
 /* ---- assistant markdown (headings, bullets -> amber ">" markers, bold ->
         bright, inline code -> cyan, fenced code -> highlighted, closing
@@ -650,9 +672,10 @@ function addFallback(msg){ withScroll(()=>{ const d=document.createElement('div'
    ACP-driven render layer
    ===================================================================== */
 
-/* once output (answer text or a tool) begins, drop the thinking bubble and
-   reset the reasoning accumulator so any later reasoning starts a fresh one */
-function noteOutput(){ turnProduced=true; clearThinking(); thoughtText=''; }
+/* once output (answer text or a tool) begins, FREEZE the thinking bubble into a
+   collapsed thought (kept in the transcript) and reset the accumulator so any
+   later reasoning starts a fresh one */
+function noteOutput(){ turnProduced=true; settleThinking(); thoughtText=''; }
 
 /* coalesce the streaming answer + thinking re-renders to one paint per frame */
 let _raf=false, _stick=true, ansDirty=false, thinkDirty=false;
@@ -813,6 +836,21 @@ function renderPlan(entries){
 /* ---- ACP sessionUpdate router ---- */
 function onUpdate(u){
   if(!u || !u.sessionUpdate) return;
+  // During replay each historical message arrives as chunks tagged with its
+  // messageId — start a fresh answer/user block per message so history doesn't
+  // merge into one blob. Live turns are untouched.
+  if(replaying){
+    const mid=u.messageId||u.messageID||null;
+    if(mid && mid!==replayMsgId){ replayMsgId=mid; curAnswerEl=null; curAnswerText=''; replayUserEl=null; clearThinking(); }
+    if(u.sessionUpdate==='user_message_chunk'){
+      const t=textOf(u.content);
+      if(t!=null){
+        if(replayUserEl){ replayUserEl.textContent+=t; }
+        else { addUser(t); const rows=log.querySelectorAll('.urow .utext'); replayUserEl=rows[rows.length-1]||null; }
+      }
+      return;
+    }
+  }
   switch(u.sessionUpdate){
     case 'agent_message_chunk': { const t=textOf(u.content); if(t!=null) appendAnswer(t); break; }
     case 'agent_thought_chunk': { const t=textOf(u.content); if(t!=null) appendThought(t); break; }
@@ -822,7 +860,7 @@ function onUpdate(u){
     case 'current_mode_update':  if(u.currentModeId){ curAgent=u.currentModeId; updateMeta(); } break;
     case 'usage_update':         if(typeof u.used==='number') setUsage(u.used,u.size); if(u.cost && typeof u.cost.amount==='number') setCost(u.cost.amount); break;
     case 'available_commands_update': engineCommands=u.availableCommands||engineCommands; syncDiscovery(); break;
-    // user_message_chunk (echoed locally), config_option_update, session_info_update -> ignored
+    // live user_message_chunk (echoed locally), config_option_update, session_info_update -> ignored
   }
 }
 function textOf(content){
@@ -989,14 +1027,227 @@ function selectByArg(kind, arg){
 }
 
 /* =====================================================================
+   Sessions — list/switch/rename/fork/compact/undo/share/export
+   Talks to the engine's HTTP API (port = WS_PORT+1, announced in `ready`)
+   for reads/metadata; switching goes through the sidecar ({type:'load'}),
+   which replays history between replay-start / replay-end frames.
+   ===================================================================== */
+let apiPort=0, workdir='', replaying=false, replayMsgId=null, replayUserEl=null;
+const API={
+  base(){ return apiPort ? 'http://127.0.0.1:'+apiPort : null; },
+  async call(method, path, body){
+    const b=this.base(); if(!b) return { __err:'engine API port unknown (old sidecar?)' };
+    try{
+      const r=await fetch(b+path, { method,
+        headers: body!==undefined?{'content-type':'application/json'}:undefined,
+        body: body!==undefined?JSON.stringify(body):undefined });
+      if(!r.ok) return { __err:'HTTP '+r.status };
+      const ct=r.headers.get('content-type')||'';
+      return ct.indexOf('json')>=0 ? await r.json() : await r.text();
+    }catch(e){ return { __err:e.message||'network error' }; }
+  }
+};
+function ago(ts){
+  const s=Math.max(0,(Date.now()-ts)/1000);
+  if(s<60) return 'now'; if(s<3600) return Math.floor(s/60)+'m';
+  if(s<86400) return Math.floor(s/3600)+'h'; return Math.floor(s/86400)+'d';
+}
+async function fetchSessions(){
+  const list=await API.call('GET','/session?directory='+encodeURIComponent(workdir||''));
+  if(!Array.isArray(list)) return list && list.__err ? list : { __err:'unexpected response' };
+  return list;
+}
+async function showSessions(){
+  const list=await fetchSessions();
+  if(list.__err){ sysLine('session list unavailable — <span style="color:#ff6b6b">'+escapeHtml(list.__err)+'</span>'); return; }
+  if(!chatVisible()) showChat();
+  withScroll(()=>{
+    const panel=document.createElement('div'); panel.className='panel';
+    const t=document.createElement('div'); t.className='panel-title';
+    t.textContent='sessions  ('+list.length+')'; panel.appendChild(t);
+    if(!list.length){ const e=document.createElement('div'); e.className='pick'; e.textContent='(no sessions yet)'; panel.appendChild(e); }
+    list.forEach((s,i)=>{
+      const row=document.createElement('div'); row.className='pick';
+      row.innerHTML='<span class="pk-key"></span><span class="pk-name" style="flex:1;"></span><span style="color:#54655b; margin-left:10px;"></span>';
+      row.querySelector('.pk-key').textContent=(i<9?('['+(i+1)+']'):'•');
+      row.querySelector('.pk-name').textContent=(s.title||s.slug||s.id);
+      row.children[2].textContent=ago((s.time&&s.time.updated)||0)+((s.model&&s.model.id)?(' · '+s.model.id):'');
+      if(s.id===sessionId){ const c=document.createElement('span'); c.className='pk-cur'; c.textContent='● current'; row.appendChild(c); }
+      row.onclick=()=>{ panel.remove(); if(s.id!==sessionId) loadSession(s.id); };
+      panel.appendChild(row);
+    });
+    log.appendChild(panel);
+  });
+}
+function loadSession(id){
+  sysLine('loading session <span class="cy">'+escapeHtml(id)+'</span> …');
+  wsSend({type:'load', sessionId:id});
+}
+async function quickSwitchSession(n){
+  const list=await fetchSessions();
+  if(list.__err||!list[n-1]) return sysLine('no session in slot '+n);
+  if(list[n-1].id!==sessionId) loadSession(list[n-1].id);
+}
+async function renameSession(args){
+  if(!sessionId) return sysLine('no active session');
+  if(!args) return sysLine('usage: <span style="color:var(--ac)">/rename</span> new title');
+  const r=await API.call('PATCH','/session/'+encodeURIComponent(sessionId),{title:args});
+  sysLine(r&&r.__err?('rename failed — <span style="color:#ff6b6b">'+escapeHtml(r.__err)+'</span>'):('session → <span class="cy">'+escapeHtml(args)+'</span>'));
+}
+async function forkSession(){
+  if(!sessionId) return sysLine('no active session');
+  const r=await API.call('POST','/session/'+encodeURIComponent(sessionId)+'/fork',{});
+  if(!r||r.__err||!r.id) return sysLine('fork failed — <span style="color:#ff6b6b">'+escapeHtml((r&&r.__err)||'no session returned')+'</span>');
+  sysLine('forked → <span class="cy">'+escapeHtml(r.title||r.id)+'</span>');
+  loadSession(r.id);
+}
+async function compactSession(){
+  if(!sessionId) return sysLine('no active session');
+  const i=(curModel||'').indexOf('/');
+  if(i<1) return sysLine('compact needs a selected model');
+  sysLine('compacting session (summarizing with '+escapeHtml(curModel)+') …');
+  const r=await API.call('POST','/session/'+encodeURIComponent(sessionId)+'/summarize',{providerID:curModel.slice(0,i),modelID:curModel.slice(i+1)});
+  sysLine(r&&r.__err?('compact failed — <span style="color:#ff6b6b">'+escapeHtml(r.__err)+'</span>'):'session compacted');
+}
+async function lastUserMessageId(){
+  const msgs=await API.call('GET','/session/'+encodeURIComponent(sessionId)+'/message');
+  if(!Array.isArray(msgs)) return null;
+  for(let i=msgs.length-1;i>=0;i--){ const inf=msgs[i]&&msgs[i].info; if(inf&&inf.role==='user') return inf.id; }
+  return null;
+}
+async function undoLast(){
+  if(!sessionId) return sysLine('no active session');
+  const mid=await lastUserMessageId();
+  if(!mid) return sysLine('nothing to undo');
+  const r=await API.call('POST','/session/'+encodeURIComponent(sessionId)+'/revert',{messageID:mid});
+  if(r&&r.__err) return sysLine('undo failed — <span style="color:#ff6b6b">'+escapeHtml(r.__err)+'</span>');
+  sysLine('last message undone'); loadSession(sessionId);   // reload = re-render the engine's truth
+}
+async function redoLast(){
+  if(!sessionId) return sysLine('no active session');
+  const r=await API.call('POST','/session/'+encodeURIComponent(sessionId)+'/unrevert');
+  if(r&&r.__err) return sysLine('redo failed — <span style="color:#ff6b6b">'+escapeHtml(r.__err)+'</span>');
+  sysLine('restored'); loadSession(sessionId);
+}
+async function shareSession(){
+  if(!sessionId) return sysLine('no active session');
+  const r=await API.call('POST','/session/'+encodeURIComponent(sessionId)+'/share');
+  if(!r||r.__err||!r.share||!r.share.url) return sysLine('share unavailable — <span style="color:#ff6b6b">'+escapeHtml((r&&r.__err)||'sharing may be disabled in config')+'</span>');
+  try{ await navigator.clipboard.writeText(r.share.url); }catch(e){}
+  sysLine('shared (link copied): <span class="cy">'+escapeHtml(r.share.url)+'</span>');
+}
+async function unshareSession(){
+  if(!sessionId) return sysLine('no active session');
+  const r=await API.call('DELETE','/session/'+encodeURIComponent(sessionId)+'/share');
+  sysLine(r&&r.__err?('unshare failed — <span style="color:#ff6b6b">'+escapeHtml(r.__err)+'</span>'):'sharing revoked');
+}
+async function transcriptMarkdown(){
+  const msgs=await API.call('GET','/session/'+encodeURIComponent(sessionId)+'/message');
+  if(!Array.isArray(msgs)) return null;
+  const out=[];
+  for(const m of msgs){
+    const inf=m&&m.info; if(!inf) continue;
+    const txt=(m.parts||[]).filter(p=>p&&p.type==='text'&&p.text).map(p=>p.text).join('\n');
+    if(!txt) continue;
+    out.push((inf.role==='user'?'## You':'## Agent Omega')+'\n\n'+txt);
+  }
+  return out.length?out.join('\n\n---\n\n'):null;
+}
+async function copySessionTranscript(){
+  if(!sessionId) return sysLine('no active session');
+  const md=await transcriptMarkdown();
+  if(!md) return sysLine('transcript unavailable');
+  try{ await navigator.clipboard.writeText(md); sysLine('transcript copied ('+md.length+' chars, markdown)'); }
+  catch(e){ sysLine('copy failed — <span style="color:#ff6b6b">'+escapeHtml(e.message)+'</span>'); }
+}
+async function exportSession(){
+  if(!sessionId) return sysLine('no active session');
+  const md=await transcriptMarkdown();
+  if(!md) return sysLine('transcript unavailable');
+  try{
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([md],{type:'text/markdown'}));
+    a.download='agent-omega-session-'+(sessionId||'export').slice(-8)+'.md';
+    document.body.appendChild(a); a.click(); a.remove();
+    sysLine('transcript exported (.md)');
+  }catch(e){ try{ await navigator.clipboard.writeText(md); sysLine('download blocked — transcript copied instead'); }catch(_){ sysLine('export failed'); } }
+}
+function timelinePanel(){
+  const rows=[...log.querySelectorAll('.urow .utext')];
+  if(!rows.length) return sysLine('no messages this session yet');
+  withScroll(()=>{
+    const panel=document.createElement('div'); panel.className='panel';
+    const t=document.createElement('div'); t.className='panel-title'; t.textContent='jump to message'; panel.appendChild(t);
+    rows.forEach((el,i)=>{
+      const row=document.createElement('div'); row.className='pick';
+      row.innerHTML='<span class="pk-key"></span><span class="pk-name" style="flex:1;"></span>';
+      row.querySelector('.pk-key').textContent=(i<9?('['+(i+1)+']'):'•');
+      row.querySelector('.pk-name').textContent=(el.textContent||'').slice(0,80);
+      row.onclick=()=>{ panel.remove(); try{ el.closest('.urow').scrollIntoView({block:'center'}); }catch(e){} };
+      panel.appendChild(row);
+    });
+    log.appendChild(panel);
+  });
+}
+function insertSlashText(text){
+  const inp=chatVisible()?chatInput:homeInput;
+  inp.value=text; inp.focus();
+  try{ inp.setSelectionRange(text.length,text.length); }catch(e){}
+  inp.dispatchEvent(new Event('input',{bubbles:true}));
+}
+window.showSessions=showSessions; window.quickSwitchSession=quickSwitchSession;
+window.forkSession=forkSession; window.compactSession=compactSession;
+window.undoLast=undoLast; window.redoLast=redoLast;
+window.shareSession=shareSession; window.unshareSession=unshareSession;
+window.copySessionTranscript=copySessionTranscript; window.exportSession=exportSession;
+window.timelinePanel=timelinePanel; window.insertSlashText=insertSlashText;
+window.effortCmd=effortCmd; window.thinkingCmd=thinkingCmd;
+
+/* =====================================================================
    Slash commands
    ===================================================================== */
 const THEMES={ amber:'#ffb454', green:'#66dd88', cyan:'#5fd3dd', pink:'#ff79c6', mix:'#ffb454' };
 function sysLine(html){ if(!chatVisible()) showChat(); withScroll(()=>{ const d=document.createElement('div'); d.className='arow'; d.style.color='#7c8b82'; d.style.fontSize='20px'; d.innerHTML=html; log.appendChild(d); }); }
 function setTheme(arg){ const n=(arg||'').trim().toLowerCase(); if(!THEMES[n]){ sysLine('themes — '+Object.keys(THEMES).map(t=>'<span style="color:var(--ac)">'+t+'</span>').join(' · ')); return; } document.documentElement.style.setProperty('--ac',THEMES[n]); sysLine('theme → <span style="color:var(--ac)">'+n+'</span>'); }
+/* reasoning EFFORT — only meaningful where the current model exposes levels */
+function effortCmd(arg){
+  if(!effortLevels.length){ sysLine('the current model has <span style="color:#7c8b82">no effort levels</span> — pick a reasoning model to control effort'); return; }
+  const a=(arg||'').trim().toLowerCase();
+  // a real level name/prefix sets it; anything else (incl. the command's own name from the
+  // slash dropdown, e.g. "effort"/"variants") falls through to the picker.
+  if(a && a!=='effort' && a!=='variant' && a!=='variants'){
+    const it=effortLevels.find(x=>String(x.value).toLowerCase()===a)||effortLevels.find(x=>String(x.name).toLowerCase()===a)||effortLevels.find(x=>String(x.value).toLowerCase().indexOf(a)>=0);
+    if(it){ wsSend({type:'setEffort', value:it.value}); return; }
+  }
+  if(!chatVisible()) showChat();
+  withScroll(()=>{
+    const panel=document.createElement('div'); panel.className='panel';
+    const t=document.createElement('div'); t.className='panel-title'; t.textContent='reasoning effort  ('+effortLevels.length+')'; panel.appendChild(t);
+    effortLevels.forEach((it,i)=>{
+      const row=document.createElement('div'); row.className='pick';
+      row.innerHTML='<span class="pk-key"></span><span class="pk-name" style="flex:1;"></span>';
+      row.querySelector('.pk-key').textContent=(i<9?('['+(i+1)+']'):'•');
+      row.querySelector('.pk-name').textContent=it.name||it.value;
+      if(it.value===curEffort){ const c=document.createElement('span'); c.className='pk-cur'; c.textContent='● current'; row.appendChild(c); }
+      row.onclick=()=>{ wsSend({type:'setEffort', value:it.value}); panel.remove(); };
+      panel.appendChild(row);
+    });
+    log.appendChild(panel);
+  });
+}
+/* THINKING trace visibility — thoughts are preserved as collapsed blocks; toggle here */
+function thinkingCmd(arg){
+  const a=(arg||'').trim().toLowerCase();
+  if(a==='on'||a==='show') keepThoughts=true;
+  else if(a==='off'||a==='hide') keepThoughts=false;
+  else keepThoughts=!keepThoughts;
+  sysLine('thinking traces <span class="cy">'+(keepThoughts?'shown':'hidden')+'</span>'+(keepThoughts?' — reasoning is kept as a collapsible “thought” block':'')+(effortLevels.length?'':' <span style="color:#7c8b82">(note: this model may not emit reasoning)</span>'));
+}
 function showStatus(){
   sysLine('<span style="color:#e9f2eb">status</span><br>'+
-    'agent <span class="ac">'+escapeHtml(curAgent||'build')+'</span> · model <span class="cy">'+escapeHtml((models.find(m=>m.value===curModel)||{}).name||curModel||'—')+'</span><br>'+
+    'agent <span class="ac">'+escapeHtml(curAgent||'build')+'</span> · model <span class="cy">'+escapeHtml((models.find(m=>m.value===curModel)||{}).name||curModel||'—')+'</span>'+
+    (effortLevels.length?(' · effort <span class="cy">'+escapeHtml(curEffort||effortLevels[0].value)+'</span>'):'')+
+    ' · thoughts <span class="cy">'+(keepThoughts?'shown':'hidden')+'</span><br>'+
     'session '+(sessionId?('<span class="cy">'+escapeHtml(sessionId)+'</span>'):'<span style="color:#7c8b82">none</span>')+
     ' · engine '+(connOpen?'<span class="gr">online</span>':'<span style="color:#ff6b6b">offline</span>'));
 }
@@ -1004,7 +1255,8 @@ function showHelp(){
   let base='<span style="color:#e9f2eb">commands</span><br>'+
     '<span style="color:var(--ac)">/new</span> reset · <span style="color:var(--ac)">/help</span> · '+
     '<span style="color:var(--ac)">/model</span> [name] · <span style="color:var(--ac)">/agent</span> [name] · '+
-    '<span style="color:var(--ac)">/theme</span> [amber|green|cyan|pink] · <span style="color:var(--ac)">/skin</span> [crt|modern] · <span style="color:var(--ac)">/status</span>';
+    '<span style="color:var(--ac)">/theme</span> [amber|green|cyan|pink] · <span style="color:var(--ac)">/skin</span> [crt|modern] · <span style="color:var(--ac)">/status</span><br>'+
+    '<span style="color:var(--ac)">/sessions</span> switch · <span style="color:var(--ac)">/rename</span> · <span style="color:var(--ac)">/fork</span> · <span style="color:var(--ac)">/compact</span> · <span style="color:var(--ac)">/undo</span> · <span style="color:var(--ac)">/export</span> · <span style="color:var(--ac)">/effort</span> [level] · <span style="color:var(--ac)">/thinking</span> [on|off]';
   if(engineCommands && engineCommands.length){
     base+='<br><span style="color:#7c8b82">engine</span> '+engineCommands.map(c=>'<span style="color:var(--ac)">/'+escapeHtml((c&&c.name)||c)+'</span>').join(' · ');
   } else {
@@ -1037,6 +1289,19 @@ function handleCommand(text){
     case 'status': showStatus(); break;
     case 'model': case 'models': case 'mo': if(args) selectByArg('model',args); else pickerPanel('model'); break;
     case 'agent': case 'agents': if(args) selectByArg('agent',args); else pickerPanel('agent'); break;
+    case 'effort': case 'variants': effortCmd(args); break;
+    case 'thinking': case 'thoughts': thinkingCmd(args); break;
+    case 'sessions': case 'resume': case 'continue': showSessions(); break;
+    case 'rename': renameSession(args); break;
+    case 'fork': forkSession(); break;
+    case 'compact': case 'summarize': compactSession(); break;
+    case 'undo': undoLast(); break;
+    case 'redo': redoLast(); break;
+    case 'share': shareSession(); break;
+    case 'unshare': unshareSession(); break;
+    case 'export': exportSession(); break;
+    case 'copy': copySessionTranscript(); break;
+    case 'timeline': timelinePanel(); break;
     default: runEngineCommand(name,args);   // /init /review /tdd /debugging /skill-creator + custom -> engine
   }
 }
@@ -1137,8 +1402,27 @@ function onWs(m){
       engineCommands=Array.isArray(m.commands)?m.commands:engineCommands;
       if(m.model!=null) curModel=m.model;
       if(m.agent!=null) curAgent=m.agent;
+      if(m.apiPort && m.apiPort!==apiPort){
+        apiPort=m.apiPort;
+        window.AO_API_BASE='http://127.0.0.1:'+apiPort;
+        try{ if(window.AgentOmegaCommands&&window.AgentOmegaCommands.refresh) window.AgentOmegaCommands.refresh(); }catch(e){}
+      }
+      if(m.workdir) workdir=m.workdir;
+      if(Array.isArray(m.effortLevels)) effortLevels=m.effortLevels;
+      if(m.effort!=null) curEffort=m.effort;
       connOpen=true; updateMeta(); syncDiscovery();
       if(!busy) setStatus('ready');
+      break;
+    case 'replay-start':   // session switch: clear the log, then history streams as normal updates
+      replaying=true; replayMsgId=null; replayUserEl=null; busy=true;
+      if(!chatVisible()) showChat();
+      log.innerHTML=''; resetTurn(); setStatus('busy');
+      break;
+    case 'replay-end':
+      replaying=false; replayMsgId=null; replayUserEl=null; busy=false;
+      resetTurn();
+      if(m.error) addErr('could not load session: '+m.error);
+      setStatus(connOpen?'ready':'offline');
       break;
     case 'update':       onUpdate(m.update); break;
     case 'permission':   showPermission(m); break;
@@ -1147,12 +1431,13 @@ function onWs(m){
     case 'turn-start':   resetTurn(); setStatus('busy'); break;
     case 'turn-end':
       if(!turnProduced) addFallback('turn ended with no output'+(m.stopReason?(' ('+m.stopReason+')'):''));
-      clearThinking(); permPending=false;
+      settleThinking(); permPending=false;   // preserve a trailing thought (thought-only turn) instead of dropping it
       if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; }   // no leftover permission box for an ended turn
       setStatus('ready');
       break;
     case 'model':        if(m.model!=null){ curModel=m.model; updateMeta(); } break;
     case 'agent':        if(m.agent!=null){ curAgent=m.agent; updateMeta(); } break;
+    case 'effort':       if(m.effort!=null){ curEffort=m.effort; sysLine('effort → <span class="cy">'+escapeHtml(m.effort)+'</span>'); } break;
     case 'error':        addErr(m.message||'engine error'); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('error'); break;
     case 'engine-down':  connOpen=false; addErr('engine offline: '+(m.message||'process exited')); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('offline'); break;
   }
@@ -1455,29 +1740,30 @@ function wireDiscovery(){
     'opencode.status': ()=>showStatus(),
     'app.exit':        ()=>post({type:'close'}),
     // messages.copy keeps command-discovery's default (copies the last .arow)
-    'session.list':    notAvail('session switching'),
-    'session.share':   notAvail('/share'),
-    'session.unshare': notAvail('/unshare'),
-    'session.rename':  notAvail('/rename'),
-    'session.timeline':notAvail('/timeline'),
-    'session.fork':    notAvail('/fork'),
-    'session.compact': notAvail('/compact'),
-    'session.undo':    notAvail('/undo'),
-    'session.redo':    notAvail('/redo'),
-    'session.copy':    notAvail('transcript copy'),
-    'session.export':  notAvail('/export'),
+    // session commands — wired to the real handlers (same paths as typing /sessions, /rename …)
+    'session.list':    ()=>showSessions(),
+    'session.share':   ()=>shareSession(),
+    'session.unshare': ()=>unshareSession(),
+    'session.rename':  ()=>renameSession(''),
+    'session.timeline':()=>timelinePanel(),
+    'session.fork':    ()=>forkSession(),
+    'session.compact': ()=>compactSession(),
+    'session.undo':    ()=>undoLast(),
+    'session.redo':    ()=>redoLast(),
+    'session.copy':    ()=>copySessionTranscript(),
+    'session.export':  ()=>exportSession(),
     'session.sidebar.toggle': notAvail('the sidebar'),
     'mcp.list':        notAvail('the MCP picker'),
-    'variant.list':    notAvail('model variants'),
+    'variant.list':    ()=>effortCmd(''),
     'variant.cycle':   notAvail('variant cycling'),
     'model.cycle_recent': notAvail('model cycling'),
     'agent.cycle':     notAvail('agent cycling'),
     'provider.connect':notAvail('/connect'),
     'editor.open':     notAvail('an external editor')
   });
-  // Hide commands not wired in the ACP build so nothing shown is broken (kept as actions above
-  // for any code that dispatches them directly, but pulled from the palette + '/' dropdown).
-  try{ const unavail=new Set(['session.list','session.share','session.unshare','session.rename','session.timeline','session.fork','session.compact','session.undo','session.redo','session.copy','session.export','session.sidebar.toggle','mcp.list','variant.list','variant.cycle','model.cycle_recent','agent.cycle','provider.connect','editor.open']); for(const b of C.registry.builtins){ if(unavail.has(b.id)) b.hidden=true; } C.registry.index(); }catch(e){}
+  // Hide the few commands still not wired in the ACP build so nothing shown is broken (kept as
+  // actions above for any code that dispatches them directly, but pulled from the palette + '/').
+  try{ const unavail=new Set(['session.sidebar.toggle','mcp.list','variant.cycle','model.cycle_recent','agent.cycle','provider.connect','editor.open']); for(const b of C.registry.builtins){ if(unavail.has(b.id)) b.hidden=true; } C.registry.index(); }catch(e){}
   syncDiscovery();   // push whatever `ready` data has already arrived
 }
 

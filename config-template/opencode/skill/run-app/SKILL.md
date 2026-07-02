@@ -61,25 +61,30 @@ Keep it tight — `--help` covers every flag; you only need enough to prove it b
 
 The defining concern is **lifecycle**: start in the background, confirm it's up, hit it, shut it down cleanly.
 
+NOTE: `curl` / `wget` are blocked by the harness (they'd bypass the anonymity gateway). Probe your own localhost server with the runtime you already have — Node or Python — which the examples below use.
+
 ```bash
-# background, capture PID, poll readiness
+# background, capture PID, poll readiness with a tiny node probe
 npm run dev >/tmp/api.log 2>&1 &
 SERVER_PID=$!
-timeout 30 bash -c 'until curl -sf http://localhost:3000/health >/dev/null; do sleep 0.5; done'
+probe() { node -e "fetch('http://localhost:3000/health').then(r=>{if(!r.ok)process.exit(1);return r.text()}).then(t=>console.log(t)).catch(()=>process.exit(1))"; }
+timeout 30 bash -c 'until node -e "fetch(\"http://localhost:3000/health\").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; do sleep 0.5; done'
 
-curl http://localhost:3000/health
+probe
 # → {"status":"ok","version":"1.2.3"}
 
 # hit the route your change actually touched, read the body
-curl -s http://localhost:3000/api/items | head
+node -e "fetch('http://localhost:3000/api/items').then(r=>r.text()).then(t=>console.log(t.slice(0,400)))"
 
 kill $SERVER_PID          # or, PID lost: pkill -f "tsx watch src/index.ts"
 ```
 
+Python works too for the probe: `python3 -c "import urllib.request;print(urllib.request.urlopen('http://localhost:3000/health').read().decode())"`.
+
 Nail down and, if useful, record:
 - **Port**, and how to override it (`PORT=4000 npm run dev`).
 - **What "ready" means** — a health endpoint or a specific log line in `/tmp/api.log`.
-- **Required env vars** — DB URL, API keys (pull secrets from the vault, never hardcode).
+- **Required env vars** — DB URL, API keys (from the project's own `.env`/config or ask the user; never hardcode or echo a secret — the app's key vault is off-limits to you).
 - **Dependent services** (Postgres/Redis): the `docker run` or compose command that brings them up first.
 
 A page or endpoint can return its shell while every data call 500s — read the actual body, and skim the log, before calling it up.
@@ -88,7 +93,7 @@ A page or endpoint can return its shell while every data call 500s — read the 
 
 ## Shape: TUI / interactive terminal app
 
-Editors, REPLs, curses UIs take over the terminal, so the bash tool can't drive them directly. Wrap them in **tmux**: start detached, send keys, capture the pane.
+Editors, REPLs, curses UIs take over the terminal, so the bash tool can't drive them directly. Wrap them in **tmux** (run it through git-bash): start detached, send keys, capture the pane.
 
 ```bash
 tmux new-session -d -s app -x 120 -y 40 './myapp'
@@ -123,9 +128,9 @@ A dev server serves HTML to a browser. You can't open a window, so "run it" mean
 **Step 1 — dev server**, backgrounded and polled (same as the server shape):
 
 ```bash
-npm run dev >/tmp/dev.log 2>&1 &
+npm run dev &> /tmp/dev.log &
 echo $! > /tmp/dev.pid
-timeout 30 bash -c 'until curl -sf http://localhost:3000 >/dev/null; do sleep 1; done'
+timeout 30 bash -c 'until node -e "fetch(\"http://localhost:3000\").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; do sleep 1; done'
 # stop before relaunching: kill $(cat /tmp/dev.pid)   (else EADDRINUSE)
 ```
 

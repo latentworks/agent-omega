@@ -153,9 +153,10 @@ export function createFileTools(ctx) {
         budget.call()
         const { real } = resolveSafe(p, scopeDir, { kind: 'file' })
         const MAXB = 256 * 1024
-        const fd = fs.openSync(real, 'r')
         const buf = Buffer.alloc(MAXB)
-        const n = fs.readSync(fd, buf, 0, MAXB, 0); fs.closeSync(fd)
+        const fd = fs.openSync(real, 'r')
+        let n
+        try { n = fs.readSync(fd, buf, 0, MAXB, 0) } finally { fs.closeSync(fd) }   // never leak the fd if readSync throws
         budget.add(n)
         const text = buf.slice(0, n).toString('utf8')
         const allLines = text.split('\n')

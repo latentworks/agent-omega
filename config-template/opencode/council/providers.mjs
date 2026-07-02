@@ -26,7 +26,10 @@ const SPECS = {
 function loadLocalSpecs() {
   const out = {}
   try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'opencode', 'opencode.json'), 'utf8'))
+    // XDG-aware, like the engine + sidecar — so an isolated instance reads ITS OWN opencode.json
+    // (not the shared ~/.config one). Keeps the "same opencode.json the main session uses" promise true.
+    const cfgPath = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode', 'opencode.json')
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
     for (const [id, p] of Object.entries(cfg.provider || {})) {
       if (SPECS[id]) continue // a cloud provider is already defined above
       const baseURL = p && p.options && p.options.baseURL

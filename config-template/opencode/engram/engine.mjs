@@ -6,22 +6,45 @@
 
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { appendFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { appendFileSync, readFileSync } from 'node:fs'
+import { tmpdir, homedir } from 'node:os'
 import { openStore, addEpisode, addFact, upsertEntity } from './store.mjs'
 import { extract } from './extract.mjs'
 import { selectDropped, buildEpisodeText, projectOf } from './capture.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
+// Fact distillation reuses the LOCAL provider the user already configured (baseURL + model
+// from opencode.json, XDG-aware) — the same box you're talking to — so memory works out of
+// the box with no extra endpoint to set up. ENGRAM_EXTRACT_URL / ENGRAM_MODEL override.
+function readLocalProvider() {
+  try {
+    const cfgPath = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode', 'opencode.json')
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    const loc = cfg && cfg.provider && cfg.provider.local
+    const baseURL = loc && loc.options && typeof loc.options.baseURL === 'string' ? loc.options.baseURL : ''
+    // Prefer the model the MAIN session drives with (cfg.model === "local/<id>") — proven to work
+    // against the user's server — over the first configured local model.
+    const selected = typeof cfg.model === 'string' && cfg.model.startsWith('local/') ? cfg.model.slice('local/'.length) : ''
+    const firstKey = loc && loc.models && typeof loc.models === 'object' ? (Object.keys(loc.models)[0] || '') : ''
+    return { baseURL, modelId: selected || firstKey }
+  } catch { return { baseURL: '', modelId: '' } }
+}
+const LOCAL = readLocalProvider()
+
 export const DB_PATH = process.env.ENGRAM_DB || join(HERE, 'engram.db')
-export const EXTRACT_URL = process.env.ENGRAM_EXTRACT_URL || ''
-// Explicit extractor override — people shipping this will set their own. Empty (the
-// default) means: use whatever model is ALREADY LOADED on the box, so writing a memory
-// never evicts the model you're talking to. The llama-swap /running endpoint tells us.
-export const ENGRAM_MODEL = process.env.ENGRAM_MODEL || ''
-const RUNNING_URL = (() => { try { return new URL('/running', EXTRACT_URL).href } catch { return '' } })()
-const FALLBACK_MODEL = 'gpt-oss-120b'
+// The curated, file-based memory index AGENTS.md promises is "loaded each session". It lives
+// beside the plugins at <config>/opencode/memory/MEMORY.md; engram injects it every turn.
+export const MEMORY_DIR = process.env.ENGRAM_MEMORY_DIR || join(HERE, '..', 'memory')
+export function readMemoryIndex() {
+  try {
+    const txt = readFileSync(join(MEMORY_DIR, 'MEMORY.md'), 'utf8').trim()
+    return txt ? txt.slice(0, 4000) : ''
+  } catch { return '' }
+}
+// baseURL is OpenAI-compatible (…/v1); extraction hits …/v1/chat/completions.
+export const EXTRACT_URL = process.env.ENGRAM_EXTRACT_URL || (LOCAL.baseURL ? LOCAL.baseURL.replace(/\/+$/, '') + '/chat/completions' : '')
+export const ENGRAM_MODEL = process.env.ENGRAM_MODEL || LOCAL.modelId || ''
 export const TAIL_KEEP = Number(process.env.ENGRAM_TAIL_KEEP || 4)
 const EXTRACT_TIMEOUT = Number(process.env.ENGRAM_EXTRACT_TIMEOUT || 180000)
 
@@ -35,25 +58,15 @@ export function log(m) {
   if (LOG_TO_STDERR) { try { process.stderr.write(`[engram] ${m}\n`) } catch {} }
 }
 
-// Choose the extractor: explicit override, else whatever llama-swap currently has
-// loaded (so there's no model swap), else a sane fallback.
+// The configured local model id (or an explicit ENGRAM_MODEL). OpenAI-compatible servers
+// like llama.cpp ignore this field and serve their loaded model; Ollama/LM Studio use it.
 export async function pickExtractModel() {
-  if (ENGRAM_MODEL) return ENGRAM_MODEL
-  try {
-    const r = await fetch(RUNNING_URL, { signal: AbortSignal.timeout(8000) })
-    if (r.ok) {
-      const j = await r.json()
-      const list = (j && j.running) || []
-      const ready = list.find((m) => m && m.state === 'ready') || list[0]
-      if (ready && ready.model) return ready.model
-    }
-  } catch {}
-  return FALLBACK_MODEL
+  return ENGRAM_MODEL || 'local-model'
 }
 
-// Default extractor: a direct call to the local box using the currently-loaded model.
-// Injectable for tests.
+// Default extractor: a direct call to the configured local provider. Injectable for tests.
 export async function extractCall({ system, user }) {
+  if (!EXTRACT_URL) throw new Error('no local provider configured (engram extraction inert)')
   const model = await pickExtractModel()
   const r = await fetch(EXTRACT_URL, {
     method: 'POST',

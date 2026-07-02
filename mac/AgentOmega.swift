@@ -7,8 +7,46 @@ import WebKit
 import Foundation
 
 let HOME     = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()   // respect $HOME: matches Node/bun os.homedir (NSHomeDirectory ignores it) and keeps shell+sidecar+engine agreeing
-let WORKDIR  = HOME + "/.agent-omega/workspace"
-let WS_PORT  = 4599
+// Workspace: --workdir arg > AGENT_OMEGA_WORKDIR env > a scratch default. The default lives
+// OUTSIDE ~/.agent-omega on purpose — that tree holds the vault and is denied to the model's
+// shell (opencode.json "*.agent-omega*"), so a workspace there would get every absolute-path
+// command the model runs denied.
+func resolveWorkdir() -> String {
+    let args = CommandLine.arguments
+    if let i = args.firstIndex(of: "--workdir"), i + 1 < args.count, !args[i + 1].isEmpty { return args[i + 1] }
+    if let w = ProcessInfo.processInfo.environment["AGENT_OMEGA_WORKDIR"], !w.isEmpty { return w }
+    return HOME + "/Library/Application Support/AgentOmega/workspace"
+}
+let WORKDIR  = resolveWorkdir()
+// Control-socket port: pick a P where BOTH P (WebSocket) and P+1 (engine HTTP API) are free,
+// starting at 4599 + a small per-process offset (shrinks the two-instances-launching race).
+// A stale process squatting 4599 no longer wedges startup.
+func portFree(_ port: UInt16) -> Bool {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    if fd < 0 { return false }
+    defer { close(fd) }
+    var opt: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, socklen_t(MemoryLayout<Int32>.size))   // TIME_WAIT is "free"; a live listener still fails the bind
+    var addr = sockaddr_in()
+    addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = port.bigEndian
+    addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+    let ok = withUnsafePointer(to: &addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    }
+    return ok == 0
+}
+func pickPortPair() -> Int {
+    if let p = ProcessInfo.processInfo.environment["AGENT_OMEGA_WS_PORT"], let n = Int(p), n > 0 { return n }   // explicit override (tests)
+    var p = 4599 + (Int(ProcessInfo.processInfo.processIdentifier) % 50) * 2
+    for _ in 0..<200 {
+        if portFree(UInt16(p)) && portFree(UInt16(p + 1)) { return p }
+        p += 2
+    }
+    return 4599
+}
+let WS_PORT  = pickPortPair()
 let WS_TOKEN = UUID().uuidString
 let BG       = NSColor(red: 7/255.0, green: 9/255.0, blue: 11/255.0, alpha: 1)
 
@@ -150,12 +188,19 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
                 }
             }
         }
-        // 2. secrets.sh -> ~/.agent-omega/secrets.sh (if absent), executable
+        // 2. secrets.sh -> ~/.agent-omega/secrets.sh, executable. Self-healing: also REFRESH a
+        // stale copy (content differs from the shipped one) so an upgrade can't leave an old
+        // vault script that silently fails the newer set-via-stdin contract.
         let vsrc = RES + "/secrets.sh"
         let vdst = home + "/.agent-omega/secrets.sh"
-        if fm.fileExists(atPath: vsrc) && !fm.fileExists(atPath: vdst) {
-            try? fm.createDirectory(atPath: home + "/.agent-omega", withIntermediateDirectories: true)
-            try? fm.copyItem(atPath: vsrc, toPath: vdst)
+        if fm.fileExists(atPath: vsrc) {
+            let shipped = try? String(contentsOfFile: vsrc, encoding: .utf8)
+            let current = try? String(contentsOfFile: vdst, encoding: .utf8)
+            if shipped != nil && shipped != current {
+                try? fm.createDirectory(atPath: home + "/.agent-omega", withIntermediateDirectories: true)
+                try? fm.removeItem(atPath: vdst)
+                try? fm.copyItem(atPath: vsrc, toPath: vdst)
+            }
             try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: vdst)
         }
     }
@@ -185,6 +230,9 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         env["AGENT_OMEGA_ENGINE"] = RES + "/engine/opencode"
         env["AGENT_OMEGA_WORKDIR"] = WORKDIR
         env["AGENT_OMEGA_WS_PORT"] = String(WS_PORT)
+        // Parent-death signal: the sidecar polls this PID and self-exits (killing the engine)
+        // if the shell dies abnormally — otherwise both would orphan and hold the ports.
+        env["AO_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
         if let dm = ProcessInfo.processInfo.environment["AO_DEFAULT_MODEL"], !dm.isEmpty { env["AGENT_OMEGA_DEFAULT_MODEL"] = dm }
         // Web search (optional): if anon-web + its venv are installed at ~/anon-web, wire the gateway.
         let anonRoot = HOME + "/anon-web", anonVenv = HOME + "/anon-web/.venv/bin/python"

@@ -9,25 +9,37 @@ import path from 'node:path'
 import os from 'node:os'
 import { WebSocketServer } from 'ws'
 import * as acp from '@agentclientprotocol/sdk'
+import { fileURLToPath } from 'node:url'
 
 const isWin = process.platform === 'win32'
-const ENGINE = process.env.AGENT_OMEGA_ENGINE || path.join(import.meta.dirname, 'engine', isWin ? 'opencode.exe' : 'opencode')
+const HERE = path.dirname(fileURLToPath(import.meta.url)) // Node 18+ safe (import.meta.dirname needs 20.11+)
+const ENGINE = process.env.AGENT_OMEGA_ENGINE || path.join(HERE, 'engine', isWin ? 'opencode.exe' : 'opencode')
 // Test mode: set AGENT_OMEGA_OPENCODE_SRC to the packages/opencode dir to run the engine
 // FROM SOURCE via bun — picks up engine edits without a binary rebuild. Unset in
 // production → the compiled exe is used.
 const BUN = process.env.AGENT_OMEGA_BUN || 'bun'
 const OPENCODE_SRC = process.env.AGENT_OMEGA_OPENCODE_SRC || ''
-// Config comes from env first (robust across node / bun-standalone / OS), then positional argv
-// (the Windows host passes argv), then defaults. A bun-compiled binary's argv indices are not the
-// same as `node script.mjs …`, so positional args alone are unreliable on macOS.
-const WORKDIR = process.env.AGENT_OMEGA_WORKDIR || process.argv[2] || path.join(os.homedir(), '.agent-omega', 'workspace')
+// Config: env first (robust for the bun-standalone sidecar, whose argv indices differ from
+// `node script.mjs`), then positional argv (the Windows host passes argv), then defaults.
+// The default scratch workspace lives OUTSIDE ~/.agent-omega on purpose: that tree holds the
+// vault and is blocked from the model's shell (opencode.json deny "*.agent-omega*"), so a
+// workspace there would make every absolute-path command the model runs get denied.
+const DEFAULT_WORKDIR = process.platform === 'win32'
+  ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'AgentOmega', 'workspace')
+  : process.platform === 'darwin'
+    ? path.join(os.homedir(), 'Library', 'Application Support', 'AgentOmega', 'workspace')
+    : path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'agent-omega', 'workspace')
+const WORKDIR = process.env.AGENT_OMEGA_WORKDIR || process.argv[2] || DEFAULT_WORKDIR
 const WS_PORT = Number(process.env.AGENT_OMEGA_WS_PORT || process.argv[3]) || 4599
-const DEFAULT_MODEL = process.env.AGENT_OMEGA_DEFAULT_MODEL || process.argv[4] || 'anthropic/claude-opus-4-8'
+const API_PORT = WS_PORT + 1   // engine HTTP API rides one above the control socket (unique per instance)
+const DEFAULT_MODEL = process.env.AGENT_OMEGA_DEFAULT_MODEL || process.argv[4] || '' // empty => honor opencode.json's model
+const PARENT_PID = Number(process.env.AO_PARENT_PID || 0)   // shell PID; sidecar self-exits if the shell dies (no orphaned engine)
 
 try { fs.mkdirSync(WORKDIR, { recursive: true }) } catch (e) { if (e.code !== 'EEXIST') throw e }   // a bun-compiled mkdir can spuriously EEXIST on an already-present dir
 
-let conn = null, sessionId = null, engineProc = null, restarting = false
+let conn = null, sessionId = null, engineProc = null, restarting = false, lastEngineDown = null
 let models = [], agents = [], commands = [], curModel = DEFAULT_MODEL, curAgent = null
+let agentConfigId = 'mode', effortConfigId = 'effort', curEffort = '', effortLevels = []   // reasoning-effort config, surfaced where the model supports it
 let busy = false
 const pendingPerms = new Map()   // toolCallId -> resolve fn
 
@@ -45,31 +57,71 @@ function send(ws, m) { try { if (ws.readyState === 1) ws.send(JSON.stringify(m))
 function broadcast(m) { const s = JSON.stringify(m); for (const c of clients) { try { if (c.readyState === 1) c.send(s) } catch {} } }
 function log(...a) { console.error('[sidecar]', ...a) }
 
+// Turn a raw provider/engine error into an actionable hint (missing key, unreachable server).
+function friendlyError(msg) {
+  const m = String(msg || '')
+  const prov = (curModel || '').split('/')[0] || 'this provider'
+  if (/401|403|unauthor|authentication|api[_ -]?key|x-api-key|invalid.*key|missing.*key|no auth/i.test(m))
+    return 'No valid API key for ' + prov + ' — open Settings (Ctrl+,) → Vault and add the key; the engine reloads automatically.  [' + m.slice(0, 160) + ']'
+  if (/ECONNREFUSED|fetch failed|ENOTFOUND|ETIMEDOUT|network|econnreset|connect/i.test(m))
+    return 'Could not reach ' + prov + ' — is the server/endpoint running and reachable?  [' + m.slice(0, 160) + ']'
+  return m
+}
+
 // Vault -> engine env: read cloud API keys from the DPAPI vault (secrets.ps1) and
 // pass them to `opencode acp`, so cloud providers (anthropic/openai/...) and frontier
 // council members light up. Honest: a missing/failed key is simply skipped (the
 // provider stays dark), never faked. Env var name <- vault key name.
-// Vault backend is platform-specific but shares one get/set/list/rm CLI contract, so the
-// sidecar only varies the launcher: Windows = powershell -File secrets.ps1 (DPAPI); macOS/
-// other = sh secrets.sh (Keychain). Every call-site below stays identical across OSes.
+// Vault backend is platform-specific but shares one get/set/list/remove CLI contract, so the
+// sidecar only varies the launcher: Windows = powershell -File secrets.ps1 (DPAPI); macOS/other
+// = sh secrets.sh (Keychain). Every call-site below stays identical across OSes.
 const VAULT_SCRIPT = process.env.AGENT_OMEGA_VAULT || path.join(os.homedir(), '.agent-omega', isWin ? 'secrets.ps1' : 'secrets.sh')
-const [VAULT_CMD, VAULT_PRE] = isWin ? ['powershell', ['-NoProfile', '-File', VAULT_SCRIPT]] : ['sh', [VAULT_SCRIPT]]
-const COUNCIL_JSON = path.join(os.homedir(), '.config', 'opencode', 'council', 'council.json')
+const [VAULT_CMD, VAULT_PRE] = isWin
+  ? ['powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', VAULT_SCRIPT]]
+  : ['sh', [VAULT_SCRIPT]]
+// Self-heal the vault script: install the shipped copy if missing, AND refresh it if it differs
+// from the shipped one — so an upgrade over a pre-2.3 install can't leave a stale script that
+// silently fails every in-app vault write. On macOS the shipped copy is provisioned by the Swift
+// shell (the compiled sidecar has no on-disk scripts dir), so this is a no-op there.
+function ensureVault() {
+  try {
+    const src = path.join(HERE, 'scripts', isWin ? 'secrets.ps1' : 'secrets.sh')
+    if (fs.existsSync(src)) {
+      const cur = fs.existsSync(VAULT_SCRIPT) ? fs.readFileSync(VAULT_SCRIPT, 'utf8') : null
+      const shipped = fs.readFileSync(src, 'utf8')
+      if (cur !== shipped) { fs.mkdirSync(path.dirname(VAULT_SCRIPT), { recursive: true }); fs.copyFileSync(src, VAULT_SCRIPT); if (!isWin) { try { fs.chmodSync(VAULT_SCRIPT, 0o755) } catch {} } }
+    }
+  } catch {}
+  return fs.existsSync(VAULT_SCRIPT)
+}
+const COUNCIL_JSON = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode', 'council', 'council.json') // honors XDG_CONFIG_HOME so an isolated instance reads its own council config
+// engine-env-var  <-  vault key NAME. The vault names MUST match what the in-app Vault UI
+// (ui/crt-settings.js) and setup.mjs store under, or a key the user added never reaches the
+// engine. These are the canonical names both of those write.
 const VAULT_TO_ENV = {
   ANTHROPIC_API_KEY: 'ANTHROPIC_API_KEY',
-  OPENAI_API_KEY: 'OPENAI_API',
-  DEEPSEEK_API_KEY: 'DEEPSEEK_API',
+  OPENAI_API_KEY: 'OPENAI_API_KEY',
+  DEEPSEEK_API_KEY: 'DEEPSEEK_API_KEY',
   ZAI_API_KEY: 'ZAI_API_KEY',
   MOONSHOT_API_KEY: 'KIMI_API_KEY',
   GOOGLE_GENERATIVE_AI_API_KEY: 'GEMINI_API_KEY',
 }
+// Pre-2.3 installs stored these two under shorter names; fall back to them so an upgrade
+// doesn't silently lose an already-stored key.
+const VAULT_LEGACY = { OPENAI_API_KEY: 'OPENAI_API', DEEPSEEK_API_KEY: 'DEEPSEEK_API' }
+function vaultGet(vaultName) {
+  try {
+    const v = execFileSync(VAULT_CMD, [...VAULT_PRE, 'get', vaultName], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    return /^no secret named/i.test(v) ? '' : v   // secrets.sh prints this sentinel for a missing key; treat as empty so the legacy-name fallback triggers
+  } catch { return '' }
+}
 function vaultEnv() {
   const out = {}
+  ensureVault()
   for (const [envName, vaultName] of Object.entries(VAULT_TO_ENV)) {
-    try {
-      const v = execFileSync(VAULT_CMD, [...VAULT_PRE, 'get', vaultName], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-      if (v && !/^no secret named/i.test(v)) out[envName] = v
-    } catch {}
+    let v = vaultGet(vaultName)
+    if (!v && VAULT_LEGACY[vaultName]) v = vaultGet(VAULT_LEGACY[vaultName])
+    if (v) out[envName] = v
   }
   log('vault -> engine env: ' + (Object.keys(out).join(', ') || '(none)'))
   return out
@@ -136,6 +188,7 @@ function validateCouncilPatch(patch) {
 // sentinel "(vault empty)". Args go through execFileSync's array form (no shell) so a key
 // name can't inject a command.
 function vaultListNames() {
+  ensureVault()
   const out = execFileSync(VAULT_CMD, [...VAULT_PRE, 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   return out.split(/\r?\n/).map(s => s.trim()).filter(s => s && s !== '(vault empty)')
 }
@@ -173,45 +226,74 @@ function extractConfig(co) {
   co = co || []
   const modelOpt = co.find(o => o.id === 'model')
   models = (modelOpt && modelOpt.options || []).map(o => ({ value: o.value, name: o.name }))
+  if (!curModel && modelOpt && modelOpt.currentValue) curModel = modelOpt.currentValue // adopt the model the engine loaded from opencode.json
   const modeOpt = co.find(o => o.id === 'mode' || o.id === 'agent' || o.category === 'mode')
   agents = (modeOpt && modeOpt.options || []).map(o => ({ value: o.value, name: o.name }))
-  if (modeOpt) curAgent = modeOpt.currentValue
+  if (modeOpt) { curAgent = modeOpt.currentValue; agentConfigId = modeOpt.id || agentConfigId }
+  // reasoning-effort option — only present for models that support it (empty list => hide in UI)
+  const effOpt = co.find(o => o.id === 'effort' || o.category === 'thought_level')
+  effortLevels = (effOpt && effOpt.options || []).map(o => ({ value: o.value, name: o.name }))
+  if (effOpt) { curEffort = effOpt.currentValue || curEffort; effortConfigId = effOpt.id || effortConfigId }
+  else { effortLevels = []; curEffort = '' }
 }
 
 async function newSession() {
   const s = await conn.newSession({ cwd: WORKDIR, mcpServers: [] })
   sessionId = s.sessionId
   extractConfig(s.configOptions)
-  try { await conn.unstable_setSessionModel({ sessionId, modelId: curModel }) } catch (e) { log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + curModel + '" — check that its server is running and the model is loaded. (' + e.message + ')' }) }
+  if (!curModel) curModel = (models[0] && models[0].value) || 'anthropic/claude-opus-4-8'
+  // Only force a model when the launcher explicitly passed one (argv[4]); otherwise the engine
+  // already loaded the model from opencode.json — don't override the user's configured choice.
+  if (DEFAULT_MODEL) { try { await conn.unstable_setSessionModel({ sessionId, modelId: curModel }) } catch (e) { log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + curModel + '" — check that its server is running and the model is loaded. (' + e.message + ')' }) } }
   return s
 }
 
 async function start() {
+  if (!OPENCODE_SRC && !fs.existsSync(ENGINE)) {   // engine preflight — clear message instead of a raw ENOENT
+    lastEngineDown = { type: 'engine-down', message: 'Engine not found at ' + ENGINE + ' — download opencode.exe into an engine/ folder (see SETUP.md) or set AGENT_OMEGA_ENGINE.' }
+    log('engine missing:', ENGINE); broadcast(lastEngineDown); return
+  }
   const [cmd, baseArgs] = OPENCODE_SRC
     ? [BUN, ['run', '--cwd', OPENCODE_SRC, '--conditions=browser', 'src/index.ts']]
     : [ENGINE, []]
   log('engine:', cmd, baseArgs.join(' '))
-  const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: { ...process.env, ...vaultEnv() } })
+  const { AO_WS_TOKEN: _wsTok, ...engineEnv } = process.env // never expose the control-socket token to the engine/model shell
+  // Pin the engine's HTTP API port (deterministic, per-instance) so the UI can call
+  // the session API directly; without --port the engine lands on 4096-or-random silently.
+  const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR, '--port', String(API_PORT)], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: { ...engineEnv, ...vaultEnv() } })
   engineProc = proc
-  proc.on('error', e => { log('spawn error', e.message); if (!restarting) broadcast({ type: 'engine-down', message: e.message }) })
-  proc.on('exit', c => { log('engine exited', c); if (!restarting) broadcast({ type: 'engine-down', message: 'engine exited ' + c }) })
+  proc.on('error', e => { log('spawn error', e.message); if (!restarting) { lastEngineDown = { type: 'engine-down', message: e.message }; broadcast(lastEngineDown) } })
+  proc.on('exit', c => { log('engine exited', c); if (!restarting) { lastEngineDown = { type: 'engine-down', message: 'engine exited ' + c }; broadcast(lastEngineDown) } })
   conn = new acp.ClientSideConnection((_a) => new UIClient(), acp.ndJsonStream(Writable.toWeb(proc.stdin), Readable.toWeb(proc.stdout)))
   await conn.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } } })
   await newSession()
   log('ready: session', sessionId, '| models', models.length, '| agents', agents.length)
+  lastEngineDown = null
   broadcast(readyMsg())
 }
-function readyMsg() { return { type: 'ready', sessionId, model: curModel, agent: curAgent, models, agents, commands } }
+function readyMsg() { return { type: 'ready', sessionId, model: curModel, agent: curAgent, models, agents, commands, effort: curEffort, effortLevels, apiPort: API_PORT, workdir: WORKDIR } }
 
 // Re-spawn the engine so a just-changed vault key takes effect (the engine reads keys once, at spawn).
 async function restartEngine() {
   restarting = true
+  const prev = sessionId   // restore the active session after the respawn instead of dumping the user into a fresh one
   drainPerms(); busy = false
   try { if (engineProc) engineProc.kill() } catch {}
   conn = null; sessionId = null
   await new Promise((r) => setTimeout(r, 350))
   restarting = false
   await start()   // fresh vaultEnv() -> the new/removed key is now reflected
+  if (prev && conn) {
+    broadcast({ type: 'replay-start', sessionId: prev })
+    try {
+      const r = await conn.loadSession({ sessionId: prev, cwd: WORKDIR, mcpServers: [] })
+      sessionId = prev
+      curModel = ''
+      extractConfig(r && r.configOptions)
+      broadcast({ type: 'replay-end', sessionId })
+      broadcast(readyMsg())
+    } catch (e) { log('restore-session', e.message); broadcast({ type: 'replay-end', sessionId: prev }) }
+  }
 }
 
 wss.on('connection', (ws) => {
@@ -224,6 +306,7 @@ wss.on('connection', (ws) => {
     }
   })
   if (sessionId) send(ws, readyMsg())
+  else if (lastEngineDown) send(ws, lastEngineDown)   // replay a startup engine failure to a late-connecting UI
   ws.on('message', async (data) => {
     let m; try { m = JSON.parse(data.toString()) } catch { return }
     try {
@@ -232,7 +315,7 @@ wss.on('connection', (ws) => {
           if (busy || !m.text) return
           busy = true; broadcast({ type: 'turn-start' })
           try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: m.text }] }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
-          catch (e) { broadcast({ type: 'error', message: e.message }) }
+          catch (e) { broadcast({ type: 'error', message: friendlyError(e.message) }) }
           finally { busy = false }
           break
         }
@@ -240,7 +323,7 @@ wss.on('connection', (ws) => {
           if (busy || !m.name) return
           busy = true; broadcast({ type: 'turn-start' })
           try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + m.name + (m.args ? ' ' + m.args : '') }] }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
-          catch (e) { broadcast({ type: 'error', message: e.message }) }
+          catch (e) { broadcast({ type: 'error', message: friendlyError(e.message) }) }
           finally { busy = false }
           break
         }
@@ -249,7 +332,8 @@ wss.on('connection', (ws) => {
           break
         }
         case 'setModel': { const prev = curModel; curModel = m.model; try { await conn.unstable_setSessionModel({ sessionId, modelId: curModel }) } catch (e) { curModel = prev; log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + m.model + '" — ' + e.message }) } broadcast({ type: 'model', model: curModel }); break }
-        case 'setAgent': { const prev = curAgent; curAgent = m.agent; try { await conn.setSessionConfigOption({ sessionId, type: 'mode', value: curAgent }) } catch (e) { curAgent = prev; log('setAgent', e.message); broadcast({ type: 'error', message: 'Could not switch agent — ' + e.message }) } broadcast({ type: 'agent', agent: curAgent }); break }
+        case 'setAgent': { const prev = curAgent; curAgent = m.agent; try { await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: curAgent }) } catch (e) { curAgent = prev; log('setAgent', e.message); broadcast({ type: 'error', message: 'Could not switch agent — ' + e.message }) } broadcast({ type: 'agent', agent: curAgent }); break }
+        case 'setEffort': { if (!effortLevels.length) { broadcast({ type: 'error', message: 'This model has no effort levels.' }); break } const prev = curEffort; curEffort = m.value; try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: curEffort }) } catch (e) { curEffort = prev; log('setEffort', e.message); broadcast({ type: 'error', message: 'Could not set effort — ' + e.message }) } broadcast({ type: 'effort', effort: curEffort }); break }
         case 'getCouncilConfig': {
           try { send(ws, { type: 'councilConfig', config: readCouncil() }) }
           catch (e) { log('getCouncilConfig', e.message); send(ws, { type: 'councilConfig', error: e.message }) }
@@ -273,23 +357,24 @@ wss.on('connection', (ws) => {
         case 'vaultSet': {
           try {
             if (typeof m.name !== 'string' || !m.name.trim()) { send(ws, { type: 'vaultKeys', error: 'name required' }); break }
-            // Empty value would make secrets.ps1 drop to an interactive Read-Host prompt and HANG the sidecar.
             if (typeof m.value !== 'string' || m.value === '') { send(ws, { type: 'vaultKeys', error: 'value required' }); break }
-            execFileSync(VAULT_CMD, [...VAULT_PRE, 'set', m.name, m.value], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-            const note = busy ? 'Key saved — restart the app to apply it (a turn is in progress).' : 'Key saved — engine reloaded. If your first cloud call still fails, restart the app.'
+            // Pass the secret on STDIN, never as an argv element — argv would land in any thrown
+            // error string (execFileSync embeds the full command) and could leak the key value.
+            execFileSync(VAULT_CMD, [...VAULT_PRE, 'set', m.name], { input: m.value, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
+            const note = busy ? 'Key saved — restart the app to apply it (a turn is in progress).' : 'Key saved — engine reloaded.'
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))   // pick up the new key without a manual restart
-          } catch (e) { log('vaultSet', e.message); send(ws, { type: 'vaultKeys', error: e.message }) }
+          } catch (e) { log('vaultSet failed for', m.name, '(exit ' + (e.status ?? '?') + ')'); send(ws, { type: 'vaultKeys', error: 'Could not store key — vault write failed.' }) }
           break
         }
         case 'vaultRemove': {
           try {
             if (typeof m.name !== 'string' || !m.name.trim()) { send(ws, { type: 'vaultKeys', error: 'name required' }); break }
-            execFileSync(VAULT_CMD, [...VAULT_PRE, 'rm', m.name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+            execFileSync(VAULT_CMD, [...VAULT_PRE, 'remove', m.name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
             const note = busy ? 'Key removed — restart the app to fully apply.' : 'Key removed — engine reloaded.'
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))
-          } catch (e) { log('vaultRemove', e.message); send(ws, { type: 'vaultKeys', error: e.message }) }
+          } catch (e) { log('vaultRemove failed for', m.name, '(exit ' + (e.status ?? '?') + ')'); send(ws, { type: 'vaultKeys', error: 'Could not remove key — vault write failed.' }) }
           break
         }
         case 'abort': { try { await conn.cancel({ sessionId }) } catch (e) { log('cancel', e.message) } drainPerms(); busy = false; break }
@@ -314,9 +399,41 @@ wss.on('connection', (ws) => {
           send(ws, { type: 'findFileResult', rid: m.rid, files: out.slice(0, 20) })
           break
         }
+        case 'load': {
+          // Switch to an existing session. The engine replays its full history as
+          // ordinary update frames between replay-start / replay-end brackets.
+          if (typeof m.sessionId !== 'string' || !m.sessionId.trim()) break
+          if (busy) { try { await conn.cancel({ sessionId }) } catch {} drainPerms(); busy = false }
+          broadcast({ type: 'replay-start', sessionId: m.sessionId })
+          try {
+            const r = await conn.loadSession({ sessionId: m.sessionId, cwd: WORKDIR, mcpServers: [] })
+            sessionId = m.sessionId          // loadSession's response does not echo the id
+            curModel = ''                    // adopt the loaded session's own model from configOptions
+            extractConfig(r && r.configOptions)
+            broadcast({ type: 'replay-end', sessionId })
+            broadcast(readyMsg())
+          } catch (e) {
+            log('load', e.message)
+            broadcast({ type: 'replay-end', sessionId: m.sessionId, error: friendlyError(e.message) })
+          }
+          break
+        }
       }
     } catch (e) { log('msg error', e.message) }
   })
 })
+
+// Lifecycle: never leave the engine running once the sidecar is going down, and go down
+// ourselves if the shell that launched us dies abnormally (crash / kill) without firing its
+// normal child-cleanup — otherwise the engine + the bound ports would be orphaned.
+function killEngine() { try { if (engineProc) engineProc.kill() } catch {} }
+process.on('exit', killEngine)
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => { killEngine(); process.exit(0) })
+if (PARENT_PID) {
+  setInterval(() => {
+    try { process.kill(PARENT_PID, 0) }   // signal 0 = liveness probe, never actually signals
+    catch { killEngine(); process.exit(0) }
+  }, 3000).unref()
+}
 
 start().catch(e => { log('start failed', e.message); process.exit(1) })

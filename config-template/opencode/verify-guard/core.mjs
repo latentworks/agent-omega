@@ -14,27 +14,44 @@ const CODE_EXTENSIONS = new Set([
   'css', 'scss', 'sass', 'less', 'html', 'htm', // renderable UI — a change you should look at
 ])
 
-// Commands that indicate the agent actually ran/tested/built something, rather
-// than just inspecting the tree. Deliberately broad: a missed match only costs
-// one extra nudge, while a false match would suppress a needed one.
-const VERIFY_PATTERNS = [
+// EXECUTING commands: the agent actually RAN the code — a test suite or the program itself —
+// and could observe real behavior. Only these count as verification (see the verify skill:
+// "run the real thing and observe the real output").
+const EXEC_PATTERNS = [
   /\bpytest\b/, /\bunittest\b/, /\bnose2?\b/,
   /\bjest\b/, /\bvitest\b/, /\bmocha\b/, /\bjasmine\b/, /\bplaywright\b/, /\bcypress\b/,
   /\bphpunit\b/, /\brspec\b/, /\bminitest\b/,
-  /\bgo\s+(test|run|build)\b/,
-  /\bcargo\s+(test|run|build|check)\b/,
-  /\b(npm|yarn|pnpm|bun)\s+(run\s+)?(test|build|lint|typecheck|tsc|start|dev|check)\b/,
+  /\bgo\s+(test|run)\b/,
+  /\bcargo\s+(test|run)\b/,
+  /\b(npm|yarn|pnpm|bun)\s+(run\s+)?(test|start|dev|serve|preview)\b/,
   /\bnpm\s+test\b/,
-  /\bdotnet\s+(test|run|build)\b/,
-  /\b(gradle|gradlew|mvn|maven)\b/,
-  /\bctest\b/, /\bcmake\b/, /\bninja\b/, /\bmake\b/,
-  /\btsc\b/, /\beslint\b/,
+  /\bdotnet\s+(test|run)\b/,
+  // build tool invoking a TEST target — the target must be its own space-delimited arg, so a
+  // lint goal like `mvn checkstyle:check` (":check", no leading space) does NOT count, while
+  // `make test`, `make check`, `mvn verify`, `gradle test`, `gradle check` do.
+  /\b(make|cmake|gradle|gradlew|mvn|maven)\b[^&;|]*\s(test|check|verify|integration-test|integrationTest|run|itest)(\s|$)/,
+  /\bctest\b/,
   /\b(pio|platformio)\s+(run|test)\b/,
   /\b(python3?|node|deno|ruby|php|perl|rscript)\s+\S/i,
   /\b(deno|bun)\s+(run|test)\b/,
   /\b(invoke-pester|pester)\b/i,
-  /(^|\s)\.\/\S+/,    // ./run.sh, ./a.out
-  /(^|\s)\.\\\S+/,    // .\run.ps1 (Windows)
+  // running a local executable — only when ./x is the COMMAND (start or after a shell separator),
+  // NOT a path ARGUMENT like `go build ./...` or `eslint ./src` (those are compile-only).
+  /(^|&&|;|\||\bthen\b)\s*\.\/\S+/,    // ./run.sh, ./a.out
+  /(^|&&|;|\||\bthen\b)\s*\.\\\S+/,    // .\run.ps1 (Windows)
+]
+
+// COMPILE-ONLY commands: they prove the code builds/type-checks/lints — NOT that it behaves.
+// The whole point of this tool is to stop "it compiles" being mistaken for "it works", so a
+// turn whose only "verification" is one of these does NOT count as verified.
+const COMPILE_ONLY_PATTERNS = [
+  /\b(npm|yarn|pnpm|bun)\s+(run\s+)?(build|lint|typecheck|type-check|check|compile|format)\b/,
+  /\btsc\b/, /\beslint\b/, /\bprettier\b/, /\bruff\b/, /\bmypy\b/, /\bflake8\b/,
+  /\bgo\s+build\b/, /\bgo\s+vet\b/,
+  /\bcargo\s+(build|check|clippy|fmt)\b/,
+  /\bdotnet\s+build\b/,
+  /\b(cmake|ninja)\b/,
+  /\b(make|gradle|gradlew|mvn|maven)\b/,   // bare build tools (an explicit test target is caught by EXEC_PATTERNS first)
 ]
 
 export function isCodeEditTool(tool) {
@@ -62,12 +79,24 @@ export function isBenignNonZero(command) {
   return /^\s*\S*\b(grep|egrep|fgrep|rg|ag|diff|cmp|test|find)\b/i.test(String(command || ''))
 }
 
+// True only if the command actually EXECUTED the code (ran tests or the program). A
+// compile/lint/typecheck-only command returns false — building is not behaving. An exec match
+// wins even when a compile pattern also matches (e.g. `npm run build && npm test`).
 export function isVerificationCommand(command) {
   const c = String(command || '')
   if (isWebBridge(c)) return false
   // A bare version/help probe runs no real code — it must NOT count as having verified anything.
   if (/^\s*\S*\b(python3?|node|deno|bun|ruby|php|perl|rscript|go|cargo|npm|pnpm|yarn|dotnet|tsc)\b\s+(-v|-V|--version|version|--help|-h|help)\s*$/i.test(c)) return false
-  return VERIFY_PATTERNS.some((re) => re.test(c))
+  if (EXEC_PATTERNS.some((re) => re.test(c))) return true
+  if (COMPILE_ONLY_PATTERNS.some((re) => re.test(c))) return false
+  return false
+}
+
+// A compile/lint/typecheck-only command (used to nudge: "built, but did you RUN it?").
+export function isCompileOnlyCommand(command) {
+  const c = String(command || '')
+  if (isVerificationCommand(c)) return false
+  return COMPILE_ONLY_PATTERNS.some((re) => re.test(c))
 }
 
 function argPath(args) {

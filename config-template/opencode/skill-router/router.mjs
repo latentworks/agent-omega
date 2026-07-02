@@ -9,12 +9,30 @@
 
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import os from 'node:os'
 
-export const EXTRACT_URL      = process.env.ROUTER_EXTRACT_URL || ''
-export const ROUTER_MODEL = process.env.ROUTER_MODEL || ''        // '' => use the loaded model (no swap)
-export const ROUTER_N     = Number(process.env.ROUTER_N || 3)     // how many recent user messages to read
-const RUNNING_URL   = (() => { try { return new URL('/running', EXTRACT_URL).href } catch { return '' } })()
-const FALLBACK_MODEL = process.env.ROUTER_FALLBACK || 'qwen3-coder-30b'
+// The router's classify call reuses the LOCAL provider the user already configured — no
+// separate endpoint to set up. We read baseURL + model straight from opencode.json (the same
+// XDG-aware path the engine loads), so it works out of the box for a local lead and needs no
+// owner-specific server. ROUTER_EXTRACT_URL / ROUTER_MODEL still override if a user wants to.
+function readLocalProvider() {
+  try {
+    const cfgPath = join(process.env.XDG_CONFIG_HOME || join(os.homedir(), '.config'), 'opencode', 'opencode.json')
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    const loc = cfg && cfg.provider && cfg.provider.local
+    const baseURL = loc && loc.options && typeof loc.options.baseURL === 'string' ? loc.options.baseURL : ''
+    // Prefer the model the MAIN session actually drives with (cfg.model === "local/<id>"): that id
+    // is proven to work against the user's server. Fall back to the first configured local model.
+    const selected = typeof cfg.model === 'string' && cfg.model.startsWith('local/') ? cfg.model.slice('local/'.length) : ''
+    const firstKey = loc && loc.models && typeof loc.models === 'object' ? (Object.keys(loc.models)[0] || '') : ''
+    return { baseURL, modelId: selected || firstKey }
+  } catch { return { baseURL: '', modelId: '' } }
+}
+const LOCAL = readLocalProvider()
+// baseURL is OpenAI-compatible (…/v1); the classify call hits …/v1/chat/completions.
+export const EXTRACT_URL   = process.env.ROUTER_EXTRACT_URL || (LOCAL.baseURL ? LOCAL.baseURL.replace(/\/+$/, '') + '/chat/completions' : '')
+export const ROUTER_MODEL  = process.env.ROUTER_MODEL || LOCAL.modelId || ''   // the configured local model id
+export const ROUTER_N      = Number(process.env.ROUTER_N || 3)     // how many recent user messages to read
 // Thinking OFF by default — a classify call needs no chain-of-thought (the spec).
 const NOTHINK = !['0', 'false', 'off'].includes(String(process.env.ROUTER_NOTHINK ?? '1').toLowerCase())
 
@@ -52,7 +70,11 @@ export function parseSkills(output, valid) {
     const sl = s.toLowerCase()
     const re = new RegExp(`(^|[^a-z0-9-])${sl.replace(/-/g, '\\-')}([^a-z0-9-]|$)`)
     const idx = text.search(re)
-    if (idx >= 0) found.push([idx, sl])
+    if (idx < 0) continue
+    // Skip a match that's negated right before it ("not debugging", "no verify", "skip tdd").
+    const before = text.slice(Math.max(0, idx - 12), idx + 1)
+    if (/\b(not|no|n't|skip|without|except|avoid)\b[^a-z0-9-]*$/.test(before)) continue
+    found.push([idx, sl])
   }
   found.sort((a, b) => a[0] - b[0])
   return found.map((f) => f[1])
@@ -72,22 +94,15 @@ export function buildDirective(skillNames) {
   ].join(' ')
 }
 
-export async function pickModel(fetchImpl = fetch) {
-  if (ROUTER_MODEL) return ROUTER_MODEL
-  try {
-    const r = await fetchImpl(RUNNING_URL, { signal: AbortSignal.timeout(6000) })
-    if (r.ok) {
-      const j = await r.json()
-      const list = (j && j.running) || []
-      const ready = list.find((m) => m && m.state === 'ready') || list[0]
-      if (ready && ready.model) return ready.model
-    }
-  } catch {}
-  return FALLBACK_MODEL
+export async function pickModel() {
+  // The configured local model id (or an explicit ROUTER_MODEL). OpenAI-compatible servers
+  // like llama.cpp ignore this field and serve their loaded model; Ollama/LM Studio use it.
+  return ROUTER_MODEL || 'local-model'
 }
 
 export async function routerCall(prompt, fetchImpl = fetch) {
-  const model = await pickModel(fetchImpl)
+  if (!EXTRACT_URL) throw new Error('no local provider configured (router inert)')
+  const model = await pickModel()
   const body = { model, messages: [{ role: 'user', content: prompt }], max_tokens: 40, temperature: 0 }
   if (NOTHINK) body.chat_template_kwargs = { enable_thinking: false }
   const r = await fetchImpl(EXTRACT_URL, {

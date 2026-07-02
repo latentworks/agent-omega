@@ -28,6 +28,9 @@ case "${1:-}" in
   set)
     name="${2:-}"; val="${3:-}"
     [ -n "$name" ] || { echo "name required" >&2; exit 1; }
+    # Value comes from STDIN when not passed as an arg — a secret in argv would land in any
+    # error string the caller logs. $(...) also strips a trailing newline. (argv form kept for manual use.)
+    [ -n "$val" ] || val="$(cat)"
     [ -n "$val" ]  || { echo "value required" >&2; exit 1; }
     case "$name$val" in *"$TAB"*) echo "name/value may not contain a tab character" >&2; exit 1;; esac
     new="$(blob | awk -F"$TAB" -v k="$name" -v v="$val" '$1!=k && NF{print} END{print k FS v}')"
@@ -37,14 +40,14 @@ case "${1:-}" in
     out="$(blob | awk -F"$TAB" 'NF{print $1}')"
     [ -n "$out" ] && printf '%s\n' "$out" || printf '(vault empty)\n'
     ;;
-  rm)
+  rm|remove)
     name="${2:-}"
     [ -n "$name" ] || { echo "name required" >&2; exit 1; }
     new="$(blob | awk -F"$TAB" -v k="$name" '$1!=k && NF{print}')"
     save "$new"
     ;;
   *)
-    echo "usage: secrets.sh {get NAME|set NAME VALUE|list|rm NAME}" >&2
+    echo "usage: secrets.sh {get NAME|set NAME [VALUE|-stdin]|list|remove NAME}" >&2
     exit 2
     ;;
 esac
