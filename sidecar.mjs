@@ -323,8 +323,8 @@ class UIClient {
     if (u && u.sessionUpdate !== 'usage_update') turnOutput++   // text/thought/tool call/plan = real output
     broadcast({ type: 'update', update: u })
   }
-  async writeTextFile(p) { try { fs.writeFileSync(p.path, p.content ?? '') } catch (e) { log('writeTextFile', e.message) } return {} }
-  async readTextFile(p) { try { return { content: fs.readFileSync(p.path, 'utf8') } } catch (e) { log('readTextFile', p.path, e.message); if (e.code === 'ENOENT') return { content: '' }; throw e } }
+  async writeTextFile(p) { try { fs.writeFileSync(p.path, p.content ?? '') } catch (e) { log('writeTextFile', p.path, e.message); broadcast({ type: 'error', message: 'Write to ' + p.path + ' failed: ' + e.message }); throw e } return {} }
+  async readTextFile(p) { try { return { content: fs.readFileSync(p.path, 'utf8') } } catch (e) { log('readTextFile', p.path, e.message); throw e } }
 }
 
 // Resolve every outstanding permission with a 'cancelled' outcome so a disconnect/abort
