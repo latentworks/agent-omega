@@ -225,7 +225,7 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         // 2. secrets.sh -> ~/.agent-omega/secrets.sh, executable. Self-healing: also REFRESH a
         // stale copy (content differs from the shipped one) so an upgrade can't leave an old
         // vault script that silently fails the newer set-via-stdin contract.
-        let vsrc = RES + "/secrets.sh"
+        let vsrc = fm.fileExists(atPath: RES + "/secrets.sh") ? RES + "/secrets.sh" : RES + "/mac/secrets.sh"
         let vdst = home + "/.agent-omega/secrets.sh"
         if fm.fileExists(atPath: vsrc) {
             let shipped = try? String(contentsOfFile: vsrc, encoding: .utf8)
