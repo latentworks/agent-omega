@@ -15,7 +15,7 @@ This is a RIGID skill. Follow it exactly — do not improvise the procedure, ski
 
 ## 1. Find the change
 
-The scope is what you're verifying — usually a diff, sometimes just "does X work." In a git repo, establish the full range (a branch may be many commits, or the change may still be uncommitted). Use the bash tool (zsh/bash, the macOS default shell):
+The scope is what you're verifying — usually a diff, sometimes just "does X work." In a git repo, establish the full range (a branch may be many commits, or the change may still be uncommitted). Use the bash tool (a POSIX shell — zsh/bash on macOS/Linux, git-bash on Windows):
 
 ```bash
 git log --oneline @{u}..        # count commits (if upstream set)

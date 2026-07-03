@@ -15,11 +15,18 @@ a raw finder hit without verifying it.
 
 ## Step 1 — Gather the diff
 
-One bash call. Cover both committed and uncommitted work:
+One bash call. Cover both committed and uncommitted work, and fall back when
+there's no upstream (a local-only repo has none, so `@{upstream}` errors):
 
 ```bash
-git diff "@{upstream}...HEAD"; git diff HEAD
+git diff "@{upstream}...HEAD" 2>/dev/null || git diff origin/HEAD... 2>/dev/null; git diff HEAD
 ```
+
+That tries the upstream range first; with no upstream it uses `origin/HEAD...`
+(committed vs the default remote base); the trailing `git diff HEAD` always adds
+uncommitted work. If even `origin/HEAD` is absent (no remote at all), the
+committed range is empty — review `git diff HEAD` and, if nothing is uncommitted
+either, ask the user what to review.
 
 If the user named a target (a branch, a PR, `main`), diff against that instead,
 e.g. `git diff main...HEAD`. If `gh` is needed for a PR target, use it.

@@ -7,7 +7,7 @@ fresh Claude Code (or similar) session ON THE MAC.
 1. Get this repo onto the Mac (it has ssh). From the Mac, pull it off the
    Windows box, e.g.:
        rsync -avz --exclude node_modules --exclude bin --exclude obj \
-             <winuser>@<windows-host>:/c/Users/user/agent-omega/  ~/agent-omega/
+             <winuser>@<windows-host>:/c/Users/<winuser>/agent-omega/  ~/agent-omega/
    (or scp -r, or git clone if it's been pushed to a remote).
 2. cd ~/agent-omega and start Claude Code there.
 3. Paste EVERYTHING below the line as your first message (or tell the agent:
@@ -21,7 +21,7 @@ fresh Claude Code (or similar) session ON THE MAC.
 You are an autonomous build agent on a Mac. Build a **native macOS version of Agent Omega** — a desktop coding-agent app that is currently Windows-only — to feature parity with the Windows build. Work **mostly autonomously**: make reasonable calls and keep moving. But follow the gated build workflow, **prove behavior (never plumbing)**, and **adversarially self-verify every piece with subagents**. Stop only for the human decisions and one-way actions flagged below.
 
 ## 0. Orient yourself — before anything else
-1. **Confirm you're inside the repo.** You should see `README.md`, `TECHNICAL.md`, `Program.cs`, `sidecar.mjs`, `ui/`, `config-template/`, and `docs/`. If not, get the repo first — it lives at `~/agent-omega` (or `C:/Users/user/agent-omega`) on the Windows box; pull it over SSH (`rsync`/`scp`) or clone it.
+1. **Confirm you're inside the repo.** You should see `README.md`, `TECHNICAL.md`, `Program.cs`, `sidecar.mjs`, `ui/`, `config-template/`, and `docs/`. If not, get the repo first — it lives at `~/agent-omega` (or `C:/Users/<winuser>/agent-omega`) on the Windows box; pull it over SSH (`rsync`/`scp`) or clone it.
 2. **Read these first — they are the authoritative plan from prior investigation:**
    - `docs/MAC_BRANCH.md` — full port plan, recommended approach, effort estimate.
    - `docs/mac-porting-inventory.md` — every Windows-specific dependency, `file:line`, with its Mac equivalent.

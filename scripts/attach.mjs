@@ -19,6 +19,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline'
+import net from 'node:net'
 
 const HISTORY_N = Number(process.env.ATTACH_HISTORY || 20)
 const DEBUG = ['1', 'true'].includes(process.env.ATTACH_DEBUG || '')
@@ -31,6 +32,20 @@ const yellow = (s) => `\x1b[33m${s}\x1b[0m`
 const red = (s) => `\x1b[31m${s}\x1b[0m`
 
 function pidAlive(pid) { if (!pid) return true; try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
+// A quick loopback probe of a descriptor's control port: 'open' if something is listening, 'refused'
+// if the port is definitively empty, 'timeout' if inconclusive. pidAlive alone is defeated by PID
+// reuse (a dead sidecar's pid gets reused by firefox/edge/etc.), which resurrects the descriptor as
+// a phantom instance — so we also verify the port actually accepts a connection at list time.
+function probePort(port) {
+  return new Promise((resolve) => {
+    let done = false
+    const sock = net.connect({ host: '127.0.0.1', port })
+    const fin = (r) => { if (done) return; done = true; try { sock.destroy() } catch {}; resolve(r) }
+    sock.on('connect', () => fin('open'))
+    sock.on('error', (e) => fin(e && e.code === 'ECONNREFUSED' ? 'refused' : 'timeout'))
+    sock.setTimeout(400, () => fin('timeout'))
+  })
+}
 // Optional selector: `attach.mjs <arg>` where arg is a descriptor .json path, a port, or a
 // substring of the instance's cwd — to go straight to one instance among several.
 const ARG = process.argv[2] || process.env.AGENT_OMEGA_ATTACH || ''
@@ -42,14 +57,21 @@ function matchesArg(d) {
 // Discover LIVE instances: scan the per-instance dir (or a pinned .json path), keep only
 // descriptors whose process is still alive (so a clobbered/stale one can't misroute), then filter
 // by the selector arg if given.
-function liveInstances() {
+async function liveInstances() {
   const pinned = ARG && ARG.toLowerCase().endsWith('.json') && fs.existsSync(ARG)
   const files = pinned
     ? [ARG]
     : (() => { try { return fs.readdirSync(ATTACH_DIR).filter(f => f.endsWith('.json')).map(f => path.join(ATTACH_DIR, f)) } catch { return [] } })()
-  const out = []
+  const cand = []
   for (const f of files) {
-    try { const d = JSON.parse(fs.readFileSync(f, 'utf8')); if (d && d.port && pidAlive(d.pid) && (pinned || matchesArg(d))) out.push(d) } catch {}
+    try { const d = JSON.parse(fs.readFileSync(f, 'utf8')); if (d && d.port && pidAlive(d.pid) && (pinned || matchesArg(d))) cand.push(d) } catch {}
+  }
+  // pidAlive can pass on a REUSED pid whose recorded port belongs to nothing — probe each survivor's
+  // control port and drop any that definitively refuses. Keep on an inconclusive timeout so a
+  // slow-but-live sibling instance is never dropped (mirrors the sidecar's startup sweep).
+  const out = []
+  for (const d of cand) {
+    if (await probePort(d.port) !== 'refused') out.push(d)
   }
   return out
 }
@@ -57,7 +79,7 @@ function liveInstances() {
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: '' })
 
 async function pickInstance() {
-  const live = liveInstances()
+  const live = await liveInstances()
   if (live.length === 0) {
     console.error(red('No running Agent Omega instance found.'))
     console.error(dim(`(nothing live in ${ATTACH_DIR} — start the desktop app first, then re-run this.)`))

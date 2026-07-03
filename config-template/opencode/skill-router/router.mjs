@@ -71,9 +71,20 @@ export function parseSkills(output, valid) {
     const re = new RegExp(`(^|[^a-z0-9-])${sl.replace(/-/g, '\\-')}([^a-z0-9-]|$)`)
     const idx = text.search(re)
     if (idx < 0) continue
-    // Skip a match that's negated right before it ("not debugging", "no verify", "skip tdd").
-    const before = text.slice(Math.max(0, idx - 12), idx + 1)
-    if (/\b(not|no|n't|skip|without|except|avoid)\b[^a-z0-9-]*$/.test(before)) continue
+    // Skip a match that's negated ("not debugging", "no verify", "skip tdd", and also the
+    // SPACED forms "do not use debugging" / "without using verify"). We allow a short run of
+    // filler verbs (use/do/to/the/…) between the negation word and the skill name, but the
+    // negation must still govern the name — so "don't hesitate to use debugging" (negation not
+    // adjacent to a use-verb chain) is NOT suppressed, and a negation in a prior clause
+    // ("use tdd, not debugging") only suppresses the name it actually precedes.
+    const before = text.slice(Math.max(0, idx - 40), idx + 1)
+    const NEG = /\b(?:not|no|never|skip|without|except|avoid|don'?t|doesn'?t|won'?t|isn'?t|can'?t|cannot)\b(?:\s+(?:use|using|used|do|doing|to|the|a|an|any|invoke|invoking|run|running|apply|applying|call|calling|need|want|include|with|your|our))*\s*[^a-z0-9-]*$/
+    // Double negative — "do not skip debugging", "never avoid verify", "don't ignore tdd" — is a
+    // POSITIVE instruction to USE the skill: the omission verb (skip/avoid/…) is itself what the
+    // outer negator negates, not the skill name. Don't suppress in that case. (Scoped to an
+    // omission verb governed by an outer negator; "do not use X" stays a plain negation.)
+    const DOUBLE_NEG = /\b(?:not|never|no|don'?t|doesn'?t|didn'?t|won'?t|wouldn'?t|cannot|can'?t|shouldn'?t)\b\s+(?:ever\s+)?(?:skip|avoid|omit|ignore|exclude|neglect|forget|miss|drop|skimp)\b[^a-z0-9-]*$/
+    if (NEG.test(before) && !DOUBLE_NEG.test(before)) continue
     found.push([idx, sl])
   }
   found.sort((a, b) => a[0] - b[0])
@@ -105,14 +116,35 @@ export async function routerCall(prompt, fetchImpl = fetch) {
   const model = await pickModel()
   const body = { model, messages: [{ role: 'user', content: prompt }], max_tokens: 40, temperature: 0 }
   if (NOTHINK) body.chat_template_kwargs = { enable_thinking: false }
-  const r = await fetchImpl(EXTRACT_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(20000),
-  })
-  if (!r.ok) throw new Error(`HTTP ${r.status}`)
-  const j = await r.json()
+  // Tag thrown errors with `.reachable` so the inert notice can tell a connection failure (we never
+  // got a response) apart from a classifier that answered with an unusable reply (non-2xx, or a 200
+  // with a body we can't parse). A malformed reply must NOT be reported as "unreachable".
+  let r
+  try {
+    r = await fetchImpl(EXTRACT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20000),
+    })
+  } catch (e) {
+    const err = new Error(`connection failed: ${(e && e.message) || e}`)
+    err.reachable = false // never reached the server (refused / DNS / timeout)
+    throw err
+  }
+  if (!r.ok) {
+    const err = new Error(`HTTP ${r.status}`)
+    err.reachable = true // the server answered — reachable, just an error status
+    throw err
+  }
+  let j
+  try {
+    j = await r.json()
+  } catch (e) {
+    const err = new Error(`malformed response body: ${(e && e.message) || e}`)
+    err.reachable = true // 200 but the body was not valid JSON — reachable, reply unusable
+    throw err
+  }
   return j.choices?.[0]?.message?.content || ''
 }
 

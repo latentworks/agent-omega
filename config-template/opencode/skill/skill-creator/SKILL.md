@@ -23,13 +23,14 @@ HOW TO WRITE ONE
 - Keep it transferable — no project one-off trivia unless that's the whole point of the skill.
 
 WHERE IT GOES / WIRING IT IN
-1. Create the folder + file:  $XDG_CONFIG_HOME/opencode/skill/<name>/SKILL.md
-   (or ~/.config/opencode/skill/<name>/SKILL.md if XDG_CONFIG_HOME is unset)
+   (Paths honor XDG_CONFIG_HOME — the launcher sets it on Mac and for any isolated instance, so
+   writing to a bare ~/.config would land the skill where the engine never scans. Always use the
+   `${XDG_CONFIG_HOME:-$HOME/.config}` form below.)
+1. Create the folder + file:  ${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skill/<name>/SKILL.md
    OpenCode auto-discovers every skill/<name>/SKILL.md and exposes it through your `skill` tool — no
    registry file to edit. A brand-new skill is picked up when OpenCode next starts.
 2. (Optional but recommended) add a slash-command so the user can force it:
-   $XDG_CONFIG_HOME/opencode/command/<name>.md (or ~/.config/opencode/command/<name>.md if
-   XDG_CONFIG_HOME is unset)  with frontmatter `description:` and a body of
+   ${XDG_CONFIG_HOME:-$HOME/.config}/opencode/command/<name>.md  with frontmatter `description:` and a body of
    "Use the '<name>' skill, then follow it exactly, applied to: $ARGUMENTS".
    (The skill router also auto-registers it from the frontmatter, so it can fire automatically —
    there is no separate registry to maintain.)

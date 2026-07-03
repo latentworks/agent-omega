@@ -94,9 +94,9 @@
   /* ===== richer tool + message rendering (adapted from app.parity.html to ACP shapes) ===== */
   .toolwrap{ }
   .toolline{ font-size:21px; color:#54655b; display:flex; align-items:baseline; flex-wrap:wrap; }
-  .tglyph{ color:#ffb454; flex:0 0 auto; }
+  .tglyph{ color:#ffb454; flex:0 0 auto; margin-right:.5em; }   /* margin, not a whitespace text node (flex drops those) — UI-11 */
   .tname{ color:#5fd3dd; }
-  .ttime{ color:#46544c; flex:0 0 auto; }
+  .ttime{ color:#46544c; flex:0 0 auto; margin-left:.55em; }    /* separator no longer hugs the title — UI-11 */
   .tsub{ font-size:19px; color:#54655b; padding-left:1.7em; }            /* "↳ working…", task progress */
   .ttodos{ display:flex; flex-direction:column; margin-top:4px; padding-left:1.7em; }
   .ttodo{ display:flex; font-size:20px; color:#54655b; line-height:1.45; }
@@ -165,6 +165,9 @@
     <div class="crt-tb-brand" style="display:flex; align-items:center; gap:9px;">
       <span class="ac" style="text-shadow:0 0 7px currentColor; font-weight:700; letter-spacing:1px;">A/O</span>
       <span style="color:#9fb0a6; letter-spacing:.5px;">agent&nbsp;omega</span>
+      <!-- dash + workspace shown only once the ready message's workdir arrives (no dangling em-dash) -->
+      <span class="crt-tb-sep" style="color:#3f4a44; display:none;">—</span>
+      <span class="crt-tb-workdir" style="color:#566359; letter-spacing:.5px;"></span>
     </div>
     <!-- Modern: centered brand -->
     <div class="m-brand">
@@ -172,7 +175,8 @@
       <span class="m-brand-name">agent-omega</span>
     </div>
     <!-- Modern: ⌘K pill right (placed before CRT controls so crt-tb-controls is div:last-child for wireGear()) -->
-    <span class="m-cmdkpill" onclick="window.AgentOmegaCommands && window.AgentOmegaCommands.open()">⌘K</span>
+    <!-- click is wired once in JS (crt-settings.js wireGear / command-discovery.js wireCmdkPill) — no inline onclick, so open() fires once -->
+    <span class="m-cmdkpill" title="Command palette (Ctrl+P)">⌘K</span>
     <!-- CRT: window controls right (must remain last div child of #titlebar for wireGear's div:last-child lookup) -->
     <div class="crt-tb-controls" style="display:flex; align-items:center; gap:15px; color:#3f4a44; font-size:15px;">
       <span class="ctl" onclick="win('minimize')">—</span>
@@ -183,6 +187,13 @@
 
   <div class="screen">
     <canvas id="omegaGlobe" style="position:absolute; inset:0; width:100%; height:100%; z-index:0; pointer-events:none;"></canvas>
+    <!-- engine-down banner: loud, persistent recovery bar shown when the sidecar reports the
+         engine process died (WS-01). Hidden again on the next `ready`. -->
+    <div id="engineDown" class="hidden" style="position:absolute; left:0; right:0; top:0; z-index:40; display:flex; align-items:center; gap:14px; justify-content:center; padding:9px 16px; background:rgba(58,14,14,.94); border-bottom:1px solid #7a3a3a; color:#ffb0b0; font-size:18px;">
+      <span style="flex:0 0 auto;">⚠</span>
+      <span id="engineDownMsg" style="flex:0 1 auto;">the engine has stopped — no messages can be sent</span>
+      <button type="button" id="engineDownBtn" onclick="restartEngine()" style="flex:0 0 auto; font-family:inherit; font-size:17px; background:rgba(255,180,84,.10); border:1px solid var(--ac); color:var(--ac); padding:4px 15px; cursor:pointer;">Restart engine</button>
+    </div>
     <div class="content">
 
       <!-- ===== HOME / initial-empty state ===== -->
@@ -220,7 +231,7 @@
             </div>
           </div>
           <!-- CRT: meta line -->
-          <div class="crt-home-meta" style="font-size:20px; margin-top:14px; color:#54655b; padding-left:26px;"><span class="ac metaAgent">build</span>&nbsp;·&nbsp;<span class="cy metaModel">—</span>&nbsp;&nbsp;<span style="color:#46544c;">local (llama-swap)</span></div>
+          <div class="crt-home-meta" style="font-size:20px; margin-top:14px; color:#54655b; padding-left:26px;"><span class="ac metaAgent">build</span>&nbsp;·&nbsp;<span class="cy metaModel">—</span>&nbsp;&nbsp;<span class="metaHost" style="color:#46544c;">local (llama-swap)</span></div>
           <!-- Modern: model pill (hidden in CRT) -->
           <div class="m-modelpill-row">
             <div class="m-modelpill">
@@ -249,13 +260,13 @@
         <div class="crt-tip" style="margin-top:36px; font-size:20px; color:#54655b;"><span class="ac">● tip</span>&nbsp;&nbsp;<span class="ac">enter</span> sends · <span class="ac">shift+enter</span> newline · <span class="ac">!</span> shell · <span class="ac">esc</span> stops / new session</div>
         <!-- CRT: version footer -->
         <div class="crt-homefoot" style="font-size:18px; color:#3f4a44; width:680px; max-width:calc(100% - 48px); display:flex; justify-content:space-between; margin-top:24px; padding-top:8px; border-top:1px solid #161c1f;">
-          <span>~/dev/agent-omega</span>
+          <span class="footPath"></span>
           <span>agent-omega · v2.3.0-beta</span>
         </div>
 
         <!-- Modern: footer (hidden in CRT) -->
         <div class="m-homefoot">
-          <span>~/dev/agent-omega</span>
+          <span class="footPath"></span>
           <span>agent-omega · v2.3.0-beta</span>
         </div>
       </div>
@@ -271,8 +282,14 @@
             <textarea id="chatInput" class="inp" rows="1" style="font-size:22px;" autocomplete="off"
                       spellcheck="false" placeholder="reply…"></textarea>
             <span id="shellHint" class="shellhint hidden">SHELL · esc to exit</span>
+            <!-- Modern: send button (hidden in CRT) — gives Modern a mouse path to send a follow-up (AUD1-14) -->
+            <div class="m-sendbtn" onclick="document.getElementById('chatInput').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))" title="Send">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 19V5M12 5l-6 6M12 5l6 6"/>
+              </svg>
+            </div>
           </div>
-          <div style="font-size:18px; margin-top:8px; color:#54655b; padding-left:26px;"><span class="ac metaAgent">build</span>&nbsp;·&nbsp;<span class="cy metaModel">—</span>&nbsp;&nbsp;<span style="color:#46544c;">local (llama-swap)</span></div>
+          <div style="font-size:18px; margin-top:8px; color:#54655b; padding-left:26px;"><span class="ac metaAgent">build</span>&nbsp;·&nbsp;<span class="cy metaModel">—</span>&nbsp;&nbsp;<span class="metaHost" style="color:#46544c;">local (llama-swap)</span></div>
         </div>
 
         <div style="display:flex; justify-content:space-between; align-items:center; font-size:19px; color:#46544c; padding-top:8px;">
@@ -416,6 +433,10 @@ function fmtElapsed(s){ if(!s||!s.startMs||!s.endMs) return ''; let ms=s.endMs-s
 function nearBottom(){ return (convo.scrollHeight - convo.scrollTop - convo.clientHeight) < 60; }
 function toBottom(){ requestAnimationFrame(()=>{ convo.scrollTop=convo.scrollHeight; }); }
 function withScroll(fn){ const stick=nearBottom(); fn(); if(stick) toBottom(); }
+/* For USER-invoked output (command results, pickers, help): always reveal it. The near-bottom
+   guard in withScroll is right for passive streaming, but when the user runs /model or /help
+   while scrolled up, the panel is appended below the fold and nothing appears to happen (UI-06). */
+function withScrollForce(fn){ fn(); toBottom(); }
 
 /* ---- view switching + focus ---- */
 function chatVisible(){ return !chat.classList.contains('hidden'); }
@@ -457,6 +478,14 @@ function updateMeta(){
   const aName = (agents.find(a=>a.value===curAgent)||{}).name || curAgent || 'build';
   document.querySelectorAll('.metaModel').forEach(e=>e.textContent=mName);
   document.querySelectorAll('.metaAgent').forEach(e=>e.textContent=aName);
+  // host suffix — derive from the model's provider prefix ("provider/model") so a cloud model
+  // isn't mislabeled "local (llama-swap)" (UI-07). Unknown/prefixless keeps the local label.
+  const slash=(curModel||'').indexOf('/');
+  const provider = slash>0 ? curModel.slice(0,slash).toLowerCase() : '';
+  const host = (!provider || provider==='local') ? 'local (llama-swap)' : ('cloud ('+provider+')');
+  document.querySelectorAll('.metaHost').forEach(e=>e.textContent=host);
+  const shortHost = (!provider || provider==='local') ? 'local' : provider;
+  document.querySelectorAll('.m-modelpill-local').forEach(e=>e.textContent=shortHost);
 }
 
 /* ---- spinner driver (drives any .spin glyph: thinking + running tools) ---- */
@@ -490,7 +519,7 @@ function clearThinking(){ if(thinkingEl){ thinkingEl.remove(); thinkingEl=null; 
 /* Freeze the LIVE thinking bubble into a collapsed, static "thought" block that
    stays in the transcript (fixes traces vanishing the instant output starts).
    Removes it instead if there's no reasoning text or the user turned thoughts off. */
-let keepThoughts=true;
+let keepThoughts=(function(){ try{ const v=localStorage.getItem('ao.keepThoughts'); return v==null?true:v!=='0'; }catch(e){ return true; } })();   // persisted across restart — AUD1-13
 function settleThinking(){
   if(!thinkingEl) return;
   const body=thinkingEl.querySelector('.body');
@@ -664,14 +693,23 @@ function addFallback(msg){ withScroll(()=>{ const d=document.createElement('div'
 function noteOutput(){ turnProduced=true; settleThinking(); thoughtText=''; }
 
 /* coalesce the streaming answer + thinking re-renders to one paint per frame */
-let _raf=false, _stick=true, ansDirty=false, thinkDirty=false;
+let _raf=false, _rafId=0, _stick=true, ansDirty=false, thinkDirty=false;
 function paint(){
   _raf=false;
   if(thinkDirty){ thinkDirty=false; if(thinkingEl){ const b=thinkingEl.querySelector('.body'); if(b) b.textContent=thoughtText; } }
   if(ansDirty){ ansDirty=false; if(curAnswerEl) renderMarkdown(curAnswerEl, curAnswerText); }
   if(_stick) convo.scrollTop=convo.scrollHeight;
 }
-function repaint(){ _stick=nearBottom(); if(_raf) return; _raf=true; requestAnimationFrame(paint); }
+function repaint(){ _stick=nearBottom(); if(_raf) return; _raf=true; _rafId=requestAnimationFrame(paint); }
+/* Force any pending coalesced paint to land NOW. A burst session replay delivers history in a
+   tight loop, so resetTurn()/the per-message messageId switch can null curAnswerEl BEFORE the
+   scheduled rAF fires — leaving the answer row blank (AUD1-01). Call this right before nulling
+   the accumulators so the pending answer/thought is written into its element first. */
+function flushPaint(){
+  if(_raf){ try{ cancelAnimationFrame(_rafId); }catch(e){} _raf=false; }
+  if(thinkDirty){ thinkDirty=false; if(thinkingEl){ const b=thinkingEl.querySelector('.body'); if(b) b.textContent=thoughtText; } }
+  if(ansDirty){ ansDirty=false; if(curAnswerEl) renderMarkdown(curAnswerEl, curAnswerText); }
+}
 
 function appendAnswer(delta){
   noteOutput();
@@ -759,7 +797,7 @@ function renderTool(s){
     line.appendChild(name);
 
     const timeTxt = running ? 'running…' : failed ? 'error' : fmtElapsed(s);
-    if(timeTxt){ const t=document.createElement('span'); t.className='ttime'; t.style.color=failed?'#ff6b6b':'#46544c'; t.textContent=' · '+timeTxt; line.appendChild(t); }
+    if(timeTxt){ const t=document.createElement('span'); t.className='ttime'; t.style.color=failed?'#ff6b6b':'#46544c'; t.textContent='· '+timeTxt; line.appendChild(t); }   /* leading gap comes from .ttime margin (UI-11) */
     wrap.appendChild(line);
 
     /* ---- todowrite checklist ---- */
@@ -827,7 +865,7 @@ function onUpdate(u){
   // merge into one blob. Live turns are untouched.
   if(replaying){
     const mid=u.messageId||u.messageID||null;
-    if(mid && mid!==replayMsgId){ replayMsgId=mid; curAnswerEl=null; curAnswerText=''; replayUserEl=null; clearThinking(); }
+    if(mid && mid!==replayMsgId){ flushPaint(); replayMsgId=mid; curAnswerEl=null; curAnswerText=''; replayUserEl=null; clearThinking(); }   // paint the finished message before switching (AUD1-01)
     if(u.sessionUpdate==='user_message_chunk'){
       const t=textOf(u.content);
       if(t!=null){
@@ -894,7 +932,7 @@ function showPermission(p){
   panel.appendChild(hint);
 
   withScroll(()=>{ log.appendChild(panel); });
-  activePerm={ toolCallId:p.toolCallId, options:opts, el:panel, idx:0, buttons };
+  activePerm={ toolCallId:p.toolCallId, options:opts, el:panel, idx:0, buttons, shownAt:performance.now() };
   highlightPerm(0);
   setStatus('perm');
 }
@@ -915,10 +953,30 @@ function replyPermission(optionId){
   ap.el.appendChild(d);
   setStatus('busy');   // the turn continues
 }
+/* Is another modal surface (palette / '/'&'@' dropdown / leader / settings) currently open?
+   The permission + picker keyboard owners must step aside for it, otherwise keys typed into
+   the palette leak into them. */
+function otherSurfaceOpen(){
+  const C=window.AgentOmegaCommands;
+  if(C){ if(C.palette&&C.palette.open) return true;
+         if(C.autocomplete&&C.autocomplete.visible) return true;
+         if(C.leader&&C.leader.pending) return true; }
+  if(window.AgentOmegaSettings&&window.AgentOmegaSettings._state&&window.AgentOmegaSettings._state.open) return true;
+  return false;
+}
 /* permission keyboard ownership: highest priority in the unified pipeline */
+const PERM_KEY_DEBOUNCE_MS=200;   // swallow answer-keys for a beat after render so an in-flight keystroke can't auto-answer
+function permJustShown(){ return activePerm && activePerm.shownAt!=null && (performance.now()-activePerm.shownAt)<PERM_KEY_DEBOUNCE_MS; }
 function permissionKeydown(e){
   if(!activePerm) return false;
+  // Yield while another surface owns input — else a digit/Enter typed into the palette (or
+  // settings) would silently ANSWER the pending permission, granting allow-once (AUD1-02).
+  if(otherSurfaceOpen()) return false;
   const k=e.key;
+  // Safety debounce: for ~200ms after the box first renders, ignore the ANSWER keys (digits + Enter)
+  // so a keystroke the user was mid-typing can't instantly grant a dangerous tool permission. The
+  // key is swallowed (not answered, not leaked to the prompt); navigation (arrows) + Esc stay live.
+  if((k>='1' && k<='9') || k==='Enter'){ if(permJustShown()){ e.preventDefault(); return true; } }
   if(k>='1' && k<='9'){ const i=+k-1; if(i<activePerm.options.length){ e.preventDefault(); replyPermission(activePerm.options[i].optionId); return true; } return false; }
   if(k==='ArrowRight'||k==='ArrowDown'){ e.preventDefault(); highlightPerm(activePerm.idx+1); return true; }
   if(k==='ArrowLeft'||k==='ArrowUp'){ e.preventDefault(); highlightPerm(activePerm.idx-1); return true; }
@@ -927,6 +985,27 @@ function permissionKeydown(e){
   return false;
 }
 window.registerKeydown(permissionKeydown, 100);
+
+/* Log-embedded picker panels (model/agent/sessions/timeline/effort) own Esc + digit keys WHILE
+   open: Esc dismisses the newest panel instead of the global Esc wiping the whole session
+   (UI-01), and 1–9 activate the matching row so the [n] keycaps aren't a dead affordance
+   (UI-02/AUD1-11). Runs below the permission panel (100) and yields to the palette/settings. */
+function panelKeydown(e){
+  if(activePerm||permPending) return false;
+  if(otherSurfaceOpen()) return false;
+  const panels=log?log.querySelectorAll('.panel'):[];
+  if(!panels.length) return false;
+  const panel=panels[panels.length-1];   // newest open picker
+  const k=e.key;
+  if(k==='Escape'){ e.preventDefault(); panel.remove(); return true; }
+  if(k>='1' && k<='9' && !e.ctrlKey && !e.altKey && !e.metaKey){
+    const rows=Array.prototype.slice.call(panel.querySelectorAll('.pick')).filter(r=>typeof r.onclick==='function');
+    const i=+k-1;
+    if(i<rows.length){ e.preventDefault(); rows[i].click(); return true; }
+  }
+  return false;
+}
+window.registerKeydown(panelKeydown, 90);
 
 /* =====================================================================
    QUESTION PANEL — finding + TODO (deliberately NOT wired; non-speculative)
@@ -981,7 +1060,7 @@ function pickerPanel(kind){
   if(!chatVisible()) showChat();
   const items = kind==='model' ? models : agents;
   const current = kind==='model' ? curModel : curAgent;
-  withScroll(()=>{
+  withScrollForce(()=>{
     const panel=document.createElement('div'); panel.className='panel';
     const t=document.createElement('div'); t.className='panel-title';
     t.textContent = kind==='model' ? ('select model  ('+items.length+')') : ('select agent  ('+items.length+')');
@@ -1049,7 +1128,7 @@ async function showSessions(){
   const list=await fetchSessions();
   if(list.__err){ sysLine('session list unavailable — <span style="color:#ff6b6b">'+escapeHtml(list.__err)+'</span>'); return; }
   if(!chatVisible()) showChat();
-  withScroll(()=>{
+  withScrollForce(()=>{
     const panel=document.createElement('div'); panel.className='panel';
     const t=document.createElement('div'); t.className='panel-title';
     t.textContent='sessions  ('+list.length+')'; panel.appendChild(t);
@@ -1189,7 +1268,7 @@ async function exportSession(){
 function timelinePanel(){
   const rows=[...log.querySelectorAll('.urow .utext')];
   if(!rows.length) return sysLine('no messages this session yet');
-  withScroll(()=>{
+  withScrollForce(()=>{
     const panel=document.createElement('div'); panel.className='panel';
     const t=document.createElement('div'); t.className='panel-title'; t.textContent='jump to message'; panel.appendChild(t);
     rows.forEach((el,i)=>{
@@ -1220,9 +1299,21 @@ window.effortCmd=effortCmd; window.thinkingCmd=thinkingCmd;
 /* =====================================================================
    Slash commands
    ===================================================================== */
-const THEMES={ amber:'#ffb454', green:'#66dd88', cyan:'#5fd3dd', pink:'#ff79c6' };
-function sysLine(html){ if(!chatVisible()) showChat(); withScroll(()=>{ const d=document.createElement('div'); d.className='arow sysline'; d.style.color='#7c8b82'; d.style.fontSize='20px'; d.innerHTML=html; log.appendChild(d); }); }
-function setTheme(arg){ const n=(arg||'').trim().toLowerCase(); if(!n){ themePicker(); return; } if(!THEMES[n]){ sysLine('themes — '+Object.keys(THEMES).map(t=>'<span style="color:var(--ac)">'+t+'</span>').join(' · ')); return; } document.documentElement.style.setProperty('--ac',THEMES[n]); document.body.style.setProperty('--ac',THEMES[n]); sysLine('theme → <span style="color:var(--ac)">'+n+'</span>'); }
+const THEMES={ amber:'#ffb454', green:'#66dd88', cyan:'#5fd3dd', pink:'#ff79c6', mix:'#ffb454' };
+function sysLine(html){ if(!chatVisible()) showChat(); withScrollForce(()=>{ const d=document.createElement('div'); d.className='arow'; d.style.color='#7c8b82'; d.style.fontSize='20px'; d.innerHTML=html; log.appendChild(d); }); }
+function setTheme(arg){
+  const n=(arg||'').trim().toLowerCase();
+  if(!n){ themePicker(); return; }
+  if(!THEMES[n]){ sysLine('themes — '+Object.keys(THEMES).map(t=>'<span style="color:var(--ac)">'+t+'</span>').join(' · ')); return; }
+  document.documentElement.style.setProperty('--ac',THEMES[n]);
+  try{ localStorage.setItem('ao.theme', n); }catch(e){}   // persist the CRT accent across restart — AUD1-13
+  // In Modern, body.theme-modern re-declares --ac for every descendant, so the accent change is a
+  // near no-op — say so honestly instead of claiming success (AUD1-10 / UI-12).
+  if(document.body.classList.contains('theme-modern'))
+    sysLine('phosphor accents apply to the <span style="color:var(--ac)">CRT</span> skin — <span style="color:var(--ac)">/skin crt</span> to use <span style="color:var(--ac)">'+n+'</span> (saved for when you switch)');
+  else
+    sysLine('theme → <span style="color:var(--ac)">'+n+'</span>');
+}
 function themePicker(){
   const names=Object.keys(THEMES);
   const cur=(document.documentElement.style.getPropertyValue('--ac')||'').trim().toLowerCase();
@@ -1254,7 +1345,7 @@ function effortCmd(arg){
     if(it){ wsSend({type:'setEffort', value:it.value}); return; }
   }
   if(!chatVisible()) showChat();
-  withScroll(()=>{
+  withScrollForce(()=>{
     const panel=document.createElement('div'); panel.className='panel';
     const t=document.createElement('div'); t.className='panel-title'; t.textContent='reasoning effort  ('+effortLevels.length+')'; panel.appendChild(t);
     effortLevels.forEach((it,i)=>{
@@ -1275,6 +1366,7 @@ function thinkingCmd(arg){
   if(a==='on'||a==='show') keepThoughts=true;
   else if(a==='off'||a==='hide') keepThoughts=false;
   else keepThoughts=!keepThoughts;
+  try{ localStorage.setItem('ao.keepThoughts', keepThoughts?'1':'0'); }catch(e){}   // persist across restart — AUD1-13
   sysLine('thinking traces <span class="cy">'+(keepThoughts?'shown':'hidden')+'</span>'+(keepThoughts?' — reasoning is kept as a collapsible “thought” block':'')+(effortLevels.length?'':' <span style="color:#7c8b82">(note: this model may not emit reasoning)</span>'));
 }
 function showStatus(){
@@ -1287,10 +1379,10 @@ function showStatus(){
 }
 function showHelp(){
   let base='<span style="color:#e9f2eb">commands</span><br>'+
-    '<span style="color:var(--ac)">/new</span> reset · <span style="color:var(--ac)">/help</span> · '+
+    '<span style="color:var(--ac)">/new</span> reset · <span style="color:var(--ac)">/help</span> · <span style="color:var(--ac)">/settings</span> · '+
     '<span style="color:var(--ac)">/model</span> [name] · <span style="color:var(--ac)">/agent</span> [name] · '+
-    '<span style="color:var(--ac)">/theme</span> [amber|green|cyan|pink] · <span style="color:var(--ac)">/skin</span> [crt|modern] · <span style="color:var(--ac)">/status</span><br>'+
-    '<span style="color:var(--ac)">/sessions</span> switch · <span style="color:var(--ac)">/rename</span> · <span style="color:var(--ac)">/fork</span> · <span style="color:var(--ac)">/compact</span> · <span style="color:var(--ac)">/undo</span> · <span style="color:var(--ac)">/export</span> · <span style="color:var(--ac)">/effort</span> [level] · <span style="color:var(--ac)">/thinking</span> [on|off]';
+    '<span style="color:var(--ac)">/theme</span> [amber|green|cyan|pink|mix] · <span style="color:var(--ac)">/skin</span> [crt|modern] · <span style="color:var(--ac)">/status</span><br>'+
+    '<span style="color:var(--ac)">/sessions</span> switch · <span style="color:var(--ac)">/rename</span> · <span style="color:var(--ac)">/fork</span> · <span style="color:var(--ac)">/compact</span> · <span style="color:var(--ac)">/undo</span> · <span style="color:var(--ac)">/redo</span> · <span style="color:var(--ac)">/export</span> · <span style="color:var(--ac)">/copy</span> · <span style="color:var(--ac)">/timeline</span> · <span style="color:var(--ac)">/effort</span> [level] · <span style="color:var(--ac)">/thinking</span> [on|off]';
   if(engineCommands && engineCommands.length){
     base+='<br><span style="color:#7c8b82">engine</span> '+engineCommands.map(c=>'<span style="color:var(--ac)">/'+escapeHtml((c&&c.name)||c)+'</span>').join(' · ');
   } else {
@@ -1300,7 +1392,7 @@ function showHelp(){
   sysLine(base);
 }
 function runEngineCommand(name,args){
-  if(busy) return;
+  if(busy){ sysLine('turn in progress — <span style="color:var(--ac)">/'+escapeHtml(name)+'</span> ignored (wait for it to finish, then re-run)'); return; }   // was a silent drop — AUD1-09
   if(!connOpen){ sysLine('engine offline — reconnecting…'); return; }
   addUser('/'+name+(args?(' '+args):''));
   resetTurn();
@@ -1336,6 +1428,14 @@ function handleCommand(text){
     case 'export': exportSession(); break;
     case 'copy': copySessionTranscript(); break;
     case 'timeline': timelinePanel(); break;
+    // palette-only surfaces — handle locally so they don't fall through to the engine as an
+    // "unknown command" (which the sidecar reports as a bogus invalid-API-key error) — AUD1-07
+    case 'settings': case 'config': case 'prefs': case 'preferences':
+      if(window.AgentOmegaSettings) window.AgentOmegaSettings.open((args||'').trim()||undefined);
+      else sysLine('settings are unavailable in this build'); break;
+    case 'exit': case 'quit': post({type:'close'}); break;
+    case 'mcps': case 'mcp': sysLine('<span style="color:#7c8b82;">the MCP picker is not available in the Agent Omega (ACP) build yet</span>'); break;
+    case 'connect': sysLine('<span style="color:#7c8b82;">/connect is not available in the Agent Omega (ACP) build yet</span>'); break;
     default: runEngineCommand(name,args);   // /init /review /tdd /debugging /skill-creator + custom -> engine
   }
 }
@@ -1398,6 +1498,48 @@ function doAbort(){
 }
 
 /* =====================================================================
+   Engine-down recovery (WS-01, app.html side)
+   When the sidecar reports the engine process died, show a loud persistent
+   banner with a Restart action instead of only a transcript line that scrolls
+   away. Restart asks the sidecar to relaunch the engine (sidecar must handle
+   {type:'restart'} — see the WS-01 sidecar handoff) and re-opens the socket.
+   The banner clears on the next `ready`.
+   ===================================================================== */
+function showEngineDown(msg){
+  const b=$('engineDown'); if(!b) return;
+  const m=$('engineDownMsg'); if(m) m.textContent = msg ? ('the engine has stopped: '+msg) : 'the engine has stopped — no messages can be sent';
+  b.classList.remove('hidden');
+}
+function hideEngineDown(){
+  const b=$('engineDown'); if(b) b.classList.add('hidden');
+  const btn=$('engineDownBtn'); if(btn){ btn.disabled=false; btn.textContent='Restart engine'; }
+}
+function restartEngine(){
+  const btn=$('engineDownBtn'); if(btn){ btn.disabled=true; btn.textContent='restarting…'; }
+  wsSend({type:'restart'});                       // handoff: sidecar restarts the engine process
+  sysLine('<span style="color:#7c8b82;">asking the engine to restart…</span>');
+  try{ if(!ws || ws.readyState>1) connect(); }catch(e){}   // socket may also have dropped
+}
+
+/* short workspace path for the home footer + titlebar (real workdir, not the old
+   hardcoded ~/dev/agent-omega placeholder) — AUD1-12 / UI-15 / UI-14 */
+function shortWorkdir(w){
+  var s=String(w||'').replace(/\\/g,'/').replace(/\/+$/,'');
+  if(!s) return '';
+  if(s.length<=44) return s;
+  var parts=s.split('/').filter(Boolean);
+  return '…/'+parts.slice(-2).join('/');
+}
+function applyWorkdir(){
+  var sw=shortWorkdir(workdir);
+  var base=(String(workdir||'').replace(/\\/g,'/').split('/').filter(Boolean).pop())||'';
+  document.querySelectorAll('.footPath').forEach(function(e){ e.textContent=sw; });
+  var wd=document.querySelector('.crt-tb-workdir'), sep=document.querySelector('.crt-tb-sep');
+  if(wd) wd.textContent=base;
+  if(sep) sep.style.display = base ? '' : 'none';   // no dangling em-dash unless there's a workspace to show
+}
+
+/* =====================================================================
    WebSocket transport (unchanged from app.html)
    ===================================================================== */
 let ws=null, reconnectT=null;
@@ -1445,7 +1587,8 @@ function onWs(m){
       if(m.workdir) workdir=m.workdir;
       if(Array.isArray(m.effortLevels)) effortLevels=m.effortLevels;
       if(m.effort!=null) curEffort=m.effort;
-      connOpen=true; updateMeta(); syncDiscovery();
+      connOpen=true; updateMeta(); syncDiscovery(); applyWorkdir();   // real workspace in footer/titlebar — AUD1-12/UI-15/UI-14
+      hideEngineDown();                                               // engine is back — clear any recovery banner (WS-01)
       if(!busy) setStatus('ready');
       break;
     case 'replay-start':   // session switch: clear the log, then history streams as normal updates
@@ -1454,6 +1597,7 @@ function onWs(m){
       log.innerHTML=''; resetTurn(); setStatus('busy');
       break;
     case 'replay-end':
+      flushPaint();   // paint the final replayed message before resetTurn() nulls the accumulators (AUD1-01)
       replaying=false; replayMsgId=null; replayUserEl=null; busy=false;
       resetTurn();
       if(m.error) addErr('could not load session: '+m.error);
@@ -1473,8 +1617,9 @@ function onWs(m){
     case 'model':        if(m.model!=null){ curModel=m.model; updateMeta(); } break;
     case 'agent':        if(m.agent!=null){ curAgent=m.agent; updateMeta(); } break;
     case 'effort':       if(m.effort!=null){ curEffort=m.effort; sysLine('effort → <span class="cy">'+escapeHtml(m.effort)+'</span>'); } break;
+    case 'notice':       { const t=(m.message||m.text||''); if(t){ const warn=(m.variant==='warning'||m.variant==='error'); sysLine('<span style="color:'+(warn?'#e0b060':'#7c8b82')+';">'+escapeHtml(t)+'</span>'); } break; }   // engine-forwarded toast (e.g. skill-router inert) rendered as a sysLine — PLG-4
     case 'error':        addErr(m.message||'engine error'); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('error'); break;
-    case 'engine-down':  connOpen=false; addErr('engine offline: '+(m.message||'process exited')); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('offline'); break;
+    case 'engine-down':  connOpen=false; addErr('engine offline: '+(m.message||'process exited')); showEngineDown(m.message); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('offline'); break;   // loud persistent banner + Restart path — WS-01
   }
 }
 
@@ -1814,8 +1959,9 @@ window.setSkin = function(skin){
   if(skin === 'modern'){
     document.documentElement.style.setProperty('--ac', '#6e7bff');
   } else {
-    /* restore amber; getComputedStyle falls back to :root value once inline is removed */
-    document.documentElement.style.setProperty('--ac', '#ffb454');
+    /* restore the persisted CRT accent (not always amber), so /theme survives a skin round-trip — AUD1-13/UI-12 */
+    var t=null; try{ t=localStorage.getItem('ao.theme'); }catch(e){}
+    document.documentElement.style.setProperty('--ac', (t && THEMES[t]) ? THEMES[t] : '#ffb454');
   }
   localStorage.setItem('ao.skin', skin);
   /* suppress the boot-slide on already-loaded switches */
@@ -1825,6 +1971,13 @@ window.setSkin = function(skin){
 (function(){
   var saved = localStorage.getItem('ao.skin');
   if(saved === 'modern') window.setSkin('modern');
+})();
+/* re-apply the persisted CRT accent theme (Modern keeps its own indigo accent) — AUD1-13 */
+(function(){
+  try{ var t=localStorage.getItem('ao.theme');
+    if(t && THEMES[t] && localStorage.getItem('ao.skin')!=='modern')
+      document.documentElement.style.setProperty('--ac', THEMES[t]);
+  }catch(e){}
 })();
 
 /* ---- boot ---- */

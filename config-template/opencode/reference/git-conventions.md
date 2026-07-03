@@ -2,7 +2,7 @@
 
 Purpose: how to make git commits and GitHub PRs safely and cleanly — only when asked, never destructively.
 
-Use the `bash` tool for all git and `gh` work. Use zsh/bash (the macOS default shell); use a `<<'EOF'` heredoc for multi-line messages. For any GitHub task (issues, PRs, checks, releases, or reading a GitHub URL), use the `gh` CLI.
+Use the `bash` tool for all git and `gh` work. It runs a POSIX shell (zsh/bash on macOS/Linux, git-bash on Windows); use a `<<'EOF'` heredoc for multi-line messages. For any GitHub task (issues, PRs, checks, releases, or reading a GitHub URL), use the `gh` CLI.
 
 ## Safety protocol (always)
 
