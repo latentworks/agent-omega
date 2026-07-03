@@ -414,7 +414,7 @@ body.theme-modern .think .pk {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 0;         /* hide " thinking" text node */
+  font-size: 0 !important;   /* hide " thinking" text node (beats inline 21px) */
   color: transparent;
   text-shadow: none;
 }
@@ -455,7 +455,7 @@ body.theme-modern .think .body { display: none !important; }
    the thought body, so show a static "thought" marker instead of a toggle. */
 body.theme-modern .think-done .pk::before,
 body.theme-modern .think-done .pk::after { animation: none; opacity: .45; }
-body.theme-modern .think-done .pk { font-size: 12px; color: #6b7178; cursor: default; }
+body.theme-modern .think-done .pk { font-size: 12px !important; color: #6b7178; cursor: default; }
 body.theme-modern .think-done .thchev { display: none; }
 
 /* ===================================================================
@@ -833,6 +833,9 @@ body.theme-modern .dk-row-del .dk-code { opacity: 1; }
 /* Row-background tints (add = subtle green, del = subtle red) */
 body.theme-modern .dk-row-add { background: rgba(62,207,142,.09); }
 body.theme-modern .dk-row-del { background: rgba(255,99,105,.09); }
+/* Sign column + count text: match the Modern green/red row tints */
+body.theme-modern .dk-add, body.theme-modern .dk-sign-add { color:#3ecf8e; }
+body.theme-modern .dk-del, body.theme-modern .dk-sign-del { color:#ff6369; }
 /* Footer border and filename chip */
 body.theme-modern .dk-foot { border-top-color: rgba(255,255,255,.06); }
 body.theme-modern .dk-file { color: #4d525a; }

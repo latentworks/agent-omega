@@ -72,8 +72,10 @@
     zai: "ZAI_API_KEY", zhipuai: "ZAI_API_KEY", glm: "ZAI_API_KEY",
   };
   function neededKey(value) { return PROVIDER_KEY[providerOf(value)] || null; }   // null => local
-  const FLAG = /(opus|sonnet|gpt-?5|gpt-?4\.?\d|o[34]\b|gemini.*(2\.5|pro)|grok-?[34]|deepseek.*(v3|r1|chat|reasoner)|mistral.*large|llama.*(70|405)|qwen.*(max|235|122)|kimi|glm-?4)/i;
-  function rankFrontier(list) { return list.slice().sort((a, b) => (FLAG.test(b.value + " " + b.name) ? 1 : 0) - (FLAG.test(a.value + " " + a.name) ? 1 : 0)); }
+  /* Every keyed/whitelisted CLOUD model the engine reported is a frontier
+     candidate — callers already filter to cloud, so selection is data-driven
+     (no per-generation regex to silently exclude new model ids). Order stable. */
+  function rankFrontier(list) { return list.slice(); }
 
   const FILL = "═".repeat(260);
 

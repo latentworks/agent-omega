@@ -154,7 +154,7 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         a.informativeText = """
         To begin, give it a model:
 
-        • Cloud — paste an API key (Anthropic, OpenAI, Google, DeepSeek, Moonshot, Z.AI). Open Settings with the gear icon (top-right), press ⌃, , or type /settings, then choose Vault.
+        • Cloud — paste an API key (Anthropic, OpenAI, Google, DeepSeek, Moonshot, Z.AI). Open Settings with the gear icon (top-right), press ⌘, or type /settings, then choose Vault.
 
         • Local — run a local server (llama.cpp / Ollama / LM Studio) and pick the “local” model.
 

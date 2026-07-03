@@ -436,6 +436,7 @@ wss.on('connection', (ws) => {
     try {
       switch (m.type) {
         case 'prompt': {
+          if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break }
           if (busy || !m.text) return
           busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
           // The engine can swallow a provider failure (e.g. a 401 from a bad API key) and
@@ -447,6 +448,7 @@ wss.on('connection', (ws) => {
           break
         }
         case 'command': {
+          if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break }
           if (busy || !m.name) return
           busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
           try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + m.name + (m.args ? ' ' + m.args : '') }] }); if (r.stopReason !== 'cancelled' && turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
@@ -459,6 +461,7 @@ wss.on('connection', (ws) => {
           break
         }
         case 'setModel': {
+          if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break }
           const prev = curModel; curModel = m.model
           // Switch via set-config-option, whose response carries the FRESH configOptions, rather
           // than unstable_setSessionModel (empty response): after a mid-session model change the
@@ -468,8 +471,8 @@ wss.on('connection', (ws) => {
           catch (e) { curModel = prev; log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + m.model + '" — ' + e.message }); broadcast({ type: 'model', model: curModel }) }
           break
         }
-        case 'setAgent': { const prev = curAgent; curAgent = m.agent; try { await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: curAgent }) } catch (e) { curAgent = prev; log('setAgent', e.message); broadcast({ type: 'error', message: 'Could not switch agent — ' + e.message }) } broadcast({ type: 'agent', agent: curAgent }); break }
-        case 'setEffort': { if (!effortLevels.length) { broadcast({ type: 'error', message: 'This model has no effort levels.' }); break } const prev = curEffort; curEffort = m.value; try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: curEffort }) } catch (e) { curEffort = prev; log('setEffort', e.message); broadcast({ type: 'error', message: 'Could not set effort — ' + e.message }) } broadcast({ type: 'effort', effort: curEffort }); break }
+        case 'setAgent': { if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break } const prev = curAgent; curAgent = m.agent; try { await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: curAgent }) } catch (e) { curAgent = prev; log('setAgent', e.message); broadcast({ type: 'error', message: 'Could not switch agent — ' + e.message }) } broadcast({ type: 'agent', agent: curAgent }); break }
+        case 'setEffort': { if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break } if (!effortLevels.length) { broadcast({ type: 'error', message: 'This model has no effort levels.' }); break } const prev = curEffort; curEffort = m.value; try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: curEffort }) } catch (e) { curEffort = prev; log('setEffort', e.message); broadcast({ type: 'error', message: 'Could not set effort — ' + e.message }) } broadcast({ type: 'effort', effort: curEffort }); break }
         case 'getCouncilConfig': {
           try { send(ws, { type: 'councilConfig', config: readCouncil() }) }
           catch (e) { log('getCouncilConfig', e.message); send(ws, { type: 'councilConfig', error: e.message }) }
@@ -515,8 +518,9 @@ wss.on('connection', (ws) => {
           } catch (e) { log('vaultRemove failed for', m.name, '(exit ' + (e.status ?? '?') + ')'); send(ws, { type: 'vaultKeys', error: 'Could not remove key — vault write failed.' }) }
           break
         }
-        case 'abort': { try { await conn.cancel({ sessionId }) } catch (e) { log('cancel', e.message) } drainPerms(); busy = false; break }
+        case 'abort': { if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break } try { await conn.cancel({ sessionId }) } catch (e) { log('cancel', e.message) } drainPerms(); busy = false; break }
         case 'new': {
+          if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break }
           if (busy) { try { await conn.cancel({ sessionId }) } catch {} drainPerms(); busy = false }   // don't orphan an in-flight turn
           try { await newSession(); broadcast(readyMsg()) } catch (e) { log('new', e.message); broadcast({ type: 'error', message: 'Could not start a new session — ' + friendlyError(e.message) }) } break
         }
@@ -541,6 +545,7 @@ wss.on('connection', (ws) => {
           // Switch to an existing session. The engine replays its full history as
           // ordinary update frames between replay-start / replay-end brackets.
           if (typeof m.sessionId !== 'string' || !m.sessionId.trim()) break
+          if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break }
           if (busy) { try { await conn.cancel({ sessionId }) } catch {} drainPerms(); busy = false }
           const prev = sessionId           // capture before replay-start wipes the UI; on failure we stay on this session
           broadcast({ type: 'replay-start', sessionId: m.sessionId })
