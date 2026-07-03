@@ -27,7 +27,8 @@ for b in \
   codesign --force --timestamp --options runtime --entitlements "$ENT" --sign "$DEV_ID" "$b"
 done
 
-echo "[2/5] sign the outer .app + verify the seal"
+echo "[2/5] sign nested Mach-O libs (hardened runtime + timestamp, NO app entitlements), then the outer .app + verify the seal"
+find "$APP/Contents/Resources" -type f \( -name '*.node' -o -name '*.dylib' \) -exec codesign --force --timestamp --options runtime --sign "$DEV_ID" {} +
 codesign --force --timestamp --options runtime --entitlements "$ENT" --sign "$DEV_ID" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 

@@ -32,6 +32,11 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$MAC/AgentOmega"  "$APP/Contents/MacOS/AgentOmega"
 cp "$MAC/Info.plist"  "$APP/Contents/Info.plist"
+# Stamp the bundle version from package.json (strip any pre-release suffix) so it can't drift from source
+VER="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$REPO/package.json" | head -1 | sed 's/-.*//')"
+[ -n "$VER" ] || { echo "could not derive version from package.json"; exit 1; }
+plutil -replace CFBundleShortVersionString -string "$VER" "$APP/Contents/Info.plist"
+plutil -replace CFBundleVersion            -string "$VER" "$APP/Contents/Info.plist"
 cp "$MAC/sidecar-bin" "$APP/Contents/Resources/sidecar"; chmod +x "$APP/Contents/Resources/sidecar"
 
 echo "[5/7] icon (agent-omega.ico -> AgentOmega.icns)"
@@ -57,8 +62,10 @@ cp    "$MAC/secrets.sh"       "$APP/Contents/Resources/secrets.sh"; chmod +x "$A
 mkdir -p "$APP/Contents/Resources/engine"
 cp "$ENGINE_BIN" "$APP/Contents/Resources/engine/opencode"; chmod +x "$APP/Contents/Resources/engine/opencode"
 
-echo "[7/7] arch check"
+echo "[7/7] arch check (ASSERT arm64 — a wrong-arch/non-Mach-O engine must NOT ship)"
 for b in "MacOS/AgentOmega" "Resources/sidecar" "Resources/engine/opencode"; do
-  echo "  $b: $(lipo -archs "$APP/Contents/$b" 2>/dev/null || echo '?')"
+  archs="$(lipo -archs "$APP/Contents/$b" 2>/dev/null || echo '?')"
+  echo "  $b: $archs"
+  echo "$archs" | grep -qw arm64 || { echo "arch check FAILED: $b is '$archs', not arm64 — aborting"; exit 1; }
 done
 echo "done -> $APP  ($(du -sh "$APP" | cut -f1))"
