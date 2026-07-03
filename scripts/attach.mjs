@@ -73,6 +73,7 @@ async function pickInstance() {
 
 const d = await pickInstance()
 let sessionId = null, apiPort = d.apiPort, curModel = '', busy = false, historyDone = false, ws = null, quitting = false
+let apiAuth = ''   // Basic auth for the engine REST API (from ready) — the engine requires it (RCE fix)
 let commands = [], cmdsHinted = false   // the engine's available slash commands (from ready / commands broadcast)
 let models = []   // available models [{value,name}] from ready — for /model switching
 let atLineStart = true   // track whether the cursor is at the start of a line (for clean interleaving)
@@ -85,7 +86,7 @@ async function replayHistory() {
   if (historyDone || !sessionId || !apiPort) return
   historyDone = true
   try {
-    const r = await fetch(`http://127.0.0.1:${apiPort}/session/${sessionId}/message`)
+    const r = await fetch(`http://127.0.0.1:${apiPort}/session/${sessionId}/message`, apiAuth ? { headers: { Authorization: apiAuth } } : undefined)
     if (!r.ok) { line(dim(`(couldn't load history: HTTP ${r.status})`)); return }
     const j = await r.json()
     const msgs = Array.isArray(j) ? j : (j.data || j.messages || [])
@@ -164,6 +165,7 @@ function onMessage(data) {
   switch (m.type) {
     case 'ready':
       sessionId = m.sessionId; apiPort = m.apiPort || apiPort; curModel = m.model || curModel
+      if (m.apiAuth) apiAuth = m.apiAuth   // set BEFORE replayHistory so the history fetch is authenticated
       if (Array.isArray(m.commands)) commands = m.commands
       if (Array.isArray(m.models)) models = m.models
       if (!historyDone) { line(dim(`attached to ${sessionId}  ·  model ${curModel}`)); replayHistory() }
