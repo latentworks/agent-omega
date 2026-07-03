@@ -49,8 +49,22 @@ else {
   skillNames = dirs.filter((d) => existsSync(join(skillDir, d, 'SKILL.md')))
   const broken = dirs.filter((d) => !existsSync(join(skillDir, d, 'SKILL.md')))
   if (broken.length) warn('skills: missing SKILL.md in: ' + broken.join(', '))
-  if (skillNames.length) pass('skills: ' + skillNames.length + ' discovered' + (broken.length ? '' : ', all have SKILL.md'))
-  else warn('skills: none discovered')
+  const noDesc = []
+  const emptyBody = []
+  for (const d of skillNames) {
+    if (d === 'router') continue // the router skill self-excludes; it is not a triggerable entry
+    let text = ''
+    try { text = stripBom(readFileSync(join(skillDir, d, 'SKILL.md'), 'utf8')) } catch { noDesc.push(d); continue }
+    const fm = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+    if (!fm || !/^description:\s*\S/m.test(fm[1])) noDesc.push(d)
+    if (fm && !text.slice(fm[0].length).trim()) emptyBody.push(d)
+  }
+  if (noDesc.length) warn('skills: no description in frontmatter (untriggerable via router): ' + noDesc.join(', '))
+  if (emptyBody.length) warn('skills: empty body after frontmatter: ' + emptyBody.join(', '))
+  if (skillNames.length) {
+    if (!broken.length && !noDesc.length) pass('skills: ' + skillNames.length + ' discovered, all have SKILL.md + description')
+    else info('skills: ' + skillNames.length + ' discovered, ' + (broken.length + noDesc.length) + ' problem(s) above')
+  } else warn('skills: none discovered')
 }
 
 // ---- 4) commands (discovery, descriptions, skill wiring) ------------------------
