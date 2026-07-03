@@ -239,7 +239,7 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         }
         // Post-checks: a partial/failed copy above is silent, so confirm the critical outputs
         // actually landed and fail loudly (rather than boot into a broken install) if any is missing.
-        for path in [dst + "/opencode.json", dst + "/skill-router", vdst] where !fm.fileExists(atPath: path) {
+        for path in [dst + "/opencode.json", dst + "/skill-router/index.js", dst + "/council/index.js", vdst] where !fm.fileExists(atPath: path) {
             fatalAlert("Agent Omega's install is incomplete — missing:\n\(path)\n\nPlease reinstall.")
         }
     }

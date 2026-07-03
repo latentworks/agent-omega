@@ -106,7 +106,10 @@
       "*.agent-omega*": "deny",
       "*vault.dat*": "deny",
       "printenv*": "deny",
-      "env*": "deny",
+      "env": "deny",
+      "env -*": "deny",
+      "env | *": "deny",
+      "env >*": "deny",
       "set": "deny",
       "export -p*": "deny",
       "*proc/self/environ*": "deny",
@@ -148,7 +151,6 @@
   "agent": {
     "general": { "disable": true },
     "explore": { "disable": true },
-    "scout": { "disable": true },
     "helper1": {
       "mode": "subagent",
       "model": "local/local-model",

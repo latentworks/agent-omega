@@ -219,8 +219,8 @@ const CouncilPlugin = async ({ client }) => {
                   for (const e of ex.entities) upsertEntity(memory, { name: e.name, type: e.type, project, t: now })
                   for (const f of ex.facts) addFact(memory, { ...f, project, sourceEpisode: ep, createdAt: now })
                 })
-                .catch(() => {})
-            } catch {}
+                .catch((e) => log(`council memory extract error: ${e}`))
+            } catch (e) { log(`council memory write error: ${e}`) }
           }
 
           // M2: if NOBODY responded, return a terminal honest message — never hand the lead a
