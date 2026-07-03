@@ -93,7 +93,7 @@ A page or endpoint can return its shell while every data call 500s — read the 
 
 ## Shape: TUI / interactive terminal app
 
-Editors, REPLs, curses UIs take over the terminal, so the bash tool can't drive them directly. Wrap them in **tmux** (run it through git-bash): start detached, send keys, capture the pane.
+Editors, REPLs, curses UIs take over the terminal, so the bash tool can't drive them directly. Wrap them in **tmux**: start detached, send keys, capture the pane.
 
 ```bash
 tmux new-session -d -s app -x 120 -y 40 './myapp'

@@ -20,7 +20,7 @@ import { loadSkills, route, buildDirective, lastUserMessages, ROUTER_N } from '.
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SKILL_DIR = process.env.ROUTER_SKILL_DIR || join(HERE, '..', 'skill')
 const ROUTER_BODY = (() => {
-  try { return readFileSync(join(SKILL_DIR, 'router', 'SKILL.md'), 'utf8').replace(/^---[\s\S]*?---\s*/, '') } catch { return '' }
+  try { return readFileSync(join(HERE, 'router.prompt.md'), 'utf8').replace(/^---[\s\S]*?---\s*/, '') } catch { return '' }
 })()
 const LOG = process.env.ROUTER_LOG || join(tmpdir(), 'skill-router.log')
 const DRYRUN = ['1', 'true'].includes(process.env.ROUTER_DRYRUN || '')
