@@ -139,6 +139,22 @@ const CouncilPlugin = async ({ client }) => {
             ? args.members.map((s) => ({ label: labelFor(s), model: s }))
             : cfg.members.map((m) => ({ label: m.label || labelFor(m.model), model: m.model })))
 
+          // labelFor collapses providers (e.g. anthropic/* → "Claude"), so distinct members can
+          // share a label. missingMembers/memberErrors/renderTranscript key identity on the label,
+          // so a collision would let one member hide another's failure and mis-attribute turns —
+          // disambiguate here so every member carries a UNIQUE label.
+          const labelCounts = {}
+          for (const m of members) labelCounts[m.label] = (labelCounts[m.label] || 0) + 1
+          const usedLabels = new Set()
+          for (const m of members) {
+            if (labelCounts[m.label] > 1) {
+              let label = `${m.label} (${m.model})`
+              while (usedLabels.has(label)) label += '*'
+              m.label = label
+            }
+            usedLabels.add(m.label)
+          }
+
           if (cfg.parseError && !(args.members && args.members.length)) {
             return `council/council.json is present but does not parse (${cfg.parseError}) — fix the JSON (or pass members=[...] to bypass it).`
           }

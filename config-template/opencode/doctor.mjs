@@ -38,7 +38,13 @@ if (cfg) {
   const missing = plugins.filter((p) => !existsSync(join(ROOT, p)))
   if (!plugins.length) warn('plugins: none configured')
   else if (missing.length) fail('plugins: missing file(s): ' + missing.join(', '))
-  else pass('plugins: ' + plugins.length + ' configured, all files present')
+  else {
+    const unparseable = plugins.filter((p) => {
+      try { execFileSync('node', ['--check', join(ROOT, p)], { stdio: ['ignore', 'ignore', 'pipe'] }); return false } catch { return true }
+    })
+    if (unparseable.length) fail('plugins: syntax error(s) — will crash the engine at load: ' + unparseable.join(', '))
+    else pass('plugins: ' + plugins.length + ' configured, all files present and parse')
+  }
 }
 
 // ---- 3) skills -----------------------------------------------------------------
@@ -113,7 +119,13 @@ if (cfg) {
       const prov = cfg.model.slice(0, slash)
       if (!enabled.includes(prov)) fail('default model: "' + cfg.model + '" points at provider "' + prov + '" not in enabled_providers (' + enabled.join(', ') + ')')
       else if (!(cfg.provider && cfg.provider[prov])) warn('default model: provider "' + prov + '" is enabled but has no provider config block')
-      else pass('default model: ' + cfg.model + ' (provider "' + prov + '" enabled and configured)')
+      else {
+        const p = cfg.provider[prov]
+        const modelId = cfg.model.slice(slash + 1)
+        const valid = [...(Array.isArray(p.whitelist) ? p.whitelist : []), ...Object.keys(p.models || {})]
+        if (valid.length && !valid.includes(modelId)) fail('default model: model id "' + modelId + '" is not offered by provider "' + prov + '" (whitelist/models: ' + valid.join(', ') + ') — typo\'d or removed, would fail at first turn')
+        else pass('default model: ' + cfg.model + ' (provider "' + prov + '" enabled and configured)')
+      }
     }
   }
 }
@@ -122,7 +134,12 @@ if (cfg) {
 if (cfg && typeof cfg.model === 'string' && cfg.model.includes('/')) {
   const prov = cfg.model.slice(0, cfg.model.indexOf('/'))
   const VAULT_KEYS = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY', google: 'GEMINI_API_KEY', deepseek: 'DEEPSEEK_API_KEY', moonshotai: 'KIMI_API_KEY', zai: 'ZAI_API_KEY' }
+  // The engine reads different env-var NAMES than the vault stores under (e.g. google's vault name is
+  // GEMINI_API_KEY but the engine reads GOOGLE_GENERATIVE_AI_API_KEY). Use VAULT_KEYS for the OS-vault
+  // lookup and ENGINE_ENV for the process.env check.
+  const ENGINE_ENV = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY', google: 'GOOGLE_GENERATIVE_AI_API_KEY', deepseek: 'DEEPSEEK_API_KEY', moonshotai: 'MOONSHOT_API_KEY', zai: 'ZAI_API_KEY' }
   const keyName = prov === 'local' ? null : VAULT_KEYS[prov]
+  const envName = prov === 'local' ? null : ENGINE_ENV[prov]
   if (keyName) {
     // Check the same OS vault the app injects from, platform-correct: Linux = the 0600 JSON file,
     // macOS = the Keychain via secrets.sh, Windows = DPAPI via secrets.ps1. Checking only vault.json
@@ -143,7 +160,7 @@ if (cfg && typeof cfg.model === 'string' && cfg.model.includes('/')) {
         } catch {}
       }
     }
-    if (!process.env[keyName] && !inVault) warn('active model: provider "' + prov + '" has no usable key — ' + keyName + ' is neither set in this shell nor present in ' + vaultLabel + '; the app injects from the vault at launch, so the selected model would launch with no key')
+    if (!process.env[envName] && !inVault) warn('active model: provider "' + prov + '" has no usable key — engine env ' + envName + ' is not set in this shell and ' + keyName + ' is not present in ' + vaultLabel + '; the app injects from the vault at launch, so the selected model would launch with no key')
   }
 }
 
