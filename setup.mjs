@@ -88,7 +88,7 @@ async function main() {
   if (!existsSync(VAULT_DIR)) mkdirSync(VAULT_DIR, { recursive: true })
   let vaultCmd = null
   if (isLinux) {
-    console.log('  Linux keys: environment variables first, optional fallback -> ' + path.join(VAULT_DIR, 'vault.json'))
+    console.log('  Linux keys: environment variables first, optional fallback -> ' + fileVault.pathForDocs)
   } else {
     const vaultScript = path.join(VAULT_DIR, isWin ? 'secrets.ps1' : 'secrets.sh')
     copyFileSync(isWin ? path.join(HERE, 'scripts', 'secrets.ps1') : path.join(HERE, 'mac', 'secrets.sh'), vaultScript)
