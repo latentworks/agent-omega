@@ -1221,7 +1221,7 @@ window.effortCmd=effortCmd; window.thinkingCmd=thinkingCmd;
    Slash commands
    ===================================================================== */
 const THEMES={ amber:'#ffb454', green:'#66dd88', cyan:'#5fd3dd', pink:'#ff79c6', mix:'#ffb454' };
-function sysLine(html){ if(!chatVisible()) showChat(); withScroll(()=>{ const d=document.createElement('div'); d.className='arow'; d.style.color='#7c8b82'; d.style.fontSize='20px'; d.innerHTML=html; log.appendChild(d); }); }
+function sysLine(html){ if(!chatVisible()) showChat(); withScroll(()=>{ const d=document.createElement('div'); d.className='arow sysline'; d.style.color='#7c8b82'; d.style.fontSize='20px'; d.innerHTML=html; log.appendChild(d); }); }
 function setTheme(arg){ const n=(arg||'').trim().toLowerCase(); if(!THEMES[n]){ sysLine('themes — '+Object.keys(THEMES).map(t=>'<span style="color:var(--ac)">'+t+'</span>').join(' · ')); return; } document.documentElement.style.setProperty('--ac',THEMES[n]); sysLine('theme → <span style="color:var(--ac)">'+n+'</span>'); }
 /* reasoning EFFORT — only meaningful where the current model exposes levels */
 function effortCmd(arg){
@@ -1769,7 +1769,6 @@ function wireDiscovery(){
     'session.export':  ()=>exportSession(),
     'session.sidebar.toggle': notAvail('the sidebar'),
     'mcp.list':        notAvail('the MCP picker'),
-    'variant.list':    ()=>effortCmd(''),
     'variant.cycle':   notAvail('variant cycling'),
     'model.cycle_recent': notAvail('model cycling'),
     'agent.cycle':     notAvail('agent cycling'),

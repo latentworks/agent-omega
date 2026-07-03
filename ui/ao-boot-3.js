@@ -492,15 +492,8 @@
   }
 
   function accentRgb() {
-    try {
-      var v = getComputedStyle(document.documentElement).getPropertyValue('--ac').trim();
-      if (v) {
-        var h = v.replace('#', '');
-        if (h.length === 3) h = h.split('').map(function(c){return c+c;}).join('');
-        var n = parseInt(h, 16);
-        return ((n>>16)&255)+','+((n>>8)&255)+','+(n&255);
-      }
-    } catch (_) {}
+    // Boot is a deliberate retro CRT takeover in both skins: keep the globe fixed
+    // amber to match the hardcoded boot text (retro -> modern reveal happens after).
     return '255,180,84';
   }
 
