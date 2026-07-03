@@ -492,7 +492,18 @@ async function start() {
   // OPENCODE_SERVER_PASSWORD turns on the engine's Basic auth so the API is NOT an open local RCE
   // (see API_PASSWORD above). --cors null then lets the legitimate file:// UI (Origin "null") read
   // responses; the password still 401s any unauthenticated null-origin / rebinding / local caller.
-  const engineFullEnv = { ...engineEnv, ...vaultEnv(), OPENCODE_SERVER_PASSWORD: API_PASSWORD, OPENCODE_SERVER_USERNAME: API_USER }
+  // Guarantee the AGENTS.md system prompt reaches the model. opencode's file-discovery for a GLOBAL
+  // AGENTS.md is unreliable — it ignores XDG_CONFIG_HOME/OPENCODE_CONFIG_DIR for AGENTS.md when any
+  // other AGENTS.md exists (opencode issues #7003 / #11534 / #22020), so on a fresh install the
+  // shipped heart silently never loads. We inject it EXPLICITLY via opencode.json's `instructions`
+  // field (which IS honored), pointed at this resolved absolute path. Same config-dir convention as
+  // the council/vault lookups above (XDG_CONFIG_HOME || ~/.config).
+  const _cfgDir = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')
+  // Forward slashes ONLY: opencode substitutes {env:AGENT_OMEGA_AGENTS} into the config TEXT before
+  // JSON-parsing, so a Windows backslash path (C:\...) would be an invalid JSON escape and break the
+  // whole config load. Normalize to '/'.
+  const _agentsPath = path.join(_cfgDir, 'opencode', 'AGENTS.md').replace(/\\/g, '/')
+  const engineFullEnv = { ...engineEnv, ...vaultEnv(), OPENCODE_SERVER_PASSWORD: API_PASSWORD, OPENCODE_SERVER_USERNAME: API_USER, AGENT_OMEGA_AGENTS: _agentsPath }
   const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR, '--port', String(API_PORT), '--cors', 'null'], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: engineFullEnv })
   engineProc = proc
   const myGen = ++engineGen           // this spawn's generation; a later spawn bumps it and orphans these handlers
