@@ -13,7 +13,8 @@ import { fileURLToPath } from 'node:url'
 const OWN_ROOT = dirname(fileURLToPath(import.meta.url))
 const roots = [OWN_ROOT, ...process.argv.slice(2)].filter((r, i, a) => existsSync(r) && a.indexOf(r) === i)
 
-function parseFrontmatter(text) {
+function parseFrontmatter(raw) {
+  const text = raw.replace(/^﻿/, '')   // strip UTF-8 BOM (Windows Notepad prepends it)
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/)
   if (!m) return { meta: {}, body: text }
   const meta = {}
