@@ -43,10 +43,15 @@ const child = spawn(process.execPath, [sidecar], {
 
 const url = pathToFileURL(app).href + '?host=browser&ws=' + encodeURIComponent(port) + '&token=' + encodeURIComponent(token)
 const opener = spawn('xdg-open', [url], { stdio: 'ignore', detached: true })
-opener.on('error', () => {
-  console.error('Could not run xdg-open. Open this URL manually:')
+let notified = false
+function noBrowser() {
+  if (notified) return
+  notified = true
+  console.error('Could not open a browser automatically. Open this URL manually:')
   console.error(url)
-})
+}
+opener.on('error', noBrowser)
+opener.on('exit', code => { if (code) noBrowser() })
 opener.unref()
 
 function stop() {

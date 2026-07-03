@@ -1540,7 +1540,7 @@ function onWs(m){
   /* ---------- exit chord (ctrl+c on empty) ---------- */
   let exitArmed=false, exitTimer=null, savedPH=null;
   function armExit(ta){
-    if(exitArmed){ post({type:'close'}); return; }
+    if(exitArmed){ if(HOST_KIND==='browser') sysLine('Close the browser tab to exit Agent Omega.'); else post({type:'close'}); return; }
     exitArmed=true; savedPH=ta.getAttribute('placeholder');
     ta.setAttribute('placeholder','press Ctrl+C again to exit');
     clearTimeout(exitTimer); exitTimer=setTimeout(()=>disarmExit(ta),1800);
@@ -1642,7 +1642,7 @@ function onWs(m){
     /* ctrl+d: delete-forward (with text) / exit (empty) */
     if(ctrl && !alt && !shift && key==='d'){
       e.preventDefault();
-      if(v===''){ post({type:'close'}); return; }
+      if(v===''){ if(HOST_KIND==='browser') sysLine('Close the browser tab to exit Agent Omega.'); else post({type:'close'}); return; }
       if(hasSel) replaceRange(ta,ss,se); else if(ss<v.length) replaceRange(ta,ss,ss+1);
       return;
     }
@@ -1781,7 +1781,7 @@ function wireDiscovery(){
     'theme.switch':    ()=>setTheme(''),
     'help.show':       ()=>showHelp(),
     'opencode.status': ()=>showStatus(),
-    'app.exit':        ()=>post({type:'close'}),
+    'app.exit':        ()=> HOST_KIND==='browser' ? sysLine('Close the browser tab to exit Agent Omega.') : post({type:'close'}),
     // messages.copy keeps command-discovery's default (copies the last .arow)
     // session commands — wired to the real handlers (same paths as typing /sessions, /rename …)
     'session.list':    ()=>showSessions(),

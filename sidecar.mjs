@@ -537,7 +537,8 @@ wss.on('connection', (ws) => {
             // (Linux: plain 0600 file write, no child process involved.)
             if (isLinux) fileVault.set(m.name, cleanVal)
             else execFileSync(VAULT_CMD, [...VAULT_PRE, 'set', m.name], { input: cleanVal, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
-            const note = (scrubbed ? 'Cleaned stray quotes/hidden characters from the paste. ' : '') + (busy ? 'Key saved — restart the app to apply it (a turn is in progress).' : 'Key saved — engine reloaded.')
+            const envShadowed = isLinux && !!process.env[envNameOf(m.name)]
+            const note = (scrubbed ? 'Cleaned stray quotes/hidden characters from the paste. ' : '') + (envShadowed ? envNameOf(m.name) + ' is set in your environment and takes precedence over the vault — unset it (or restart without it) for this saved key to take effect.' : (busy ? 'Key saved — restart the app to apply it (a turn is in progress).' : 'Key saved — engine reloaded.'))
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))   // pick up the new key without a manual restart
           } catch (e) { log('vaultSet failed for', m.name, '(exit ' + (e.status ?? '?') + ')'); send(ws, { type: 'vaultKeys', error: 'Could not store key — vault write failed.' }) }
@@ -548,7 +549,8 @@ wss.on('connection', (ws) => {
             if (typeof m.name !== 'string' || !m.name.trim()) { send(ws, { type: 'vaultKeys', error: 'name required' }); break }
             if (isLinux) fileVault.remove(m.name)
             else execFileSync(VAULT_CMD, [...VAULT_PRE, 'remove', m.name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-            const note = busy ? 'Key removed — restart the app to fully apply.' : 'Key removed — engine reloaded.'
+            const envShadowed = isLinux && !!process.env[envNameOf(m.name)]
+            const note = envShadowed ? 'Removed from the file vault, but ' + envNameOf(m.name) + ' is still set in your environment, so the key is still active — unset it to fully remove.' : (busy ? 'Key removed — restart the app to fully apply.' : 'Key removed — engine reloaded.')
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))
           } catch (e) { log('vaultRemove failed for', m.name, '(exit ' + (e.status ?? '?') + ')'); send(ws, { type: 'vaultKeys', error: 'Could not remove key — vault write failed.' }) }
