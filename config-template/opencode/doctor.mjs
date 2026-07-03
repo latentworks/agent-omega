@@ -7,6 +7,7 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs'
 import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
@@ -52,7 +53,6 @@ else {
   const noDesc = []
   const emptyBody = []
   for (const d of skillNames) {
-    if (d === 'router') continue // the router skill self-excludes; it is not a triggerable entry
     let text = ''
     try { text = stripBom(readFileSync(join(skillDir, d, 'SKILL.md'), 'utf8')) } catch { noDesc.push(d); continue }
     const fm = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)
@@ -79,6 +79,7 @@ else {
     try { text = stripBom(readFileSync(join(cmdDir, f), 'utf8')) } catch { fail('command ' + name + ': unreadable'); problems++; continue }
     const fm = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)
     if (!fm || !/^description:\s*\S/m.test(fm[1])) { warn('command ' + name + ': no description in frontmatter'); problems++ }
+    if (fm && !text.slice(fm[0].length).trim()) { warn('command ' + name + ': no body / no instructions'); problems++ }
     const refs = new Set()
     for (const re of [/the ['"]([a-z0-9_-]+)['"] skill/gi, /\bskills?\/([a-z0-9_-]+)/gi]) {
       let m; while ((m = re.exec(text)) !== null) refs.add(m[1].toLowerCase())
@@ -114,6 +115,35 @@ if (cfg) {
       else if (!(cfg.provider && cfg.provider[prov])) warn('default model: provider "' + prov + '" is enabled but has no provider config block')
       else pass('default model: ' + cfg.model + ' (provider "' + prov + '" enabled and configured)')
     }
+  }
+}
+
+// ---- 5c) active model's provider has a usable key --------------------------------
+if (cfg && typeof cfg.model === 'string' && cfg.model.includes('/')) {
+  const prov = cfg.model.slice(0, cfg.model.indexOf('/'))
+  const VAULT_KEYS = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY', google: 'GEMINI_API_KEY', deepseek: 'DEEPSEEK_API_KEY', moonshotai: 'KIMI_API_KEY', zai: 'ZAI_API_KEY' }
+  const keyName = prov === 'local' ? null : VAULT_KEYS[prov]
+  if (keyName) {
+    // Check the same OS vault the app injects from, platform-correct: Linux = the 0600 JSON file,
+    // macOS = the Keychain via secrets.sh, Windows = DPAPI via secrets.ps1. Checking only vault.json
+    // would false-warn a mac/Windows user whose key lives in the OS vault.
+    const isWin = process.platform === 'win32'
+    const isLinux = !isWin && process.platform !== 'darwin'
+    let inVault = false, vaultLabel = '~/.agent-omega/vault.json'
+    if (isLinux) {
+      try { const v = JSON.parse(stripBom(readFileSync(join(homedir(), '.agent-omega', 'vault.json'), 'utf8'))); inVault = Boolean(v && typeof v === 'object' && v[keyName]) } catch {}
+    } else {
+      const script = join(homedir(), '.agent-omega', isWin ? 'secrets.ps1' : 'secrets.sh')
+      vaultLabel = isWin ? 'the DPAPI vault' : 'the macOS Keychain'
+      if (existsSync(script)) {
+        try {
+          const cmd = isWin ? ['powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', script, 'get', keyName]] : ['sh', [script, 'get', keyName]]
+          const v = execFileSync(cmd[0], cmd[1], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+          inVault = Boolean(v) && !/^no secret named/i.test(v)
+        } catch {}
+      }
+    }
+    if (!process.env[keyName] && !inVault) warn('active model: provider "' + prov + '" has no usable key — ' + keyName + ' is neither set in this shell nor present in ' + vaultLabel + '; the app injects from the vault at launch, so the selected model would launch with no key')
   }
 }
 
@@ -172,6 +202,14 @@ if (cfg && cfg.permission) {
   const localBase = cfg && cfg.provider && cfg.provider.local && cfg.provider.local.options && typeof cfg.provider.local.options.baseURL === 'string' ? cfg.provider.local.options.baseURL : ''
   const extractUrl = process.env.ENGRAM_EXTRACT_URL || localBase
   if (!extractUrl) warn('engram auto-memory: no local extraction endpoint (set provider.local.options.baseURL or ENGRAM_EXTRACT_URL) — automatic fact distillation at compaction is OFF (only manual remember + the MEMORY.md index work)')
+}
+
+// ---- 9c) skill-router just-in-time directives ------------------------------------
+{
+  // Mirror skill-router's endpoint derivation: process.env.ROUTER_EXTRACT_URL || provider.local.options.baseURL.
+  const localBase = cfg && cfg.provider && cfg.provider.local && cfg.provider.local.options && typeof cfg.provider.local.options.baseURL === 'string' ? cfg.provider.local.options.baseURL : ''
+  const routerUrl = process.env.ROUTER_EXTRACT_URL || localBase
+  if (!routerUrl) warn('skill-router: no local endpoint (set provider.local.options.baseURL or ROUTER_EXTRACT_URL) — just-in-time skill directives are OFF (only the standing "use your skills" rule applies)')
 }
 
 // ---- 10) workspace ----------------------------------------------------------------
