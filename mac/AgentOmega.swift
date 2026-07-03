@@ -219,6 +219,8 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
                     try? fm.copyItem(atPath: srcNM + "/" + pkg, toPath: dstNM + "/" + pkg)
                 }
             }
+        } else {
+            fatalAlert("config-template missing from the app bundle — please reinstall")
         }
         // 2. secrets.sh -> ~/.agent-omega/secrets.sh, executable. Self-healing: also REFRESH a
         // stale copy (content differs from the shipped one) so an upgrade can't leave an old
@@ -234,6 +236,11 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
                 try? fm.copyItem(atPath: vsrc, toPath: vdst)
             }
             try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: vdst)
+        }
+        // Post-checks: a partial/failed copy above is silent, so confirm the critical outputs
+        // actually landed and fail loudly (rather than boot into a broken install) if any is missing.
+        for path in [dst + "/opencode.json", dst + "/skill-router", vdst] where !fm.fileExists(atPath: path) {
+            fatalAlert("Agent Omega's install is incomplete — missing:\n\(path)\n\nPlease reinstall.")
         }
     }
 
@@ -294,8 +301,14 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         a.messageText = "Agent Omega's engine couldn't start"
         a.informativeText = why + "\n\nDetails: \(logURL.path)"
         a.alertStyle = .warning
-        a.addButton(withTitle: "OK")
-        a.runModal()
+        a.addButton(withTitle: "Retry")
+        a.addButton(withTitle: "Open Log")
+        a.addButton(withTitle: "Quit")
+        switch a.runModal() {
+        case .alertFirstButtonReturn: startSidecar()
+        case .alertSecondButtonReturn: NSWorkspace.shared.activateFileViewerSelecting([logURL])
+        default: NSApp.terminate(nil)
+        }
     }
 
     func loadUI() {

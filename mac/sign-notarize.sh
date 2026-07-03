@@ -44,6 +44,6 @@ xcrun stapler staple "$APP"
 xcrun stapler staple "$DMG"
 
 echo "[5/5] verify Gatekeeper acceptance"
-spctl -a -t exec -vv "$APP" || true
+if ! spctl -a -t exec -vv "$APP"; then echo "FAILED: Gatekeeper rejected $APP" >&2; exit 1; fi
 xcrun stapler validate "$DMG"
 echo "done -> $DMG  (signed, notarized, stapled — opens by double-click after download)"

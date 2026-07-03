@@ -68,8 +68,9 @@ one model or vendor.
 
 This is a first-class concern, not a footnote.
 
-- **Encrypted local secrets vault.** Your API keys live in a DPAPI-encrypted vault,
-  readable only as your Windows user. Agent Omega reads a key out of the vault and
+- **Encrypted local secrets vault.** Your API keys live in an OS-encrypted secrets vault —
+  Windows DPAPI, the macOS login Keychain, or an encrypted file vault on Linux —
+  readable only as your own OS user. Agent Omega reads a key out of the vault and
   hands it to the engine's environment at launch — the key never gets written into
   code, into config you might commit, or into logs. A missing key is simply skipped
   (that provider stays dark); nothing is ever faked to cover a gap.
