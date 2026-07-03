@@ -1,9 +1,10 @@
 # Agent Omega
 
 A desktop coding agent that runs on your own machine. Agent Omega is a frameless
-Windows app — a single quiet window — wired to a coding engine that reads and
-writes your files, runs commands, searches your code, and reaches the web. You
-talk to it; it does the work.
+desktop app — a single quiet window — that ships on Windows and macOS from a
+single trunk, wired to a coding engine that reads and writes your files, runs
+commands, searches your code, and reaches the web. You talk to it; it does the
+work.
 
 The point isn't a bigger model. The point is the **harness** around the model:
 skills it can load on demand, real tools, persistent memory, a verify-before-done
@@ -118,9 +119,10 @@ for your say-so; reading and local edits just happen.
 
 ## Quick start
 
-Agent Omega runs on Windows and expects .NET 8, Node.js, and the WebView2 runtime.
-Full setup — dependencies, building the shell, wiring your models, and stocking the
-vault — lives in **[SETUP.md](SETUP.md)**.
+Agent Omega ships on Windows and macOS. On Windows it expects .NET 8, Node.js, and
+the WebView2 runtime; on macOS it's a self-contained Swift + WKWebView build (Apple
+Silicon, macOS 13+). Full setup — dependencies, building the shell, wiring your
+models, and stocking the vault — lives in **[SETUP.md](SETUP.md)**.
 
 The short version: build the WinForms app, make sure Node and the opencode engine
 binary are in place, add at least one model (a local one needs nothing but the model
@@ -140,8 +142,8 @@ Roadmap — flagged as what's ahead, not shipped yet:
 
 - **A council that doesn't just discuss but builds** — carrying a task through to a verified,
   working result, with real end-to-end examples to back the claim.
-- **macOS and Linux** — native builds/branches are in progress (the app is already largely
-  cross-platform under the Windows shell).
+- **Linux** — a native build/branch is in progress (the app is already largely
+  cross-platform under the desktop shell).
 - **A richer graphical workspace** — an editor-style view in the spirit of Cursor / Codex,
   alongside the current terminal-first UI.
 - **More themes** beyond the CRT + Modern pair.

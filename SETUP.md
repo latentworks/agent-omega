@@ -138,7 +138,7 @@ All optional — the defaults are derived from your `opencode.json`, so you norm
 
 ## Upgrading
 
-To move to a newer version, `git pull` and re-run `node setup.mjs`. The wizard detects an existing Agent Omega install and **updates the plugin/skill code in place while preserving your data** — it does not touch your `opencode.json`, your council roster (`council/council.json`), your memory (`memory/` and the engram database). Then re-run the build (step 7) and grab the matching engine binary if the release changed (step 5). Never hand-delete `~/.config/opencode` to "reinstall" — that wipes your memory and configuration.
+To move to a newer version, `git pull` and re-run `node setup.mjs`. The wizard detects an existing Agent Omega install and **updates the plugin/skill code in place while preserving your data** — it leaves your `opencode.json`, your council roster (`council/council.json`), and your memory (`memory/` and the engram database) untouched, and re-writes your model/key only if you explicitly opt in (pass `--source`, or answer *yes* to its "reconfigure your model / API key?" prompt). Then re-run the build (step 7) and grab the matching engine binary if the release changed (step 5). Never hand-delete `~/.config/opencode` to "reinstall" — that wipes your memory and configuration.
 
 ## Uninstalling
 
