@@ -94,6 +94,10 @@ export function isVerificationCommand(command) {
   // Compile-only syntax checks that would otherwise trip an EXEC pattern (`node <arg>`, etc.):
   // `node --check` only parses, it does not RUN — so it must NOT count as a verification run.
   if (/\bnode\s+(--check|-c)\b/.test(c) || /\bpython3?\s+-m\s+py_compile\b/.test(c) || /\bruby\s+-c\b/.test(c) || /\bphp\s+-l\b/.test(c)) return false
+  // A `<runner> --version`-style probe (e.g. `pytest --version`, `python3 -m pytest --version`)
+  // runs no real code either — if the final significant token is a bare version/help flag, it is a
+  // probe, not a verification run. Catches forms the leading-token guard above misses.
+  if (/(^|\s)(--version|-V|--help|-h)\s*$/.test(c)) return false
   if (EXEC_PATTERNS.some((re) => re.test(c))) return true
   if (COMPILE_ONLY_PATTERNS.some((re) => re.test(c))) return false
   return false

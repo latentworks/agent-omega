@@ -1,15 +1,21 @@
 // verify-guard: a turn-end guardrail for OpenCode.
 //
-// Two local-model failure modes are caught at the moment the agent tries to
+// Two local-model failure modes are observed at the moment the agent tries to
 // hand a turn back:
-//   1. Changed code but ran nothing to confirm it works  -> nudge to verify.
+//   1. Changed code but ran nothing to confirm it works  -> verify nudge.
 //   2. A command failed and the agent retried blindly / walked away -> classify
 //      the failure, inject root-cause advice in-place, and escalate on repeats.
 //
-// At most one re-prompt per idle (a pending failure outranks the verify nudge),
-// each capped per task and reset on a new user message. Safe by design: it only
-// re-prompts the agent, never runs commands itself; it skips subagent sessions;
-// every hook is wrapped so a bug here can never crash the agent.
+// IDLE RE-PROMPT IS OFF BY DEFAULT: both idle paths (the verify nudge and the
+// failure escalation) are gated on VERIFY_CAP / FAILURE_CAP, which both default
+// to 0 — iterate-loop now owns idle re-prompting. Out of the box verify-guard
+// only records/advises (it still classifies failures inline for iterate-loop to
+// read via metadata.verifyGuardFailure); it re-prompts nothing unless the caps
+// are raised. When raised: at most one re-prompt per idle (a pending failure
+// outranks the verify nudge), each capped per task and reset on a new user
+// message. Safe by design: it only re-prompts the agent, never runs commands
+// itself; it skips subagent sessions; every hook is wrapped so a bug here can
+// never crash the agent.
 //
 // The failure classifier is merged from Codex's parallel "verify-guard" draft;
 // its tag is preserved so eval records stay attributable.

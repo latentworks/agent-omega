@@ -458,7 +458,7 @@
       right: () => setC({ rounds: Math.min(5, c.rounds + 1) }),
       hint: HINT.council,
     });
-    valRow("Members", c.members.length + (c.members.length === 1 ? " selected" : " selected"), {
+    valRow("Members", c.members.length + (c.members.length === 1 ? " member" : " members"), {
       enter: () => setSection(1), hint: HINT.members,
     });
     valRow("Access", c.memberAccess === "readonly" ? "File-aware" : "Discuss-only", {

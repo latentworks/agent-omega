@@ -1294,7 +1294,7 @@ function showHelp(){
   if(engineCommands && engineCommands.length){
     base+='<br><span style="color:#7c8b82">engine</span> '+engineCommands.map(c=>'<span style="color:var(--ac)">/'+escapeHtml((c&&c.name)||c)+'</span>').join(' · ');
   } else {
-    base+='<br><span style="color:var(--ac)">/init</span> · <span style="color:var(--ac)">/review</span> · <span style="color:var(--ac)">/tdd</span> · <span style="color:var(--ac)">/debugging</span> · <span style="color:var(--ac)">/skill-creator</span>';
+    base+='<br><span style="color:var(--ac)">/brainstorming</span> · <span style="color:var(--ac)">/code-review</span> · <span style="color:var(--ac)">/commands</span> · <span style="color:var(--ac)">/debugging</span> · <span style="color:var(--ac)">/doctor</span> · <span style="color:var(--ac)">/run-app</span> · <span style="color:var(--ac)">/skill-creator</span> · <span style="color:var(--ac)">/tdd</span> · <span style="color:var(--ac)">/verify</span>';
   }
   base+='<br><span style="color:#54655b">ctrl+p</span> palette · <span style="color:#54655b">/</span> commands · <span style="color:#54655b">@</span> mentions · <span style="color:#54655b">ctrl+x</span> leader · <span style="color:#54655b">!</span> shell · <span style="color:#54655b">esc</span> stops / new';
   sysLine(base);
