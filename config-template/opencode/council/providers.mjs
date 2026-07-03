@@ -59,7 +59,3 @@ export function modelFor(spec, env = process.env) {
   const provider = (_cache[`${providerID}\0${apiKey || 'local'}`] ||= def.make(apiKey)) // key on the API key too — a rotated/per-call key must not be silently dropped
   return provider(modelID)
 }
-
-export function knownProviders() {
-  return Object.keys(SPECS).concat(Object.keys(LOCAL_SPECS))
-}

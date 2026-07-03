@@ -35,7 +35,7 @@ const SkillRouterPlugin = async ({ client }) => {
     try {
       const res = await client.session.messages({ path: { id: sessionID } })
       return lastUserMessages((res && res.data) || [], ROUTER_N)
-    } catch { return [] }
+    } catch (e) { log(`messages fetch error ${sessionID}: ${e}`); return [] }
   }
 
   return {

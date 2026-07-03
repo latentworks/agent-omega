@@ -15,8 +15,7 @@
 .m-modelpill-row,
 .m-sendbtn,
 .m-chips,
-.m-homefoot,
-.m-spinner {
+.m-homefoot {
   display: none;
 }
 
@@ -139,8 +138,6 @@ body.theme-modern .m-brand-dot {
   flex-shrink: 0;
 }
 body.theme-modern .m-brand-name { color: #c5c9cf; font-weight: 500; }
-body.theme-modern .m-brand-sep { color: #4a4f57; }
-body.theme-modern .m-brand-branch { color: #6b7178; }
 
 /* ⌘K pill */
 body.theme-modern .m-cmdkpill {
@@ -453,6 +450,13 @@ body.theme-modern .think .pk::after {
 }
 /* hide thought body in Modern (wall of debug text isn't part of the design) */
 body.theme-modern .think .body { display: none !important; }
+/* Settled thought (settleThinking adds .think-done but keeps .think): stop the
+   dots pulsing and drop the invisible/dead disclosure. Modern deliberately hides
+   the thought body, so show a static "thought" marker instead of a toggle. */
+body.theme-modern .think-done .pk::before,
+body.theme-modern .think-done .pk::after { animation: none; opacity: .45; }
+body.theme-modern .think-done .pk { font-size: 12px; color: #6b7178; cursor: default; }
+body.theme-modern .think-done .thchev { display: none; }
 
 /* ===================================================================
    ANSWER TEXT
@@ -808,6 +812,14 @@ body.theme-modern .tk-type    { color: #7dcfff; }
 body.theme-modern .tk-capital { color: #7aa2f7; }
 body.theme-modern .tk-default { color: #c0c5ce; }
 body.theme-modern .tk-punct   { color: #828a96; }
+
+/* ===================================================================
+   SEMANTIC COLORS — Modern
+   .cy/.gr are CRT phosphor colors used in sysLine()/showStatus()
+   output; remap to the Modern palette.
+   =================================================================== */
+body.theme-modern .cy { color: #7dcfff; }
+body.theme-modern .gr { color: #3ecf8e; }
 
 /* ===================================================================
    DIFF ROW STRUCTURE — Modern

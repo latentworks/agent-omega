@@ -139,7 +139,6 @@
     "messages.copy": "^X y", "session.undo": "^X u", "session.redo": "^X r",
     "opencode.status": "^X s", "editor.open": "^X e",
     "session.sidebar.toggle": "^X b",
-    "session.rename": "^R", "session.background": "^B", "session.pin.toggle": "^F",
     "agent.cycle": "tab", "agent.cycle.reverse": "shift+tab",
     "model.cycle_recent": "f2", "model.cycle_recent_reverse": "shift+f2",
     "variant.cycle": "^T", "app.exit": "^C",
@@ -216,7 +215,7 @@
       try { window.open(url, "_blank"); } catch (e) { notice("Agent Omega runs on the opencode engine — engine docs: " + url); }
     },
     "messages.copy": async () => {
-      const rows = document.querySelectorAll("#log .arow");
+      const rows = document.querySelectorAll("#log .arow:not(.sysline)");
       const last = rows[rows.length - 1];
       if (!last) return notice("no assistant message to copy");
       const ok = await copyText(last.innerText.trim());
@@ -737,7 +736,7 @@
       const labels = {
         n: "new", l: "sessions", m: "models", a: "agents", t: "theme",
         c: "compact", x: "export", g: "timeline", y: "copy msg",
-        u: "undo", r: "redo", s: "status", b: "sidebar", q: "exit",
+        u: "undo", r: "redo", s: "status", q: "exit",
         "1-9": "quick switch",
       };
       this.hintEl.innerHTML =

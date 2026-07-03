@@ -58,7 +58,7 @@ export function loadSkills(skillDir) {
 export function buildPrompt(routerBody, skills, messages) {
   const sk = Object.entries(skills || {}).map(([n, d]) => `- ${n}: ${d}`).join('\n')
   const ms = (messages || []).map((m) => `[user] ${m}`).join('\n')
-  return String(routerBody || '').replace('{skills}', sk).replace('{messages}', ms)
+  return String(routerBody || '').replace('{skills}', () => sk).replace('{messages}', () => ms)
 }
 
 // Find the valid skill names mentioned anywhere in the model's output, in the order

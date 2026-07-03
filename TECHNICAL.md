@@ -233,7 +233,7 @@ debate one task over N rounds on a shared transcript, then synthesizes a takeawa
 - **Fork contract.** Synthesis (`FORK_CONTRACT`) is explicit that the council is a consultant,
   never a gatekeeper: it never vetoes the user's goal. If a genuine fork emerges it presents
   "Path A / Path B" with honest downsides and asks the user to choose.
-- **Config — `council/council.json`** (roster, rounds, synthesizer, memberAccess). The sidecar
+- **Config — `council/council.json`** (members, rounds, synthesizer, memberAccess). The sidecar
   reads/validates/atomically writes it for the settings UI.
 
 ### 5.2 engram — persistent temporal-graph memory

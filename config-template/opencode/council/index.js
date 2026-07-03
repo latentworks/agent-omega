@@ -52,12 +52,6 @@ function labelFor(spec) {
   return LABELS[s.split('/')[0]] || s.split('/').pop()
 }
 
-function parseModel(spec) {
-  const s = String(spec)
-  const i = s.indexOf('/')
-  return { providerID: s.slice(0, i), modelID: s.slice(i + 1) }
-}
-
 const LOCAL_PROVIDERS = new Set(['local'])
 const CLOUD_PROVIDERS = new Set(['anthropic', 'openai', 'moonshotai', 'zai', 'deepseek', 'google'])
 
@@ -77,17 +71,29 @@ const FORK_CONTRACT =
   'Either way, resolve who-said-what into your own voice — never a play-by-play.'
 
 function loadConfig() {
+  const defaults = { rounds: 2, synthesizer: 'driver', autoSynthesizer: null, memberAccess: 'readonly', members: [], parseError: null }
+  let raw
   try {
-    const cfg = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
+    raw = readFileSync(CONFIG_PATH, 'utf8')
+  } catch (e) {
+    // ENOENT (no council.json) is fine — run on defaults. Any other read error is also non-fatal.
+    return defaults
+  }
+  try {
+    const cfg = JSON.parse(raw)
     return {
       rounds: cfg.rounds || 2,
       synthesizer: cfg.synthesizer || 'driver',
       autoSynthesizer: cfg.autoSynthesizer || null,
       memberAccess: cfg.memberAccess || 'readonly',
       members: Array.isArray(cfg.members) ? cfg.members : [],
+      parseError: null,
     }
-  } catch {
-    return { rounds: 2, synthesizer: 'driver', autoSynthesizer: null, memberAccess: 'readonly', members: [] }
+  } catch (e) {
+    // council.json is present but does not parse — surface it loudly, don't masquerade as "no members".
+    const msg = (e && e.message) || String(e)
+    log(`council.json present but failed to parse: ${msg}`)
+    return { ...defaults, parseError: msg }
   }
 }
 
@@ -132,6 +138,10 @@ const CouncilPlugin = async ({ client }) => {
           const members = (args.members && args.members.length
             ? args.members.map((s) => ({ label: labelFor(s), model: s }))
             : cfg.members.map((m) => ({ label: m.label || labelFor(m.model), model: m.model })))
+
+          if (cfg.parseError && !(args.members && args.members.length)) {
+            return `council/council.json is present but does not parse (${cfg.parseError}) — fix the JSON (or pass members=[...] to bypass it).`
+          }
 
           if (!members.length) {
             return 'Council has no members. Add some to council/council.json (or pass members=[...]).'
@@ -243,6 +253,7 @@ const CouncilPlugin = async ({ client }) => {
               synth = 'driver'
             }
           }
+          let synthFail = null // if a pinned synthesizer fails, disclose it in the driver fallback (no silent fall-through)
           if (synth && synth !== 'driver' && transcript.length) {
             const synthMember = { label: labelFor(synth), model: synth }
             const sres = await callModel(synthMember, {
@@ -256,15 +267,20 @@ const CouncilPlugin = async ({ client }) => {
                 metadata: { turns: transcript.length, rounds, synthesizer: synth },
               }
             }
-            log(`pinned synthesizer ${synth} failed (${(sres && sres.error) || 'empty reply'}) — falling back to driver synthesis`)
+            const reason = (sres && sres.error) || 'empty reply'
+            synthFail = { label: synthMember.label, reason }
+            log(`pinned synthesizer ${synth} failed (${reason}) — falling back to driver synthesis`)
           }
 
           // Driver synthesis (default): hand back the debate; the model that called
           // this tool reads it and gives the user the takeaway in its own voice —
           // OR, if a genuine fork emerged, surfaces both paths and asks the user.
+          const synthNote = synthFail
+            ? `\n⚠️ Pinned synthesizer ${synthFail.label} failed (${synthFail.reason}) — showing the raw debate to synthesize instead.`
+            : ''
           return {
             title: `Council · ${transcript.length} contributions`,
-            output: `${header}\n\n${debate}\n\n---\n` + FORK_CONTRACT,
+            output: `${header}${synthNote}\n\n${debate}\n\n---\n` + FORK_CONTRACT,
             metadata: { turns: transcript.length, rounds, synthesizer: 'driver' },
           }
         },

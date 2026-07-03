@@ -138,8 +138,9 @@ const VerifyGuardPlugin = async ({ client }) => {
       }
     },
 
-    event: async ({ event }) => {
+    event: async (input) => {
       try {
+        const event = input && input.event
         if (!event || event.type !== 'session.idle') return
         const id = event.properties?.sessionID
         if (!id) return
