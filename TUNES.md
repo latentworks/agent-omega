@@ -6,7 +6,9 @@ back it up**. Each tune states which local models it targets, how to serve them,
 standard it passed. Pick the tune that matches the model you run.
 
 > The full test battery and scoring oracles are kept private on purpose: publishing them would let
-> future configs "teach to the test." What we publish is the method, the rigor, and the results.
+> future configs "teach to the test." What we publish is the method, the rigor, and the results —
+> the full scientific write-up (hypotheses, controls, ablations, limitations) is in
+> **[EXPERIMENTS.md](EXPERIMENTS.md)**.
 
 ---
 
