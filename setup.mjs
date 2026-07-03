@@ -54,9 +54,14 @@ async function main() {
 
   // 1) plugin config -> CFG_DIR (fresh install, in-place UPGRADE, or refuse a foreign config)
   const tmpl = path.join(HERE, 'config-template', 'opencode')
+  // Runtime artifacts (memory DBs, WAL/SHM, logs, python bytecode) leak into the template when the
+  // engine or tests run against it. Never ship them to ANY install — fresh or upgrade — or a stranger
+  // receives the developer's engram brain DB and stray caches.
+  const RUNTIME_JUNK = (rel) => /(^|\/)__pycache__(\/|$)/.test(rel) || /\.(db|db-wal|db-shm|log|pyc)$/i.test(rel)
   const copyFilter = (isUpgrade) => (s, d) => {
     const rel = path.relative(tmpl, s).replace(/\\/g, '/')
     if (rel === '') return true
+    if (RUNTIME_JUNK(rel)) return false                             // never copy runtime junk (fresh install too)
     if (isUpgrade && PRESERVE(rel) && existsSync(d)) return false   // keep the user's config/roster/memory/db
     return true
   }

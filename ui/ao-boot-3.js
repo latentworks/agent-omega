@@ -77,17 +77,17 @@
   /* type: 'header' | 'ok' | 'auth' | 'nominal' */
   var BOOT_LINES = [
     /* 0  */ ['AGENT-OMEGA  SECURE BOOT   v2.3.0-beta',   'header' ],
-    /* 1  */ ['cpu 16c / 64gb / avx-512',            'ok'     ],
+    /* 1  */ ['detecting cpu features',               'ok'     ],
     /* 2  */ ['initializing kernel modules',          'ok'     ],
     /* 3  */ ['mounting /dev/agents',                 'ok'     ],
     /* 4  */ ['mounting /vault  luks-aes256',         'ok'     ],
     /* 5  */ ['spawning sandbox jail',                'ok'     ],
-    /* 6  */ ['allocating vram arena  12gb',          'ok'     ],
+    /* 6  */ ['allocating vram arena',                'ok'     ],
     /* 7  */ ['discovering local models',             'ok'     ],
     /* 8  */ ['loading active model',                 'ok'     ],
     /* 9  */ ['warming kv-cache  8192 ctx',           'ok'     ],
     /* 10 */ ['starting llama-swap daemon',           'ok'     ],
-    /* 11 */ ['binding 127.0.0.1:7860',              'ok'     ],
+    /* 11 */ ['binding local control socket',         'ok'     ],
     /* 12 */ ['resolving tool manifest',              'ok'     ],
     /* 13 */ ['negotiating tls-1.3',                  'ok'     ],
     /* 14 */ ['exchanging ed25519 keys',              'ok'     ],
@@ -115,6 +115,11 @@
   var startT = 0;
   var timers = [], finishTimers = [];
   var skipKey = null, skipClick = null;
+  // Skin-aware boot (UI-10): a user who chose the glassy Modern skin should NOT be shown the CRT
+  // phosphor power-on log at every launch (then hard-flipped to the glassy UI). app.html's setSkin
+  // persists the choice to localStorage 'ao.skin' before this script runs, so read it and, when
+  // Modern, run a short brand-only intro with the terminal boot log suppressed.
+  var MODERN = (function () { try { return localStorage.getItem('ao.skin') === 'modern'; } catch (_) { return false; } })();
 
   window.AOBoot = {
     skip:    function () { requestFinish('skip'); },
@@ -303,10 +308,8 @@
     var chromBrand = document.createElement('span');
     chromBrand.style.cssText = 'color:#9fb0a6;letter-spacing:.5px;';
     chromBrand.textContent = 'agent-omega';
-    var chromBranch = document.createElement('span');
-    chromBranch.style.color = '#3f4a44';
-    chromBranch.textContent = '— main';
-    chromL.appendChild(chromBar); chromL.appendChild(chromBrand); chromL.appendChild(chromBranch);
+    // no fake git branch — the corrected live titlebar shows only the workspace, not a hardcoded '— main'
+    chromL.appendChild(chromBar); chromL.appendChild(chromBrand);
     var chromR = document.createElement('div');
     chromR.style.cssText = 'display:flex;align-items:center;gap:15px;color:#3f4a44;font-size:15px;';
     chromR.innerHTML = '<span>—</span><span>▢</span><span style="color:#7a564a;">✕</span>';
@@ -325,7 +328,9 @@
     /* settle footer */
     settleFooter = document.createElement('div');
     settleFooter.className = 'aob-footer';
-    var fL = document.createElement('span'); fL.textContent = '~/dev/agent-omega';
+    // left slot mirrors the live home footer's workspace path, which is empty until a real workdir
+    // arrives — no hardcoded '~/dev/agent-omega' placeholder
+    var fL = document.createElement('span');
     var fR = document.createElement('span'); fR.textContent = 'agent-omega · v2.3.0-beta';
     settleFooter.appendChild(fL); settleFooter.appendChild(fR);
 
@@ -630,10 +635,26 @@
   /* ------------------------------------------------------------------ */
   /*  SEQUENCE                                                            */
   /* ------------------------------------------------------------------ */
+  /* Modern skin: a brief brand-only intro (Ω globe + AGENT ONLINE) on a clean dark backdrop
+     instead of the CRT phosphor boot log, then hand off to the app's own glassy reveal (UI-10). */
+  function playModern() {
+    try { root.classList.add('aob-modern'); root.style.background = '#0b0d10'; } catch (_) {}
+    if (termBox) termBox.style.display = 'none';   // suppress the phosphor boot log entirely
+    window.AOBoot.__proof.modern = true;
+    at(40, function () {
+      if (finishing) return;
+      if (onlineEl) onlineEl.style.opacity = '1';
+      try { globeStart = performance.now(); globeCanvas.style.opacity = '1'; drawGlobe(); } catch (_) {}
+    });
+    at(760, function () { requestFinish('modern'); });
+    at(MAX_HOLD, function () { requestFinish('timeout'); });
+  }
+
   function play() {
     startT = now();
     mounted = true;
     window.AOBoot.__proof.mountedAt = startT;
+    if (MODERN) { playModern(); return; }
 
     /* stream boot lines */
     for (var i = 0; i < NUM_LINES; i++) {

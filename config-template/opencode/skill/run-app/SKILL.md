@@ -26,13 +26,13 @@ Every shape is the same four beats. Only the mechanics differ.
 3. **Drive** one representative path that exercises the change — not the whole app, one path that proves it works.
 4. **Tear down** the process you started, before relaunching, or the next run collides (port in use, stale session).
 
-Backgrounding uses zsh/bash (the macOS default shell):
+Backgrounding uses a POSIX shell via the `bash` tool (zsh/bash on macOS/Linux, git-bash on Windows):
 - Append `&` to launch detached: `cmd >/tmp/app.log 2>&1 &` plus `$!` for the PID.
 - For a process that must outlive the shell, `nohup cmd >/tmp/app.log 2>&1 &`.
 
-zsh/bash gives you the familiar `&` / `$!` / `pkill` / `tmux` toolset; reach for it for TUIs and poll-loops.
+A POSIX shell gives you the familiar `&` / `$!` / `pkill` / `tmux` toolset; reach for it for TUIs and poll-loops.
 
-If the launch + poll + smoke sequence grows past a few lines, `write` it to a `smoke.sh` in this skill's directory and just run that — one command, exit code tells you if the app is healthy.
+If the launch + poll + smoke sequence grows past a few lines, `write` it to a `smoke.sh` in the project you're running (e.g. a `scripts/` or `.opencode/` folder in the workdir) and just run that — one command, exit code tells you if the app is healthy. Keep it with the project, not in this skill's global directory.
 
 ---
 
@@ -117,7 +117,7 @@ Watch for:
 - **Terminal size** — some TUIs hide content when narrow. Set a known-good `-x`/`-y`.
 - **The keybindings** — this is the app's "API." Note the keys you used (navigate / select / the screen you needed / quit).
 - **Capture readability** — `capture-pane -e` keeps escape sequences, `-J` joins wrapped lines.
-- More than a couple of poll lines → fold them into a `wait_for()` in a `driver.sh` beside this skill.
+- More than a couple of poll lines → fold them into a `wait_for()` in a `driver.sh` in the project you're running (a `scripts/`/`.opencode/` folder in the workdir), not beside this global skill.
 
 ---
 

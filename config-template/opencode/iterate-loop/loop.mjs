@@ -13,8 +13,16 @@
 import { isCodeEditTool, isCodeFile, isVerificationCommand } from '../verify-guard/core.mjs'
 import { isFailureResult } from '../verify-guard/failure-evals.mjs'
 
-export const MAX_SHOTS = Number(process.env.ITERATE_MAX_SHOTS || 3)  // failed verify cycles before escalating strategy
-export const HARD_CAP = Number(process.env.ITERATE_HARD_CAP || 12)   // total re-prompts before forcing the user rung (no infinite loop)
+// Clamp an env-supplied cap to a finite integer >= 1, else fall back to the safe default.
+// Same pattern as council/tunnel.mjs parseTimeout: a typo'd value ('twelve' -> NaN, or '' -> 0)
+// must NOT defeat the safety valve — `n >= NaN` / `n >= 0` would make the caps never fire and
+// leave the loop re-prompting forever with no notice.
+function clampCap(raw, def) {
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : def
+}
+export const MAX_SHOTS = clampCap(process.env.ITERATE_MAX_SHOTS, 3)  // failed verify cycles before escalating strategy
+export const HARD_CAP = clampCap(process.env.ITERATE_HARD_CAP, 12)   // total re-prompts before forcing the user rung (no infinite loop)
 // Web-search rung: only usable if the optional anon-web component is actually configured (its
 // env vars are set). On a default install anon-web isn't present, so the rung is OFF and the
 // ladder goes strategy -> user directly — never sending the agent to a dead web bridge.

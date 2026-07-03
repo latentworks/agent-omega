@@ -7,6 +7,7 @@ import { Writable, Readable } from 'node:stream'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import net from 'node:net'
 import { WebSocketServer } from 'ws'
 import * as acp from '@agentclientprotocol/sdk'
 import { fileURLToPath } from 'node:url'
@@ -48,6 +49,24 @@ let agentConfigId = 'mode', effortConfigId = 'effort', curEffort = '', effortLev
 let busy = false
 let turnOutput = 0   // meaningful updates seen this turn — 0 at turn-end means the engine swallowed a provider failure
 const pendingPerms = new Map()   // toolCallId -> resolve fn
+// Per-turn identity: busy/turnOutput are single globals, so a cancelled or superseded turn whose
+// conn.prompt() only SETTLES later must not touch the live turn's state (false empty-turn error,
+// premature turn-end, or unlocking busy under the next turn). Each turn stamps currentTurn; a
+// continuation only acts if it is still the current turn. new/load/abort/crash reset currentTurn=0.
+let turnSeq = 0, currentTurn = 0
+// Engine-generation guard: each spawn bumps engineGen. A stale exit/error event (the error+exit
+// pair for one proc, or an old proc we intentionally replaced during a restart) is ignored unless
+// it matches the current generation — so a delayed exit can't trigger a spurious second restart.
+let engineGen = 0
+let engineReviving = false   // an auto-restart after a crash is in flight (lets error copy say "restarting" not "restart the app")
+let crashRestartCount = 0, lastCrashAt = 0, crashRestartTimer = null
+let lastSessionBeforeCrash = null   // the session the user was on when the engine last died — restored by a MANUAL restart after the crash budget is spent (sessionId is already null by then)
+let restartInFlight = null           // coalesces overlapping restartEngine() triggers (WS 'restart' racing a vault auto-restart) so we spawn ONE engine, never two + an orphan
+let replaying = false                // true only while a loadSession's history is replaying through sessionUpdate — exempts those chunks from the tail-chunk bleed guard
+// How many times to auto-restart a crashing engine within the window before giving up (0 disables
+// auto-restart: the sidecar just reports engine-down and waits for a manual app restart).
+const MAX_CRASH_RESTARTS = Number(process.env.AO_MAX_CRASH_RESTARTS) >= 0 ? Math.floor(Number(process.env.AO_MAX_CRASH_RESTARTS)) : 5
+const CRASH_WINDOW_MS = 60000
 
 const WS_TOKEN = process.env.AO_WS_TOKEN || ''   // per-launch token from the shell; only the real app window has it
 // Per-launch password for the engine's HTTP API (Basic auth). The engine binds 127.0.0.1 but is
@@ -92,6 +111,46 @@ function writeAttachDescriptor() {
 function removeAttachDescriptor() { try { fs.unlinkSync(ATTACH_FILE) } catch {} }
 writeAttachDescriptor()
 
+// A quick loopback probe: 'open' if something is listening, 'refused' if the port is definitively
+// empty, 'timeout' if inconclusive. Used to age out stale attach descriptors.
+function probePort(port) {
+  return new Promise((resolve) => {
+    let done = false
+    const sock = net.connect({ host: '127.0.0.1', port })
+    const fin = (r) => { if (done) return; done = true; try { sock.destroy() } catch {}; resolve(r) }
+    sock.on('connect', () => fin('open'))
+    sock.on('error', (e) => fin(e && e.code === 'ECONNREFUSED' ? 'refused' : 'timeout'))
+    sock.setTimeout(400, () => fin('timeout'))
+  })
+}
+// Cleanup never runs on the shell's HARD kill (Program.cs pr.Kill(true) = TerminateProcess → no
+// exit/signal handler fires → removeAttachDescriptor is skipped), so descriptors leak one per app
+// close and accumulate forever; PID reuse then resurrects them as phantom instances in attach.mjs.
+// Sweep on startup: delete any descriptor whose owning pid is DEAD, or whose recorded control port
+// is definitively empty (a reused pid that's alive but isn't our sidecar). We never delete on an
+// inconclusive timeout, so a slow-but-live sibling instance is left intact. Best-effort, async,
+// non-blocking — it must never delay or fail sidecar boot.
+async function sweepStaleDescriptors() {
+  try {
+    const dir = path.dirname(ATTACH_FILE)
+    let ents; try { ents = fs.readdirSync(dir) } catch { return }
+    for (const name of ents) {
+      if (!name.endsWith('.json')) continue
+      const fp = path.join(dir, name)
+      if (fp === ATTACH_FILE) continue                       // never touch our own live descriptor
+      let d; try { d = JSON.parse(fs.readFileSync(fp, 'utf8')) }
+      catch { try { fs.unlinkSync(fp) } catch {}; continue }   // unparseable → junk
+      const pid = Number(d && d.pid), port = Number(d && d.port)
+      let dead = false
+      if (!pid) dead = true
+      else { try { process.kill(pid, 0) } catch (e) { if (e.code === 'ESRCH') dead = true } }   // ESRCH = gone; EPERM = alive but not ours
+      if (!dead && port) { if (await probePort(port) === 'refused') dead = true }               // pid alive but nothing on its port → reused pid
+      if (dead) { try { fs.unlinkSync(fp); log('swept stale attach descriptor', name) } catch {} }
+    }
+  } catch (e) { log('descriptor sweep', e.message) }
+}
+sweepStaleDescriptors()
+
 const clients = new Set()
 function send(ws, m) { try { if (ws.readyState === 1) ws.send(JSON.stringify(m)) } catch {} }
 function broadcast(m) { const s = JSON.stringify(m); for (const c of clients) { try { if (c.readyState === 1) c.send(s) } catch {} } }
@@ -101,6 +160,15 @@ function log(...a) { console.error('[sidecar]', ...a) }
 function friendlyError(msg) {
   const m = String(msg || '')
   const prov = (curModel || '').split('/')[0] || 'this provider'
+  // Engine process itself is gone (crash / killed): the ACP stream closes and every write EPIPEs.
+  // Do NOT blame the provider's network (the /connect/ pattern below would otherwise match "ACP
+  // connection closed") — the endpoint is fine, the local engine died. Say so, and note the
+  // auto-restart when one is underway so the user just retries instead of relaunching the app.
+  const engineDead = !engineProc || engineProc.exitCode !== null || engineProc.killed
+  if ((engineDead && /connection closed|EPIPE|stream|closed|ended|abort|ECONNRESET/i.test(m)) || /ACP connection closed/i.test(m))
+    return engineReviving
+      ? 'The engine stopped unexpectedly and is restarting automatically — retry in a moment.  [' + m.slice(0, 140) + ']'
+      : 'The engine has stopped — restart Agent Omega.  [' + m.slice(0, 140) + ']'
   if (/401|403|unauthor|authentication|api[_ -]?key|x-api-key|invalid.*key|missing.*key|no auth/i.test(m)) {
     // If the user has a key for some OTHER provider, the likely problem is the selected model, not a
     // missing key — point them at model switching instead of telling them to add a key they may have.
@@ -114,6 +182,23 @@ function friendlyError(msg) {
   if (/context size|context length|exceeded.*(size|token)|size limit|n_ctx|too many tokens|maximum context/i.test(m))
     return "The local model's context window is too small for Agent Omega's prompt. Restart your server with a larger context and fewer parallel slots — e.g. llama-server -c 32768 --parallel 2 (llama.cpp splits -c across slots, so keep -c/parallel ≥ ~16k).  [" + m.slice(0, 140) + ']'
   return m
+}
+
+// True while the engine is gone / going down (crash, kill, or an in-flight auto/manual restart). The
+// in-flight turn's own catch uses this to STAY SILENT: handleEngineGone / restartEngine own the single
+// authoritative engine-down message ("restarting automatically…" or "keeps crashing — restart"), so
+// the turn must not race a contradictory "restart Agent Omega" line onto the transcript ahead of it.
+function engineGoneOrRestarting() {
+  return engineReviving || restarting || !engineProc || engineProc.exitCode !== null || engineProc.killed
+}
+// When the engine is KILLED externally, the ACP stream closes and the pending prompt rejects with one
+// of these reasons BEFORE Node's 'exit' event fires — so engineProc.exitCode is still null and the
+// check above hasn't tripped yet. Recognise the engine-death shape of the rejection itself so the turn
+// still stays silent (handleEngineGone fires a beat later and owns the message). This is the LOCAL ACP
+// channel dying, distinct from a provider HTTP error (fetch failed / ECONNREFUSED / 401), which stays
+// loud and actionable.
+function isEngineDeathError(msg) {
+  return /ACP connection|connection closed|EPIPE|stream (closed|ended)|premature close/i.test(String(msg || ''))
 }
 
 // Vault -> engine env: read cloud API keys from the DPAPI vault (secrets.ps1) and
@@ -211,12 +296,31 @@ function engineErrorSince(offset) {
     return m ? m[1].replace(/\\"/g, '"').slice(0, 300) : ''
   } catch { return '' }
 }
+// Pure message builder (no I/O) so the diagnosis logic is unit-testable. `prov` is the model's
+// provider prefix, `detail` is the exact error the engine logged this turn (may be empty).
+function buildEmptyTurnMessage(prov, detail) {
+  const isLocal = prov === 'local' || prov === 'opencode'   // keyless: 'local' uses apiKey 'local-noauth', so there is no key to "fix"
+  const keyed = !!PROVIDER_ENV[prov]                        // a cloud provider that authenticates with a vault API key
+  const authShaped = /401|403|unauthor|authentication|api[_ -]?key|invalid.*key|missing.*key|no auth|credit|quota|expired|payment/i.test(detail)
+  if (detail) {
+    // Only steer to the Vault when the failure is actually auth-shaped, or the provider is a keyed
+    // cloud one. For a keyless local server a "Not Found"/route error means the model name or
+    // baseURL is wrong — sending the user to re-paste a key they don't have is a dead end (WS-05).
+    if (isLocal && !authShaped)
+      return prov + ' returned an error: "' + detail + '"  — check the local server: is the model you selected actually loaded there, and is its baseURL correct? Full log: ' + ENGINE_LOG
+    const advice = (authShaped || keyed)
+      ? '  — fix the key in Settings → Vault (paste the raw value, no quotes/spaces; it applies on engine reload).'
+      : ''
+    return prov + ' rejected the request: "' + detail + '"' + advice + ' Full log: ' + ENGINE_LOG
+  }
+  if (isLocal)
+    return 'The model returned nothing — the local server (' + prov + ') accepted the request but produced no output. Check that the model is loaded and healthy and its context window is large enough. Exact error, if any: ' + ENGINE_LOG
+  return 'The model returned nothing — ' + prov + "'s API most likely rejected the request. Usual causes: an invalid/expired API key (Settings → Vault: re-paste the raw key, no quotes or spaces), an account with no credit, or a model this key can't access. Exact error, if any: " + ENGINE_LOG
+}
 async function emptyTurnError() {
   await new Promise(r => setTimeout(r, 800))   // the engine flushes its log a beat AFTER the turn resolves — give it that beat
   const prov = (curModel || '').split('/')[0] || 'the provider'
-  const detail = engineErrorSince(turnLogOffset)
-  if (detail) return prov + ' rejected the request: "' + detail + '"  — fix the key in Settings → Vault (paste the raw value, no quotes/spaces; it applies on engine reload). Full log: ' + ENGINE_LOG
-  return 'The model returned nothing — ' + prov + "'s API most likely rejected the request. Usual causes: an invalid/expired API key (Settings → Vault: re-paste the raw key, no quotes or spaces), an account with no credit, or a model this key can't access. Exact error, if any: " + ENGINE_LOG
+  return buildEmptyTurnMessage(prov, engineErrorSince(turnLogOffset))
 }
 
 // model-id provider prefix -> the env var whose presence means that provider is usable.
@@ -320,6 +424,11 @@ class UIClient {
       broadcast({ type: 'commands', commands })
       return
     }
+    // Tail-chunk bleed guard: new/abort/load supersede a turn by setting currentTurn=0, but the engine
+    // can still have a few buffered assistant chunks in flight for that dead turn. Drop them so a
+    // cancelled turn's text can't render AFTER the fresh 'ready'/next turn. Replayed history (loadSession,
+    // which streams through this same path) is exempt — it legitimately arrives with no active turn.
+    if (!replaying && currentTurn === 0 && u && (u.sessionUpdate === 'agent_message_chunk' || u.sessionUpdate === 'agent_thought_chunk')) return
     if (u && u.sessionUpdate !== 'usage_update') turnOutput++   // text/thought/tool call/plan = real output
     broadcast({ type: 'update', update: u })
   }
@@ -394,38 +503,143 @@ async function start() {
   const engineFullEnv = { ...engineEnv, ...vaultEnv(), OPENCODE_SERVER_PASSWORD: API_PASSWORD, OPENCODE_SERVER_USERNAME: API_USER }
   const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR, '--port', String(API_PORT), '--cors', 'null'], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: engineFullEnv })
   engineProc = proc
-  proc.on('error', e => { log('spawn error', e.message); if (!restarting) { lastEngineDown = { type: 'engine-down', message: e.message }; broadcast(lastEngineDown) } })
-  proc.on('exit', c => { log('engine exited', c); if (!restarting) { lastEngineDown = { type: 'engine-down', message: 'engine exited ' + c }; broadcast(lastEngineDown) } })
+  const myGen = ++engineGen           // this spawn's generation; a later spawn bumps it and orphans these handlers
+  let gone = false                    // error AND exit can both fire for one proc — collapse to a single handling
+  const onGone = (reason) => { if (gone) return; gone = true; handleEngineGone(reason, myGen) }
+  proc.on('error', e => { log('spawn error', e.message); onGone('spawn error: ' + e.message) })
+  proc.on('exit', c => { log('engine exited', c); onGone('engine exited ' + c) })
   conn = new acp.ClientSideConnection((_a) => new UIClient(), acp.ndJsonStream(Writable.toWeb(proc.stdin), Readable.toWeb(proc.stdout)))
   await conn.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } } })
   await newSession()
   log('ready: session', sessionId, '| models', models.length, '| agents', agents.length)
   lastEngineDown = null
+  engineReviving = false   // the engine is back up; error copy stops advertising an in-flight restart
   broadcast(readyMsg())
+  subscribeEngineEvents(myGen)   // start/refresh the toast->notice forwarder for this engine generation (PLG-4)
+}
+
+// A plugin's client.tui.showToast (e.g. skill-router's one-time "classifier inert" notice) is
+// published on the engine's HTTP event bus but NEVER crosses the ACP channel the sidecar bridges,
+// so it's invisible in the WebView host. Subscribe to the engine's loopback /event SSE (Basic-auth,
+// same API port the UI uses) and re-broadcast toast events to the UI as {type:'notice'} frames the
+// app renders as a sysLine (PLG-4). Generation-guarded + aborted on engine restart so an old stream
+// can't outlive its engine.
+let eventAbort = null
+function forwardEngineEvent(evt) {
+  try {
+    const type = evt && evt.type
+    if (typeof type === 'string' && type.indexOf('toast') !== -1) {
+      const p = evt.properties || evt.body || {}
+      if (p && p.message) broadcast({ type: 'notice', message: String(p.message), title: p.title || '', variant: p.variant || 'info' })
+    }
+  } catch {}
+}
+async function subscribeEngineEvents(gen) {
+  try {
+    if (eventAbort) { try { eventAbort.abort() } catch {} }
+    const ac = new AbortController(); eventAbort = ac
+    const res = await fetch('http://127.0.0.1:' + API_PORT + '/event', { headers: { Authorization: API_AUTH, Accept: 'text/event-stream' }, signal: ac.signal })
+    if (!res.ok || !res.body) { log('event stream unavailable: HTTP', res.status); return }
+    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = ''
+    while (true) {
+      if (gen !== engineGen) { try { reader.cancel() } catch {}; return }   // a newer engine superseded this stream
+      const { value, done } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      let idx
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1)
+        if (!line.startsWith('data:')) continue
+        const payload = line.slice(5).trim()
+        if (!payload || payload === '[DONE]') continue
+        let evt; try { evt = JSON.parse(payload) } catch { continue }
+        forwardEngineEvent(evt)
+      }
+    }
+  } catch (e) { if (!(e && e.name === 'AbortError')) log('event stream', e.message) }
+}
+
+// The engine process died (crash / external kill / failed spawn) — NOT an intentional restartEngine
+// kill, which sets `restarting` and owns its own lifecycle. Surface it loudly, tear down the dead
+// session state so a reconnecting client isn't handed a stale "ready" (WS-01), settle any in-flight
+// turn, then attempt an auto-restart with exponential backoff (capped, so a permanently-broken
+// engine can't spin forever).
+function handleEngineGone(reason, gen) {
+  if (restarting) return               // an intentional restart is draining this exit; it will re-broadcast state
+  if (gen !== engineGen) return        // a stale event from a superseded generation
+  engineReviving = true                // mark revival at the very START so any in-flight turn's friendlyError says "restarting", not "restart the app" (the exhausted-budget branch below flips it back off)
+  const wasBusy = busy
+  const prev = sessionId               // the session the user was on — restore it after the engine comes back
+  lastSessionBeforeCrash = prev        // stash it: after the crash budget is spent sessionId is null, so a MANUAL restart falls back to this to avoid dumping the user into a blank session
+  conn = null; sessionId = null; busy = false; currentTurn = 0   // clear so WS 'connect'/'new'/'load'/prompt stop masking the dead engine
+  drainPerms()
+  const now = Date.now()
+  if (now - lastCrashAt > CRASH_WINDOW_MS) crashRestartCount = 0   // a long-stable engine that finally dies starts the counter fresh
+  lastCrashAt = now
+  if (crashRestartCount >= MAX_CRASH_RESTARTS) {
+    engineReviving = false
+    lastEngineDown = { type: 'engine-down', message: 'The engine keeps crashing (' + reason + ') and could not be restarted after ' + MAX_CRASH_RESTARTS + ' attempts — please restart Agent Omega.' }
+    log('engine gone, giving up after', MAX_CRASH_RESTARTS, 'restarts'); broadcast(lastEngineDown)
+    if (wasBusy) broadcast({ type: 'turn-end', stopReason: 'engine-down' })
+    return
+  }
+  crashRestartCount++
+  engineReviving = true
+  lastEngineDown = { type: 'engine-down', message: 'The engine stopped unexpectedly (' + reason + ') — restarting automatically…' }
+  log('engine gone:', reason, '-> auto-restart', crashRestartCount + '/' + MAX_CRASH_RESTARTS)
+  broadcast(lastEngineDown)
+  if (wasBusy) broadcast({ type: 'turn-end', stopReason: 'engine-down' })   // unstick the UI's generating state
+  const delay = Math.min(400 * 2 ** (crashRestartCount - 1), 8000)
+  if (crashRestartTimer) clearTimeout(crashRestartTimer)
+  crashRestartTimer = setTimeout(() => { crashRestartTimer = null; autoRecover(prev).catch(e => log('auto-recover failed', e.message)) }, delay)
+}
+
+// Reload the session the user was on (if any) after the engine comes back, so a crash mid-work
+// doesn't dump them into a blank session — mirrors restartEngine's restore path.
+async function restoreSession(prev) {
+  if (!prev || !conn || sessionId === prev) return
+  broadcast({ type: 'replay-start', sessionId: prev })
+  replaying = true   // history streams through sessionUpdate with no active turn — exempt it from the tail-chunk guard
+  try {
+    const r = await conn.loadSession({ sessionId: prev, cwd: WORKDIR, mcpServers: [] })
+    sessionId = prev
+    curModel = ''
+    extractConfig(r && r.configOptions)
+    broadcast({ type: 'replay-end', sessionId })
+    broadcast(readyMsg())
+  } catch (e) { log('restore-session', e.message); broadcast({ type: 'replay-end', sessionId: prev }) }
+  finally { replaying = false }
+}
+
+async function autoRecover(prev) {
+  await start()          // fresh engine + new session; broadcasts ready (and clears engineReviving on success)
+  await restoreSession(prev)
 }
 function readyMsg() { return { type: 'ready', sessionId, model: curModel, agent: curAgent, models, agents, commands, effort: curEffort, effortLevels, apiPort: API_PORT, apiAuth: API_AUTH, workdir: WORKDIR } }
+// The engine is not currently connected (crashed and mid-restart, or never came up). Return the
+// honest engine-down notice instead of letting a handler run against a null conn and either throw
+// an opaque error or (worse) mask the outage with a fake success.
+function engineDownNow() { return lastEngineDown || { type: 'engine-down', message: 'The engine is not running — ' + (engineReviving ? 'it is restarting, retry in a moment.' : 'restart Agent Omega.') } }
 
 // Re-spawn the engine so a just-changed vault key takes effect (the engine reads keys once, at spawn).
 async function restartEngine() {
-  restarting = true
-  const prev = sessionId   // restore the active session after the respawn instead of dumping the user into a fresh one
-  drainPerms(); busy = false
-  try { if (engineProc) engineProc.kill() } catch {}
-  conn = null; sessionId = null
-  await new Promise((r) => setTimeout(r, 350))
-  restarting = false
-  await start()   // fresh vaultEnv() -> the new/removed key is now reflected
-  if (prev && conn) {
-    broadcast({ type: 'replay-start', sessionId: prev })
-    try {
-      const r = await conn.loadSession({ sessionId: prev, cwd: WORKDIR, mcpServers: [] })
-      sessionId = prev
-      curModel = ''
-      extractConfig(r && r.configOptions)
-      broadcast({ type: 'replay-end', sessionId })
-      broadcast(readyMsg())
-    } catch (e) { log('restore-session', e.message); broadcast({ type: 'replay-end', sessionId: prev }) }
-  }
+  // Re-entrancy guard: a WS 'restart' can race a vaultSet/vaultRemove auto-restart. Without this both
+  // would kill+respawn, spawning two engines and orphaning one. Coalesce — a second trigger joins the
+  // in-flight restart instead of starting its own (the single respawn's vaultEnv() already sees every
+  // key written before it, so nothing is lost).
+  if (restartInFlight) return restartInFlight
+  restartInFlight = (async () => {
+    restarting = true
+    const prev = sessionId || lastSessionBeforeCrash   // fall back to the pre-crash session so a manual restart after the crash budget is spent still restores it (sessionId is null by then)
+    drainPerms(); busy = false
+    try { if (engineProc) engineProc.kill() } catch {}
+    conn = null; sessionId = null
+    await new Promise((r) => setTimeout(r, 350))
+    restarting = false
+    await start()   // fresh vaultEnv() -> the new/removed key is now reflected
+    await restoreSession(prev)
+  })()
+  try { return await restartInFlight } finally { restartInFlight = null }
 }
 
 wss.on('connection', (ws) => {
@@ -445,21 +659,35 @@ wss.on('connection', (ws) => {
       switch (m.type) {
         case 'prompt': {
           if (busy || !m.text) return
+          if (!conn) { broadcast(engineDownNow()); break }   // don't run against a dead engine — say it's down
+          const myTurn = ++turnSeq; currentTurn = myTurn
           busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
           // The engine can swallow a provider failure (e.g. a 401 from a bad API key) and
           // resolve the turn with NO output at all — the user would see pure silence. A
           // completed turn with zero meaningful updates is that case: say so.
-          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: m.text }] }); if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
-          catch (e) { broadcast({ type: 'error', message: friendlyError(e.message) }) }
-          finally { busy = false }
+          // The myTurn===currentTurn guards keep a turn that was superseded by new/load/abort/crash
+          // (which conn.prompt only SETTLES after) from firing a stale empty-turn error, a premature
+          // turn-end, or unlocking busy under the turn that replaced it.
+          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: m.text }] }); if (myTurn === currentTurn) { if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) } }
+          catch (e) { if (myTurn === currentTurn && !engineGoneOrRestarting() && !isEngineDeathError(e.message)) broadcast({ type: 'error', message: friendlyError(e.message) }) }   // engine gone/restarting -> handleEngineGone owns the one authoritative message; don't add a contradictory "restart the app" line
+          finally { if (myTurn === currentTurn) busy = false }
           break
         }
         case 'command': {
           if (busy || !m.name) return
+          if (!conn) { broadcast(engineDownNow()); break }
+          // An unknown /command resolves as a zero-output turn, which emptyTurnError would misattribute
+          // to an invalid API key — so a typo like /verfy tells the user to re-paste their key. Reject
+          // it up front against the engine's live command list instead (fail open if we have no list).
+          if (commands.length && !commands.some(c => c && (c.name === m.name || c.id === m.name))) {
+            broadcast({ type: 'error', message: 'Unknown command /' + m.name + ' — type /commands to see the available commands.' })
+            break
+          }
+          const myTurn = ++turnSeq; currentTurn = myTurn
           busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
-          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + m.name + (m.args ? ' ' + m.args : '') }] }); if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
-          catch (e) { broadcast({ type: 'error', message: friendlyError(e.message) }) }
-          finally { busy = false }
+          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + m.name + (m.args ? ' ' + m.args : '') }] }); if (myTurn === currentTurn) { if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) } }
+          catch (e) { if (myTurn === currentTurn && !engineGoneOrRestarting() && !isEngineDeathError(e.message)) broadcast({ type: 'error', message: friendlyError(e.message) }) }   // engine gone/restarting -> handleEngineGone owns the one authoritative message
+          finally { if (myTurn === currentTurn) busy = false }
           break
         }
         case 'permissionReply': {
@@ -514,10 +742,22 @@ wss.on('connection', (ws) => {
           } catch (e) { log('vaultRemove failed for', m.name, '(exit ' + (e.status ?? '?') + ')'); send(ws, { type: 'vaultKeys', error: 'Could not remove key — vault write failed.' }) }
           break
         }
-        case 'abort': { try { await conn.cancel({ sessionId }) } catch (e) { log('cancel', e.message) } drainPerms(); busy = false; break }
+        case 'abort': { currentTurn = 0; try { await conn.cancel({ sessionId }) } catch (e) { log('cancel', e.message) } drainPerms(); busy = false; break }
+        case 'restart': {
+          // Manual engine restart — the app's engine-down "Restart engine" button (WS-01). Reset the
+          // crash budget so a user-initiated restart isn't blocked by a prior give-up, cancel any
+          // pending auto-restart, then relaunch via the shared restartEngine() path.
+          if (crashRestartTimer) { clearTimeout(crashRestartTimer); crashRestartTimer = null }
+          crashRestartCount = 0
+          restartEngine().catch((e) => { log('manual restart', e.message); broadcast(engineDownNow()) })
+          break
+        }
         case 'new': {
-          if (busy) { try { await conn.cancel({ sessionId }) } catch {} drainPerms(); busy = false }   // don't orphan an in-flight turn
-          try { await newSession() } catch (e) { log('new', e.message) } broadcast(readyMsg()); break
+          if (busy) { currentTurn = 0; try { await conn.cancel({ sessionId }) } catch {} drainPerms(); busy = false }   // don't orphan an in-flight turn
+          if (!conn) { broadcast(engineDownNow()); break }   // engine is down — don't fake a fresh 'ready' on a dead session (WS-01)
+          try { await newSession(); broadcast(readyMsg()) }
+          catch (e) { log('new', e.message); broadcast(engineDownNow()) }   // newSession failed (engine likely just died): report it, don't mask with a stale ready
+          break
         }
         case 'findFile': {   // '@' file autocomplete: bounded walk of the session workdir (the ACP build has no HTTP serve)
           const q = String(m.query || '').toLowerCase(), out = []
@@ -540,8 +780,10 @@ wss.on('connection', (ws) => {
           // Switch to an existing session. The engine replays its full history as
           // ordinary update frames between replay-start / replay-end brackets.
           if (typeof m.sessionId !== 'string' || !m.sessionId.trim()) break
-          if (busy) { try { await conn.cancel({ sessionId }) } catch {} drainPerms(); busy = false }
+          if (busy) { currentTurn = 0; try { await conn.cancel({ sessionId }) } catch {} drainPerms(); busy = false }
+          if (!conn) { broadcast(engineDownNow()); break }   // engine is down — don't open a replay bracket that can't close
           broadcast({ type: 'replay-start', sessionId: m.sessionId })
+          replaying = true   // exempt the replayed history from the tail-chunk guard (it streams with no active turn)
           try {
             const r = await conn.loadSession({ sessionId: m.sessionId, cwd: WORKDIR, mcpServers: [] })
             sessionId = m.sessionId          // loadSession's response does not echo the id
@@ -551,8 +793,13 @@ wss.on('connection', (ws) => {
             broadcast(readyMsg())
           } catch (e) {
             log('load', e.message)
-            broadcast({ type: 'replay-end', sessionId: m.sessionId, error: friendlyError(e.message) })
-          }
+            // A missing/foreign session surfaces the engine's opaque "Internal error: OpenCode service
+            // failure" — name it here (not in friendlyError, where the same string could mean other
+            // things on a prompt path) so the user gets an actionable message (WS-06).
+            const notFound = /Internal error: OpenCode service|session not found|no such session|unknown session|not found/i.test(e.message || '')
+            const msg = notFound ? 'Session not found — it may have been deleted or belongs to a different workspace.' : friendlyError(e.message)
+            broadcast({ type: 'replay-end', sessionId: m.sessionId, error: msg })
+          } finally { replaying = false }
           break
         }
       }

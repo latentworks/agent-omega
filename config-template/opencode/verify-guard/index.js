@@ -31,6 +31,7 @@ import {
   buildHarnessMessage,
   classifyFailure,
   createFailureTracker,
+  hasFailureExitCode,
   isFailureResult,
 } from './failure-evals.mjs'
 
@@ -103,14 +104,21 @@ const VerifyGuardPlugin = async ({ client }) => {
         // the word "error" as a failed command.
         const bashCmd = (input.args && (input.args.command || input.args.cmd || input.args.script)) || ''
         if (output && String(input.tool || '').toLowerCase() === 'bash' && isFailureResult(output) && !isWebBridge(bashCmd) && !isBenignNonZero(bashCmd)) {
-          const classification = tracker.noteFailure(
-            input.sessionID,
-            classifyFailure({ tool: input.tool, args: input.args, title: output.title, output: output.output, metadata: output.metadata }),
-          )
-          s.pendingFailure = classification
-          output.output = `${output.output || ''}\n\n${buildHarnessMessage(classification)}`.trim()
-          output.metadata = { ...(output.metadata ?? {}), verifyGuardFailure: classification }
-          logEval(buildBehaviorEvalRecord({ sessionID: input.sessionID, event: 'tool_failure', classification, args: input.args, output: output.output }))
+          const classification0 = classifyFailure({ tool: input.tool, args: input.args, title: output.title, output: output.output, metadata: output.metadata })
+          // Don't stamp a bare-word false positive: an 'unknown_failure' (no known failure signature
+          // matched) that also has NO real non-zero exit code only tripped the soft word-regex on
+          // benign output — e.g. a clean `/commands` run printing the word "failure" in the
+          // /debugging skill description (SKL-8). Stamping it forces the model to explain away the
+          // noise to the user. A matched rule OR a genuine non-zero exit still classifies as before.
+          if (classification0.category === 'unknown_failure' && !hasFailureExitCode(output)) {
+            if (VERBOSE) log(`skip false-positive unknown_failure on bash: ${String(bashCmd).slice(0, 60)}`)
+          } else {
+            const classification = tracker.noteFailure(input.sessionID, classification0)
+            s.pendingFailure = classification
+            output.output = `${output.output || ''}\n\n${buildHarnessMessage(classification)}`.trim()
+            output.metadata = { ...(output.metadata ?? {}), verifyGuardFailure: classification }
+            logEval(buildBehaviorEvalRecord({ sessionID: input.sessionID, event: 'tool_failure', classification, args: input.args, output: output.output }))
+          }
         }
       } catch (e) {
         log(`tool.execute.after error: ${e}`)

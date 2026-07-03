@@ -139,7 +139,7 @@
     "messages.copy": "^X y", "session.undo": "^X u", "session.redo": "^X r",
     "opencode.status": "^X s", "editor.open": "^X e",
     "session.sidebar.toggle": "^X b",
-    "session.rename": "^R", "session.background": "^B", "session.pin.toggle": "^F",
+    "session.background": "^B", "session.pin.toggle": "^F",
     "agent.cycle": "tab", "agent.cycle.reverse": "shift+tab",
     "model.cycle_recent": "f2", "model.cycle_recent_reverse": "shift+f2",
     "variant.cycle": "^T", "app.exit": "^C",
@@ -292,6 +292,10 @@
       const isEngine = (c && c.kind === "engine") || id.indexOf("engine:") === 0;
       if (isEngine) {
         const name = (c && c.name) || id.replace(/^engine:/, "");
+        // A turn is active: runEngineCommand drops the command silently. Tell the
+        // user instead of a dead palette click that seems to do nothing.
+        const isBusy = (typeof window !== "undefined" && window.busy) || g("busy");
+        if (isBusy) return notice("turn in progress — /" + name + " ignored (wait for it to finish, then re-run)");
         const run = appFn("runEngineCommand");
         if (run) return run(name, args || "");
         return notice("engine command runner unavailable");
@@ -448,8 +452,10 @@
       if (k === "ArrowUp" || (e.ctrlKey && (k === "p" || k === "P"))) { this.move(-1); return true; }
       if (k === "PageDown") { this.move(8); return true; }
       if (k === "PageUp") { this.move(-8); return true; }
-      if (k === "Home") { const s = this.items.findIndex((r) => r.cmd); if (s >= 0) { this.sel = s; this.paint(); } return true; }
-      if (k === "End") { for (let i = this.items.length - 1; i >= 0; i--) if (this.items[i].cmd) { this.sel = i; this.paint(); break; } return true; }
+      // Home/End move the SELECTION only when the query is empty (or Ctrl is held);
+      // with text typed they must edit the caret, so let them fall through.
+      if (k === "Home" && (e.ctrlKey || !this.input.value)) { const s = this.items.findIndex((r) => r.cmd); if (s >= 0) { this.sel = s; this.paint(); } return true; }
+      if (k === "End" && (e.ctrlKey || !this.input.value)) { for (let i = this.items.length - 1; i >= 0; i--) if (this.items[i].cmd) { this.sel = i; this.paint(); break; } return true; }
       if (k === "Enter") { e.preventDefault(); this.choose(); return true; }
       return false; // typing flows to the search input
     },
@@ -647,7 +653,11 @@
     // deliberate=true when the row was chosen by arrow keys or click.
     complete(tab, deliberate) {
       const it = this.items[this.sel];
-      if (!it) { this.hide(); return; }
+      // Nothing to complete (e.g. '/share' — a real command hidden from the
+      // dropdown, so it shows "No matching items"). Hide and report NOT-handled
+      // so onKey lets the Enter reach the prompt and submit on the FIRST press
+      // instead of being swallowed into a double-Enter.
+      if (!it) { this.hide(); return false; }
       if (this.visible === "/") {
         const c = it.cmd;
         const q = this.query().toLowerCase();
@@ -699,7 +709,7 @@
       if (k === "ArrowDown" || (e.ctrlKey && (k === "n" || k === "N"))) { e.preventDefault(); this.move(1); return true; }
       if (k === "ArrowUp" || (e.ctrlKey && (k === "p" || k === "P"))) { e.preventDefault(); this.move(-1); return true; }
       if (k === "Tab") { e.preventDefault(); this.complete(true); return true; }
-      if (k === "Enter") { e.preventDefault(); this.complete(false); return true; }
+      if (k === "Enter") { if (this.complete(false) === false) return false; e.preventDefault(); return true; }
       return false; // other keys edit the input (and re-trigger onInput)
     },
   };
@@ -787,6 +797,14 @@
     const mod = isMac ? (e.metaKey || e.ctrlKey) : (e.ctrlKey && !e.metaKey);
     if (mod && !e.altKey && (e.key === "p" || e.key === "P")) {
       e.preventDefault(); Palette.show(); return true;
+    }
+    // Cmd/Ctrl+K is a palette alias too (the Modern titlebar pill historically showed ⌘K) — but
+    // ONLY when the prompt/editor isn't focused, because inside a textarea Ctrl+K is emacs
+    // kill-line and must not be stolen. Elsewhere (titlebar, home chrome) it opens the palette.
+    if (mod && !e.altKey && (e.key === "k" || e.key === "K")) {
+      var ae = document.activeElement;
+      var inText = ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT" || ae.isContentEditable);
+      if (!inText) { e.preventDefault(); Palette.show(); return true; }
     }
     return false;
   }
@@ -880,11 +898,29 @@
     refresh() { return Registry.refresh(); },
   };
 
+  // The Modern titlebar's command pill shipped inert (no click handler) and
+  // mislabeled "⌘K" — a shortcut nothing binds (the palette is Ctrl/Cmd+P, and
+  // Ctrl+K is emacs kill-line in the prompt, so we must NOT rebind it). Wire the
+  // click to open the palette and relabel it with the real shortcut per platform.
+  function wireCmdkPill() {
+    try {
+      const pill = document.querySelector(".m-cmdkpill");
+      if (!pill || pill.dataset.aoWired) return;   // shared flag with crt-settings.js wireGear() — exactly one pill click handler binds, whichever module runs first
+      pill.dataset.aoWired = "1";
+      const isMac = /Mac/.test(navigator.platform || "");
+      pill.textContent = isMac ? "⌘P" : "Ctrl P";
+      pill.style.cursor = "pointer";
+      pill.setAttribute("title", "Open command palette");
+      pill.addEventListener("click", (e) => { e.preventDefault(); Palette.show(); });
+    } catch (e) {}
+  }
+
   function boot() {
     injectCss();
     Palette.mount();
     Drop.mount();
     Leader.mountHint();
+    wireCmdkPill();
     installInputListeners();
     installKeydown();
     Registry.refresh(); // pull engine commands + agents once the serve is up

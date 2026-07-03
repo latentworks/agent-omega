@@ -165,11 +165,39 @@ function extractCommand(args = {}) {
 }
 
 function extractExitCode(output = '', metadata = {}) {
-  for (const key of ['exitCode', 'exit_code', 'code', 'status']) {
-    if (Number.isInteger(metadata?.[key])) return metadata[key]
+  // 'exit' first: that is the key opencode's own bash tool reports its exit code under. Reading it
+  // means a clean exit-0 run short-circuits isFailureResult BEFORE the soft word-regex below can
+  // false-positive on benign output that merely contains a word like "failure" (SKL-8: a clean
+  // /commands run printing the /debugging skill description was flagged as a failure).
+  // Only GENUINE exit-code fields carry a raw exit code: a numeric (or stringified-numeric) value
+  // here IS the process exit code.
+  for (const key of ['exit', 'exitCode', 'exit_code', 'code']) {
+    const v = metadata?.[key]
+    if (Number.isInteger(v)) return v
+    if (typeof v === 'string' && /^-?\d+$/.test(v.trim())) return Number(v.trim()) // some tools stringify the code ("0")
+  }
+  // 'status' is a coarse VERDICT field, not an exit code. Map a known string verdict explicitly
+  // (status:'error' -> failed, status:'ok' -> passed) and honor a stringified code ("0"); but do
+  // NOT read a bare number here as an exit code — an HTTP-style status:200 must not be misread as a
+  // non-zero exit, and an unrecognized string falls through to the output/word check below.
+  const st = metadata?.status
+  if (typeof st === 'string') {
+    const s = st.trim().toLowerCase()
+    if (/^-?\d+$/.test(s)) return Number(s)
+    if (/^(?:ok|okay|success|succeeded|pass|passed|done|complete|completed)$/.test(s)) return 0
+    if (/^(?:error|fail|failed|failure)$/.test(s)) return 1
   }
   const match = String(output).match(/exit(?:ed)?(?:\s+with)?(?:\s+code)?[:=]?\s*(-?\d+)/i)
   return match ? Number(match[1]) : undefined
+}
+
+// Hard evidence of failure: a real, non-zero exit code (not the soft word-regex fallback). Used to
+// suppress a bare-word false positive — an 'unknown_failure' with no known signature AND no non-zero
+// exit is almost always benign diagnostic output, not a failed command.
+export function hasFailureExitCode(r) {
+  const { output = '', metadata = {} } = r || {}
+  const code = extractExitCode(output, metadata)
+  return typeof code === 'number' && code !== 0
 }
 
 function makeRetryKey(tool, command, category) {

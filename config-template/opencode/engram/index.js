@@ -43,19 +43,27 @@ const EngramPlugin = async ({ client, directory }) => {
 
   return {
     'experimental.session.compacting': async (input) => {
-      const sessionID = input && input.sessionID // destructure inside (a null arg must not throw uncaught)
-      log(`compaction on ${sessionID} — capturing what falls off`)
-      const r = await engram.captureAtCompaction(sessionID, directory)
-      // A brief, visible "writing memory" pause — like Claude. The currently-loaded
-      // model does the distillation (no swap), so this is quick; bounded so a slow or
-      // hung extraction can never stall the session (it just finishes in the background).
-      if (r && r.extraction) {
-        r.extraction.then(() => recallCache.clear()).catch(() => {})   // once new facts are stored, invalidate cached recalls so the next turn re-queries
-        log('writing memory…')
-        // brief visible beat only — NEVER stall the user's next turn on a slow/flaky local link.
-        // The extraction itself continues in the background regardless of this cap.
-        const cap = Number(process.env.ENGRAM_COMPACT_WAIT_MS || 2500)
-        await Promise.race([r.extraction, new Promise((res) => setTimeout(res, cap))])
+      // Own try/catch for parity with every other hook (system.transform, skill-router,
+      // verify-guard, iterate-loop): a bug added to this body must never crash compaction
+      // uncaught. captureAtCompaction already guards its own body, but that is a thinner
+      // guarantee than a wrapper here.
+      try {
+        const sessionID = input && input.sessionID // destructure inside (a null arg must not throw uncaught)
+        log(`compaction on ${sessionID} — capturing what falls off`)
+        const r = await engram.captureAtCompaction(sessionID, directory)
+        // A brief, visible "writing memory" pause — like Claude. The currently-loaded
+        // model does the distillation (no swap), so this is quick; bounded so a slow or
+        // hung extraction can never stall the session (it just finishes in the background).
+        if (r && r.extraction) {
+          r.extraction.then(() => recallCache.clear()).catch(() => {})   // once new facts are stored, invalidate cached recalls so the next turn re-queries
+          log('writing memory…')
+          // brief visible beat only — NEVER stall the user's next turn on a slow/flaky local link.
+          // The extraction itself continues in the background regardless of this cap.
+          const cap = Number(process.env.ENGRAM_COMPACT_WAIT_MS || 2500)
+          await Promise.race([r.extraction, new Promise((res) => setTimeout(res, cap))])
+        }
+      } catch (e) {
+        log(`compacting hook error: ${e}`)
       }
     },
 
