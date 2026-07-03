@@ -814,6 +814,14 @@ body.theme-modern .tk-default { color: #c0c5ce; }
 body.theme-modern .tk-punct   { color: #828a96; }
 
 /* ===================================================================
+   SEMANTIC COLORS — Modern
+   .cy/.gr are CRT phosphor colors used in sysLine()/showStatus()
+   output; remap to the Modern palette.
+   =================================================================== */
+body.theme-modern .cy { color: #7dcfff; }
+body.theme-modern .gr { color: #3ecf8e; }
+
+/* ===================================================================
    DIFF ROW STRUCTURE — Modern
    42px gutter, 18px sign col; row-background tints instead of CRT's
    opacity fade on deletions.

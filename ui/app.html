@@ -1222,7 +1222,7 @@ window.effortCmd=effortCmd; window.thinkingCmd=thinkingCmd;
    ===================================================================== */
 const THEMES={ amber:'#ffb454', green:'#66dd88', cyan:'#5fd3dd', pink:'#ff79c6' };
 function sysLine(html){ if(!chatVisible()) showChat(); withScroll(()=>{ const d=document.createElement('div'); d.className='arow sysline'; d.style.color='#7c8b82'; d.style.fontSize='20px'; d.innerHTML=html; log.appendChild(d); }); }
-function setTheme(arg){ const n=(arg||'').trim().toLowerCase(); if(!n){ themePicker(); return; } if(!THEMES[n]){ sysLine('themes — '+Object.keys(THEMES).map(t=>'<span style="color:var(--ac)">'+t+'</span>').join(' · ')); return; } document.documentElement.style.setProperty('--ac',THEMES[n]); sysLine('theme → <span style="color:var(--ac)">'+n+'</span>'); }
+function setTheme(arg){ const n=(arg||'').trim().toLowerCase(); if(!n){ themePicker(); return; } if(!THEMES[n]){ sysLine('themes — '+Object.keys(THEMES).map(t=>'<span style="color:var(--ac)">'+t+'</span>').join(' · ')); return; } document.documentElement.style.setProperty('--ac',THEMES[n]); document.body.style.setProperty('--ac',THEMES[n]); sysLine('theme → <span style="color:var(--ac)">'+n+'</span>'); }
 function themePicker(){
   const names=Object.keys(THEMES);
   const cur=(document.documentElement.style.getPropertyValue('--ac')||'').trim().toLowerCase();

@@ -9,14 +9,14 @@
    window.escapeHtml / window.AgentOmegaCommands). It injects its own CSS,
    builds its own overlay DOM, and exposes:
 
-       window.AgentOmegaSettings.open(section?)   section: 'vault'|'models'|'council'
+       window.AgentOmegaSettings.open(section?)   section: 'vault'|'models'|'council'|'skin'
        window.AgentOmegaSettings.close()
        window.AgentOmegaSettings.onWs(msg)        -> true if it consumed the msg
 
-   THREE chained menus styled like an old DOS settings program (edit.com /
+   FOUR chained menus styled like an old DOS settings program (edit.com /
    BIOS setup / Norton Commander) inside AgentOmega's CRT-phosphor theme:
    a centred double-line box-drawing frame with the title inset in the top
-   border, a Vault · Models · Council tab row, an inverted phosphor
+   border, a Vault · Models · Council · Skin tab row, an inverted phosphor
    selection bar, ↑↓ move, ◄►/Enter change, Tab/◄► switch section, Esc back
    then close, and a bottom key-hint status line.
 
@@ -96,7 +96,7 @@
      ===================================================================== */
   const ST = {
     open: false,
-    section: 0,          // 0 vault · 1 models · 2 council
+    section: 0,          // 0 vault · 1 models · 2 council · 3 skin
     row: -1,             // -1 = tab row focused ; >=0 = index into nav
     nav: [],             // [{cell,left,right,enter,del,hint}]
     vaultNames: null,    // null = loading ; [] = empty
