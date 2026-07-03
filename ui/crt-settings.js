@@ -141,8 +141,6 @@
       synthesizer: (typeof c.synthesizer === "string" && c.synthesizer) ? c.synthesizer : "driver",
       memberAccess: c.memberAccess === "readonly" ? "readonly" : "none",
       members,
-      mode: c.mode === "auto" ? "auto" : "manual",
-      rung: ["minimal", "moderate", "partner"].indexOf(c.rung) >= 0 ? c.rung : "minimal",
     };
   }
   function ensureCouncil() { if (!ST.council) ST.council = normCouncil(null); }

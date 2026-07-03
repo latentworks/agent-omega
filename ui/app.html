@@ -1220,9 +1220,29 @@ window.effortCmd=effortCmd; window.thinkingCmd=thinkingCmd;
 /* =====================================================================
    Slash commands
    ===================================================================== */
-const THEMES={ amber:'#ffb454', green:'#66dd88', cyan:'#5fd3dd', pink:'#ff79c6', mix:'#ffb454' };
+const THEMES={ amber:'#ffb454', green:'#66dd88', cyan:'#5fd3dd', pink:'#ff79c6' };
 function sysLine(html){ if(!chatVisible()) showChat(); withScroll(()=>{ const d=document.createElement('div'); d.className='arow sysline'; d.style.color='#7c8b82'; d.style.fontSize='20px'; d.innerHTML=html; log.appendChild(d); }); }
-function setTheme(arg){ const n=(arg||'').trim().toLowerCase(); if(!THEMES[n]){ sysLine('themes — '+Object.keys(THEMES).map(t=>'<span style="color:var(--ac)">'+t+'</span>').join(' · ')); return; } document.documentElement.style.setProperty('--ac',THEMES[n]); sysLine('theme → <span style="color:var(--ac)">'+n+'</span>'); }
+function setTheme(arg){ const n=(arg||'').trim().toLowerCase(); if(!n){ themePicker(); return; } if(!THEMES[n]){ sysLine('themes — '+Object.keys(THEMES).map(t=>'<span style="color:var(--ac)">'+t+'</span>').join(' · ')); return; } document.documentElement.style.setProperty('--ac',THEMES[n]); sysLine('theme → <span style="color:var(--ac)">'+n+'</span>'); }
+function themePicker(){
+  const names=Object.keys(THEMES);
+  const cur=(document.documentElement.style.getPropertyValue('--ac')||'').trim().toLowerCase();
+  if(!chatVisible()) showChat();
+  withScroll(()=>{
+    const panel=document.createElement('div'); panel.className='panel';
+    const t=document.createElement('div'); t.className='panel-title'; t.textContent='select theme  ('+names.length+')'; panel.appendChild(t);
+    names.forEach((name,i)=>{
+      const row=document.createElement('div'); row.className='pick';
+      row.innerHTML='<span class="pk-key"></span><span class="pk-swatch" style="display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:8px;"></span><span class="pk-name" style="flex:1;"></span>';
+      row.querySelector('.pk-key').textContent=(i<9?('['+(i+1)+']'):'•');
+      row.querySelector('.pk-swatch').style.background=THEMES[name];
+      row.querySelector('.pk-name').textContent=name;
+      if(THEMES[name].toLowerCase()===cur){ const c=document.createElement('span'); c.className='pk-cur'; c.textContent='● current'; row.appendChild(c); }
+      row.onclick=()=>{ setTheme(name); panel.remove(); };
+      panel.appendChild(row);
+    });
+    log.appendChild(panel);
+  });
+}
 /* reasoning EFFORT — only meaningful where the current model exposes levels */
 function effortCmd(arg){
   if(!effortLevels.length){ sysLine('the current model has <span style="color:#7c8b82">no effort levels</span> — pick a reasoning model to control effort'); return; }
@@ -1759,7 +1779,7 @@ function wireDiscovery(){
     'session.list':    ()=>showSessions(),
     'session.share':   ()=>shareSession(),
     'session.unshare': ()=>unshareSession(),
-    'session.rename':  ()=>renameSession(''),
+    'session.rename':  ()=>insertSlashText('/rename '),
     'session.timeline':()=>timelinePanel(),
     'session.fork':    ()=>forkSession(),
     'session.compact': ()=>compactSession(),
