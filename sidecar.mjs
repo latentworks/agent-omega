@@ -172,11 +172,20 @@ const VAULT_TO_ENV = {
 const VAULT_LEGACY = { OPENAI_API_KEY: 'OPENAI_API', DEEPSEEK_API_KEY: 'DEEPSEEK_API' }
 // vault key NAME -> the env var it feeds (reverse of VAULT_TO_ENV; identity for unknown names).
 function envNameOf(vaultName) { const hit = Object.entries(VAULT_TO_ENV).find(([, v]) => v === vaultName); return hit ? hit[0] : vaultName }
+let vaultReadWarn = ''   // set (once) if the Linux file vault is present-but-corrupt on the read path
 function vaultGet(vaultName) {
   // Linux has no OS vault: keys come from environment variables (the conventional Linux channel),
   // with the 0600 JSON file vault (~/.agent-omega/vault.json) as the writable fallback the in-app
   // Vault UI edits. Env wins so an exported key can't be shadowed by a stale file entry.
-  if (isLinux) return process.env[envNameOf(vaultName)] || fileVault.get(vaultName) || ''
+  // fileVault.get THROWS on a corrupt/unreadable file (so a UI write can't clobber real data), but
+  // that must NOT crash an env-configured launch — env wins first, and a broken optional file is
+  // surfaced as a UI warning (broadcast after ready), not a boot failure.
+  if (isLinux) {
+    const e = process.env[envNameOf(vaultName)]
+    if (e) return e
+    try { return fileVault.get(vaultName) || '' }
+    catch (err) { if (!vaultReadWarn) { vaultReadWarn = 'Your ~/.agent-omega/vault.json could not be read (' + err.message + ') — keys stored in it will not load; keys from environment variables still work. Fix or delete that file.'; log('vault read', err.message) } return '' }
+  }
   try {
     const v = execFileSync(VAULT_CMD, [...VAULT_PRE, 'get', vaultName], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
     return /^no secret named/i.test(v) ? '' : v   // secrets.sh prints this sentinel for a missing key; treat as empty so the legacy-name fallback triggers
@@ -308,7 +317,9 @@ function validateCouncilPatch(patch) {
 }
 function vaultListNames() {
   if (isLinux) {   // env-provided keys + the file vault, deduped — names only, never values
-    const names = new Set(fileVault.list())
+    let names
+    try { names = new Set(fileVault.list()) }   // throws on a corrupt file — don't let it kill the listing; env-provided names still show
+    catch { names = new Set() }
     for (const [envName, vaultName] of Object.entries(VAULT_TO_ENV)) if (process.env[envName]) names.add(vaultName)
     return [...names].sort()
   }
@@ -391,12 +402,13 @@ async function start() {
   // PATH, so only path-shaped values get the existence preflight.
   const engineIsPath = ENGINE.includes(path.sep) || (isWin && ENGINE.includes('/'))
   const usePathEngine = !isWin && !process.env.AGENT_OMEGA_ENGINE && !fs.existsSync(ENGINE)
+  const setupDoc = isLinux ? 'SETUP-LINUX.md' : 'SETUP.md'   // Linux build/install instructions live in SETUP-LINUX.md
   if (!OPENCODE_SRC && usePathEngine && !commandOnPath('opencode')) {
-    lastEngineDown = { type: 'engine-down', message: 'Engine not found — build it into engine/opencode (see SETUP.md), install opencode on PATH, or set AGENT_OMEGA_ENGINE.' }
+    lastEngineDown = { type: 'engine-down', message: 'Engine not found — build it into engine/opencode (see ' + setupDoc + '), install opencode on PATH, or set AGENT_OMEGA_ENGINE.' }
     log('engine missing: ./engine/opencode and PATH opencode'); broadcast(lastEngineDown); return
   }
   if (!OPENCODE_SRC && engineIsPath && !usePathEngine && !fs.existsSync(ENGINE)) {   // engine preflight — clear message instead of a raw ENOENT
-    const getEngine = isWin ? 'download opencode.exe into an engine/ folder (see SETUP.md)' : 'build the engine into engine/opencode (see SETUP.md)'
+    const getEngine = isWin ? 'download opencode.exe into an engine/ folder (see ' + setupDoc + ')' : 'build the engine into engine/opencode (see ' + setupDoc + ')'
     lastEngineDown = { type: 'engine-down', message: 'Engine not found at ' + ENGINE + ' — ' + getEngine + ', or set AGENT_OMEGA_ENGINE.' }
     log('engine missing:', ENGINE); broadcast(lastEngineDown); return
   }
@@ -430,6 +442,7 @@ async function start() {
   log('ready: session', sessionId, '| models', models.length, '| agents', agents.length)
   lastEngineDown = null
   broadcast(readyMsg())
+  if (vaultReadWarn) broadcast({ type: 'error', message: vaultReadWarn })   // surface a corrupt Linux vault (read-path) without having blocked boot
 }
 function readyMsg() { return { type: 'ready', sessionId, model: curModel, agent: curAgent, models, agents, commands, effort: curEffort, effortLevels, apiPort: API_PORT, apiAuth: API_AUTH, workdir: WORKDIR } }
 
