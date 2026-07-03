@@ -165,17 +165,14 @@
     <div class="crt-tb-brand" style="display:flex; align-items:center; gap:9px;">
       <span class="ac" style="text-shadow:0 0 7px currentColor; font-weight:700; letter-spacing:1px;">A/O</span>
       <span style="color:#9fb0a6; letter-spacing:.5px;">agent&nbsp;omega</span>
-      <span style="color:#3f4a44;">—</span>
     </div>
     <!-- Modern: centered brand -->
     <div class="m-brand">
       <div class="m-brand-dot"></div>
       <span class="m-brand-name">agent-omega</span>
-      <span class="m-brand-sep">·</span>
-      <span class="m-brand-branch">main</span>
     </div>
     <!-- Modern: ⌘K pill right (placed before CRT controls so crt-tb-controls is div:last-child for wireGear()) -->
-    <span class="m-cmdkpill">⌘K</span>
+    <span class="m-cmdkpill" onclick="window.AgentOmegaCommands && window.AgentOmegaCommands.open()">⌘K</span>
     <!-- CRT: window controls right (must remain last div child of #titlebar for wireGear's div:last-child lookup) -->
     <div class="crt-tb-controls" style="display:flex; align-items:center; gap:15px; color:#3f4a44; font-size:15px;">
       <span class="ctl" onclick="win('minimize')">—</span>
@@ -207,8 +204,6 @@
           <span class="ac" style="text-shadow:0 0 2px var(--ac), 0 0 28px rgba(255,180,84,.45);">/O</span>
           <span class="ac" style="margin-left:8px; animation:blink 1.05s steps(1) infinite; text-shadow:0 0 14px rgba(255,180,84,.55);">▌</span>
         </div>
-        <!-- CRT: tagline -->
-        <div class="ac crt-tagline" style="font-size:26px; letter-spacing:9px; margin-top:10px; text-shadow:0 0 10px rgba(255,180,84,.35);"></div>
 
         <!-- Shared: prompt input box (restyled per theme via CSS) -->
         <div class="box" style="width:680px; max-width:calc(100% - 48px); margin-top:58px; padding:20px 22px 16px;">
@@ -342,7 +337,6 @@
    ===================================================================== */
 
 /* ---- config ---- */
-const WORKSPACE_ROOT = ''; // set from the ready message's workdir when available; stripped from displayed paths
 const WS_PORT = (new URLSearchParams(location.search)).get('ws') || '4599';
 const WS_TOKEN = (new URLSearchParams(location.search)).get('token') || '';
 
@@ -414,14 +408,6 @@ function strv(v){ return typeof v==='string' ? v : undefined; }
 function strOf(v){ if(v==null) return ''; if(typeof v==='string') return v; try{ return JSON.stringify(v,null,2); }catch(e){ return String(v); } }
 function stripAnsi(s){ return String(s==null?'':s).replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g,''); }
 function isDenied(err){ err=String(err||''); return err.indexOf('QuestionRejectedError')>=0 || err.indexOf('rejected permission')>=0 || err.indexOf('specified a rule')>=0 || err.indexOf('user dismissed')>=0 || /\brejected\b/i.test(err); }
-/* project-relative path for the cyan tool detail */
-function relPath(p){
-  if(!p) return '';
-  const s=String(p).replace(/\\/g,'/'), low=s.toLowerCase(), root=WORKSPACE_ROOT.toLowerCase();
-  if(low.indexOf(root)===0) return s.slice(WORKSPACE_ROOT.length);
-  const i=low.indexOf('/workspace/'); if(i>=0) return s.slice(i+'/workspace/'.length);
-  const seg=s.split('/').filter(Boolean); return seg.length<=3 ? seg.join('/') : seg.slice(-3).join('/');
-}
 /* last-2 segments for the diff footer */
 function baseName2(p){ if(!p) return ''; const seg=String(p).replace(/\\/g,'/').split('/').filter(Boolean); return seg.slice(-2).join('/') || String(p); }
 function fmtElapsed(s){ if(!s||!s.startMs||!s.endMs) return ''; let ms=s.endMs-s.startMs; if(ms<0)ms=0; return ms>=950 ? (ms/1000).toFixed(1)+'s' : ms+'ms'; }
@@ -1747,8 +1733,8 @@ function syncDiscovery(){
     return { kind:'engine', id:'engine:'+name, name, slash:name, aliases:[],
              title:name, desc:(c&&c.description)||'', category:'Command', source:'command', keys:null };
   });
-  // agents offered to the '@' dropdown (sidecar lists session agents/modes;
-  // file mentions are not available yet — see the '@' TODO in the changelog)
+  // agents offered to the '@' dropdown (this holds session agents/modes; file
+  // mentions are served separately by the sidecar findFile handler)
   R.agents = (agents||[]).map(a=>({ name:(a.name||a.value), description:'' }));
   try{ R.index(); }catch(e){}
   try{ if(C.palette && C.palette.open) C.palette.render(); }catch(e){}
