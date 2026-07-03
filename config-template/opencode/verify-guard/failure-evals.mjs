@@ -165,7 +165,7 @@ function extractCommand(args = {}) {
 }
 
 function extractExitCode(output = '', metadata = {}) {
-  for (const key of ['exitCode', 'exit_code', 'code', 'status']) {
+  for (const key of ['exitCode', 'exit', 'exit_code', 'code', 'status']) {
     if (Number.isInteger(metadata?.[key])) return metadata[key]
   }
   const match = String(output).match(/exit(?:ed)?(?:\s+with)?(?:\s+code)?[:=]?\s*(-?\d+)/i)
