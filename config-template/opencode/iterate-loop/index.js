@@ -67,6 +67,7 @@ const IterateLoopPlugin = async ({ client }) => {
 
     event: async (input) => {
       let s
+      let acquired = false
       try {
         const event = input && input.event            // destructure INSIDE try (a null arg must not throw uncaught)
         if (!event || event.type !== 'session.idle') return
@@ -75,6 +76,7 @@ const IterateLoopPlugin = async ({ client }) => {
         s = state(id)
         if (s.busy) return                            // re-entrancy guard: an idle for this session is already in flight
         s.busy = true                                 // set synchronously BEFORE decideIdle mutates — a concurrent idle must not double-fire / skip ladder rungs
+        acquired = true                               // only WE hold the lock now — the early-return path above must not clear a still-in-flight invocation's lock
         const d = decideIdle(s)
         if (!d) return                                // verified, or nothing changed -> let it finish
         if (!(await isPrimary(id, s))) return         // skip subagent sessions
@@ -82,7 +84,7 @@ const IterateLoopPlugin = async ({ client }) => {
         await client.session.promptAsync({ path: { id }, body: { parts: [{ type: 'text', text: d.text }] } })
         log(`${d.action} sent ${id} (tier=${s.tier} shots=${s.shots} prompts=${s.prompts})`)
       } catch (e) { log(`event error: ${e}`) }
-      finally { if (s) s.busy = false }
+      finally { if (s && acquired) s.busy = false }
     },
   }
 }

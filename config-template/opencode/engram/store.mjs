@@ -58,15 +58,6 @@ CREATE TABLE IF NOT EXISTS facts (
 CREATE INDEX IF NOT EXISTS idx_facts_sp ON facts(subject, predicate, valid_to);
 CREATE INDEX IF NOT EXISTS idx_facts_project ON facts(project, valid_to);
 CREATE INDEX IF NOT EXISTS idx_facts_object ON facts(object, valid_to);
--- council_config — app settings (roster + mode), NOT temporal knowledge. A single
--- row (CHECK id=1) holding the whole config as a JSON document, because the config
--- is document-shaped (an ordered roster of arbitrary length + scalar settings) and
--- normalizing it into rows would add migrations and row-ordering for no payoff.
-CREATE TABLE IF NOT EXISTS council_config (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  config TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
-);
 `
 
 export function openStore(path = ':memory:', { fts: wantFts = true } = {}) {
@@ -270,56 +261,6 @@ export function factsAbout(db, names, { project = null, limit = 12, includeSuper
     LIMIT ?`
   const args = project ? [...names, ...names, project, limit] : [...names, ...names, limit]
   return db.prepare(sql).all(...args).map(mapFact)
-}
-
-// ---- council settings (roster + mode) ----------------------------------------
-// Persisted in engram.db so the council's config lives in the same store as its
-// shared brain. Validated at this boundary; the rest of the system trusts the
-// returned shape.
-
-const COUNCIL_DEFAULTS = { rounds: 1, synthesizer: 'driver', autoSynthesizer: null, memberAccess: 'readonly', members: [] }
-
-// Coerce arbitrary input into a valid, normalized council config. Unknown/invalid
-// fields fall back to defaults rather than throwing, so a bad write can't brick
-// the council.
-export function normalizeCouncilConfig(raw) {
-  const c = raw && typeof raw === 'object' ? raw : {}
-  const rounds = Number.isInteger(c.rounds) && c.rounds >= 1 && c.rounds <= 5 ? c.rounds : COUNCIL_DEFAULTS.rounds
-  const synthesizer =
-    c.synthesizer === 'driver' || c.synthesizer === 'auto' || (typeof c.synthesizer === 'string' && c.synthesizer.includes('/'))
-      ? c.synthesizer
-      : COUNCIL_DEFAULTS.synthesizer
-  const autoSynthesizer = typeof c.autoSynthesizer === 'string' && c.autoSynthesizer.includes('/') ? c.autoSynthesizer : null
-  const memberAccess = c.memberAccess === 'none' || c.memberAccess === 'readonly' ? c.memberAccess : COUNCIL_DEFAULTS.memberAccess
-  const members = Array.isArray(c.members)
-    ? c.members
-        .filter((m) => m && typeof m.model === 'string' && m.model.includes('/'))
-        .map((m) => ({ label: typeof m.label === 'string' && m.label ? m.label : m.model.split('/').pop(), model: m.model }))
-    : []
-  return { rounds, synthesizer, autoSynthesizer, memberAccess, members }
-}
-
-// Read the stored council config, or null if none has been saved yet (lets the
-// caller seed from a legacy file on first run).
-export function getCouncilConfig(db) {
-  const row = db.prepare('SELECT config FROM council_config WHERE id = 1').get()
-  if (!row) return null
-  try {
-    return normalizeCouncilConfig(JSON.parse(row.config))
-  } catch {
-    return null
-  }
-}
-
-// Persist the council config as the single source of truth. Normalizes first, then
-// upserts the one row atomically. Returns the normalized config that was stored.
-export function setCouncilConfig(db, raw, { t = Date.now() } = {}) {
-  const cfg = normalizeCouncilConfig(raw)
-  db.prepare(
-    `INSERT INTO council_config(id, config, updated_at) VALUES (1, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET config = excluded.config, updated_at = excluded.updated_at`,
-  ).run(JSON.stringify(cfg), t)
-  return cfg
 }
 
 export function stats(db) {

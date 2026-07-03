@@ -52,7 +52,7 @@ Once attached:
 | `1`/`2`/… or `/deny` | answer a permission request when one appears |
 | `/abort` | stop the current turn |
 | `/new` | start a fresh session (leaves the current one) |
-| `/model` | show the current model |
+| `/model` | list models (and show current); `/model <number\|name>` switches the active model |
 | `/quit` `/q` | detach (the desktop session keeps running) |
 
 Tune history depth with `ATTACH_HISTORY=50 node scripts/attach.mjs`. Tip: set the attach command as

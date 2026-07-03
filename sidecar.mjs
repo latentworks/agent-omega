@@ -345,7 +345,7 @@ class UIClient {
     broadcast({ type: 'update', update: u })
   }
   async writeTextFile(p) { try { fs.writeFileSync(p.path, p.content ?? '') } catch (e) { log('writeTextFile', e.message) } return {} }
-  async readTextFile(p) { try { return { content: fs.readFileSync(p.path, 'utf8') } } catch { return { content: '' } } }
+  async readTextFile(p) { try { return { content: fs.readFileSync(p.path, 'utf8') } } catch (e) { log('readTextFile', p.path, e.message); if (e.code === 'ENOENT') return { content: '' }; throw e } }
 }
 
 // Resolve every outstanding permission with a 'cancelled' outcome so a disconnect/abort
@@ -460,7 +460,7 @@ async function restartEngine() {
       extractConfig(r && r.configOptions)
       broadcast({ type: 'replay-end', sessionId })
       broadcast(readyMsg())
-    } catch (e) { log('restore-session', e.message); broadcast({ type: 'replay-end', sessionId: prev }) }
+    } catch (e) { log('restore-session', e.message); broadcast({ type: 'replay-end', sessionId: prev, error: friendlyError(e.message) }); broadcast(readyMsg()) }
   }
 }
 
@@ -485,7 +485,7 @@ wss.on('connection', (ws) => {
           // The engine can swallow a provider failure (e.g. a 401 from a bad API key) and
           // resolve the turn with NO output at all — the user would see pure silence. A
           // completed turn with zero meaningful updates is that case: say so.
-          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: m.text }] }); if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
+          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: m.text }] }); if (r.stopReason !== 'cancelled' && turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
           catch (e) { broadcast({ type: 'error', message: friendlyError(e.message) }) }
           finally { busy = false }
           break
@@ -493,7 +493,7 @@ wss.on('connection', (ws) => {
         case 'command': {
           if (busy || !m.name) return
           busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
-          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + m.name + (m.args ? ' ' + m.args : '') }] }); if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
+          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + m.name + (m.args ? ' ' + m.args : '') }] }); if (r.stopReason !== 'cancelled' && turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) }
           catch (e) { broadcast({ type: 'error', message: friendlyError(e.message) }) }
           finally { busy = false }
           break
@@ -556,7 +556,7 @@ wss.on('connection', (ws) => {
         case 'abort': { try { await conn.cancel({ sessionId }) } catch (e) { log('cancel', e.message) } drainPerms(); busy = false; break }
         case 'new': {
           if (busy) { try { await conn.cancel({ sessionId }) } catch {} drainPerms(); busy = false }   // don't orphan an in-flight turn
-          try { await newSession() } catch (e) { log('new', e.message) } broadcast(readyMsg()); break
+          try { await newSession(); broadcast(readyMsg()) } catch (e) { log('new', e.message); broadcast({ type: 'error', message: 'Could not start a new session — ' + friendlyError(e.message) }) } break
         }
         case 'findFile': {   // '@' file autocomplete: bounded walk of the session workdir (the ACP build has no HTTP serve)
           const q = String(m.query || '').toLowerCase(), out = []

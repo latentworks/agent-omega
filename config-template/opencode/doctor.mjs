@@ -86,6 +86,23 @@ if (cfg && cfg.provider) {
   }
 }
 
+// ---- 5b) default model ----------------------------------------------------------
+if (cfg) {
+  if (typeof cfg.model !== 'string' || !cfg.model.trim()) {
+    fail('default model: cfg.model missing/empty — the engine has no top-level model to start with')
+  } else {
+    const enabled = Array.isArray(cfg.enabled_providers) ? cfg.enabled_providers : (cfg.provider ? Object.keys(cfg.provider) : [])
+    const slash = cfg.model.indexOf('/')
+    if (slash < 1) warn('default model: "' + cfg.model + '" is not in provider/model form')
+    else {
+      const prov = cfg.model.slice(0, slash)
+      if (!enabled.includes(prov)) fail('default model: "' + cfg.model + '" points at provider "' + prov + '" not in enabled_providers (' + enabled.join(', ') + ')')
+      else if (!(cfg.provider && cfg.provider[prov])) warn('default model: provider "' + prov + '" is enabled but has no provider config block')
+      else pass('default model: ' + cfg.model + ' (provider "' + prov + '" enabled and configured)')
+    }
+  }
+}
+
 // ---- 6) local model endpoint reachability ----------------------------------------
 async function probe(url, ms = 4000) {
   try {
@@ -133,6 +150,14 @@ if (cfg && cfg.permission) {
   if (existsSync(join(mem, 'MEMORY.md'))) pass('memory: MEMORY.md present (' + readdirSync(mem).length + ' file(s) in memory/)')
   else if (existsSync(mem)) warn('memory: memory/ exists but no MEMORY.md index')
   else info('memory: no memory/ directory yet (created on first use)')
+}
+
+// ---- 9b) engram auto-memory (automatic fact distillation) -------------------------
+{
+  // Mirror engram's EXTRACT_URL derivation: process.env.ENGRAM_EXTRACT_URL || provider.local.options.baseURL.
+  const localBase = cfg && cfg.provider && cfg.provider.local && cfg.provider.local.options && typeof cfg.provider.local.options.baseURL === 'string' ? cfg.provider.local.options.baseURL : ''
+  const extractUrl = process.env.ENGRAM_EXTRACT_URL || localBase
+  if (!extractUrl) warn('engram auto-memory: no local extraction endpoint (set provider.local.options.baseURL or ENGRAM_EXTRACT_URL) — automatic fact distillation at compaction is OFF (only manual remember + the MEMORY.md index work)')
 }
 
 // ---- 10) workspace ----------------------------------------------------------------

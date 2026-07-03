@@ -131,7 +131,7 @@
 
   // Display strings for key sequences (mirrors keybind.ts; ^X = leader ctrl+x).
   const KEYS = {
-    "command.palette.show": "^P",
+    "command.palette.show": "^P / ^K",
     "session.new": "^X n", "session.list": "^X l",
     "model.list": "^X m", "agent.list": "^X a",
     "theme.switch": "^X t", "session.compact": "^X c",
@@ -206,7 +206,15 @@
     },
     "help.show": () => { const f = appFn("showHelp"); if (f) return f(); notice("type / to discover commands, or press ctrl+p"); },
     "app.exit": () => { const p = appFn("post"); if (p) p({ type: "close" }); },
-    "docs.open": () => { try { window.open("https://opencode.ai/docs", "_blank"); } catch (e) { notice("Agent Omega runs on the opencode engine — engine docs: https://opencode.ai/docs"); } },
+    "docs.open": () => {
+      const url = "https://opencode.ai/docs";
+      // In the native shell window.open silently no-ops (createWebViewWith → nil,
+      // and the nav policy cancels non-file://), so route through the host bridge.
+      // A plain browser (WebView2 excepted) has no window.chrome.webview → window.open.
+      const bridge = (typeof window !== "undefined") && window.chrome && window.chrome.webview;
+      if (bridge) { const p = appFn("post"); if (p) { p({ type: "openExternal", url }); return; } }
+      try { window.open(url, "_blank"); } catch (e) { notice("Agent Omega runs on the opencode engine — engine docs: " + url); }
+    },
     "messages.copy": async () => {
       const rows = document.querySelectorAll("#log .arow");
       const last = rows[rows.length - 1];
@@ -786,6 +794,10 @@
     const isMac = /Mac/.test(navigator.platform || "");
     const mod = isMac ? (e.metaKey || e.ctrlKey) : (e.ctrlKey && !e.metaKey);
     if (mod && !e.altKey && (e.key === "p" || e.key === "P")) {
+      e.preventDefault(); Palette.show(); return true;
+    }
+    // Cmd/Ctrl+K also opens the palette (matches the Modern ⌘K pill's label).
+    if (mod && !e.altKey && (e.key === "k" || e.key === "K")) {
       e.preventDefault(); Palette.show(); return true;
     }
     return false;

@@ -65,6 +65,9 @@ async function main() {
   }
   // verbatimSymlinks: node_modules/.bin is symlinks on Linux/macOS — dereferencing them on a
   // force re-copy EINVALs ("copy to a subdirectory of self"); copy them as symlinks instead.
+  // An UPGRADE = CFG_DIR already existed AND is a prior Agent Omega install. Must be decided
+  // BEFORE the copy below, because after it the template's marker files always look present.
+  const isUpgrade = existsSync(CFG_DIR) && isAgentOmega(CFG_DIR)
   if (!existsSync(CFG_DIR)) {
     cpSync(tmpl, CFG_DIR, { recursive: true, verbatimSymlinks: true, filter: copyFilter(false) })
     console.log('  installed plugin config -> ' + CFG_DIR)
@@ -108,56 +111,67 @@ async function main() {
         : isLinux ? 'put opencode at ./engine/opencode, set AGENT_OMEGA_ENGINE, or install opencode on PATH (see SETUP-LINUX.md)'
         : 'build it into ./engine/opencode (see SETUP.md, macOS section)'))
 
-  // 4) model + key
+  // 4) model + key. On an UPGRADE, leave opencode.json (incl. its model) untouched unless the
+  // user explicitly opts in — either an explicit --source, or a 'y' at the reconfigure prompt.
   let source = flag('source')
-  if (!source) {
-    console.log('\nHow do you want to run Agent Omega?')
-    console.log('  1) Local model (llama.cpp / Ollama / LM Studio)')
-    console.log('  2) Anthropic (Claude)')
-    console.log('  3) OpenAI (ChatGPT)')
-    console.log('  4) Other cloud (Gemini / DeepSeek / Kimi / GLM)')
-    const c = await ask('Choose [1-4] (default 2): ', '2')
-    source = { '1': 'local', '2': 'anthropic', '3': 'openai', '4': 'other' }[c] || 'anthropic'
+  let reconfigure = !isUpgrade || !!source
+  if (isUpgrade && !source) {
+    const ans = await ask('Reconfigure your model / API key now? Otherwise opencode.json is left untouched. [y/N]: ', 'n')
+    reconfigure = /^y(es)?$/i.test(ans)
   }
 
-  const cfgPath = path.join(CFG_DIR, 'opencode.json')
-  if (!existsSync(cfgPath)) copyFileSync(path.join(tmpl, 'opencode.json'), cfgPath) // self-heal a missing/deleted config
-  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
-
-  if (source === 'local') {
-    const url = flag('url') || await ask('Local server base URL [http://127.0.0.1:8080/v1]: ', 'http://127.0.0.1:8080/v1')
-    if (!cfg.provider) cfg.provider = {}
-    if (!cfg.provider.local) cfg.provider.local = { npm: '@ai-sdk/openai-compatible', name: 'Local', options: {}, models: { 'local-model': { name: 'Local model', limit: { context: 32768, output: 8192 } } } }
-    cfg.provider.local.options = cfg.provider.local.options || {}
-    cfg.provider.local.options.baseURL = url
-    cfg.model = 'local/local-model'
-    console.log('  model -> local/local-model @ ' + url)
+  if (!reconfigure) {
+    console.log('  kept your existing model + opencode.json untouched (upgrade — nothing reconfigured)')
   } else {
-    let prov = source
-    if (source === 'other') prov = (flag('provider') || await ask('Which? [google/deepseek/moonshotai/zai] (default google): ', 'google'))
-    if (!PROVIDERS[prov]) { console.error("  unknown provider '" + prov + "' — use one of: " + Object.keys(PROVIDERS).join(', ')); process.exit(1) }
-    const info = PROVIDERS[prov]
-    const key = flag('key') || await ask(info.label + ' API key (leave blank to add later in the app): ', '')
-    if (key) {
-      if (isLinux) {
-        fileVault.set(info.vault, String(key))
-        console.log('  stored key in the local fallback vault (' + info.vault + ')')
-      } else {
-        // Pass the key on STDIN so it never appears in the process command line / any error text.
-        execFileSync(vaultCmd[0], [...vaultCmd.slice(1), 'set', info.vault], { input: String(key), stdio: ['pipe', 'pipe', 'pipe'] })
-        console.log('  stored key in the encrypted vault (' + info.vault + ')')
-      }
-    } else {
-      console.log(isLinux
-        ? '  no key entered - add it later via the app, or export ' + info.env
-        : '  no key entered - add it later via the app, or store the ' + info.vault + ' vault entry')
+    if (!source) {
+      console.log('\nHow do you want to run Agent Omega?')
+      console.log('  1) Local model (llama.cpp / Ollama / LM Studio)')
+      console.log('  2) Anthropic (Claude)')
+      console.log('  3) OpenAI (ChatGPT)')
+      console.log('  4) Other cloud (Gemini / DeepSeek / Kimi / GLM)')
+      const c = await ask('Choose [1-4] (default 2): ', '2')
+      source = { '1': 'local', '2': 'anthropic', '3': 'openai', '4': 'other' }[c] || 'anthropic'
     }
-    cfg.model = info.model
-    console.log('  model -> ' + info.model)
-  }
 
-  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n')
-  console.log('\n  wrote ' + cfgPath)
+    const cfgPath = path.join(CFG_DIR, 'opencode.json')
+    if (!existsSync(cfgPath)) copyFileSync(path.join(tmpl, 'opencode.json'), cfgPath) // self-heal a missing/deleted config
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
+
+    if (source === 'local') {
+      const url = flag('url') || await ask('Local server base URL [http://127.0.0.1:8080/v1]: ', 'http://127.0.0.1:8080/v1')
+      if (!cfg.provider) cfg.provider = {}
+      if (!cfg.provider.local) cfg.provider.local = { npm: '@ai-sdk/openai-compatible', name: 'Local', options: {}, models: { 'local-model': { name: 'Local model', limit: { context: 32768, output: 8192 } } } }
+      cfg.provider.local.options = cfg.provider.local.options || {}
+      cfg.provider.local.options.baseURL = url
+      cfg.model = 'local/local-model'
+      console.log('  model -> local/local-model @ ' + url)
+    } else {
+      let prov = source
+      if (source === 'other') prov = (flag('provider') || await ask('Which? [google/deepseek/moonshotai/zai] (default google): ', 'google'))
+      if (!PROVIDERS[prov]) { console.error("  unknown provider '" + prov + "' — use one of: " + Object.keys(PROVIDERS).join(', ')); process.exit(1) }
+      const info = PROVIDERS[prov]
+      const key = flag('key') || await ask(info.label + ' API key (leave blank to add later in the app): ', '')
+      if (key) {
+        if (isLinux) {
+          fileVault.set(info.vault, String(key))
+          console.log('  stored key in the local fallback vault (' + info.vault + ')')
+        } else {
+          // Pass the key on STDIN so it never appears in the process command line / any error text.
+          execFileSync(vaultCmd[0], [...vaultCmd.slice(1), 'set', info.vault], { input: String(key), stdio: ['pipe', 'pipe', 'pipe'] })
+          console.log('  stored key in the encrypted vault (' + info.vault + ')')
+        }
+      } else {
+        console.log(isLinux
+          ? '  no key entered - add it later via the app, or export ' + info.env
+          : '  no key entered - add it later via the app, or store the ' + info.vault + ' vault entry')
+      }
+      cfg.model = info.model
+      console.log('  model -> ' + info.model)
+    }
+
+    writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n')
+    console.log('\n  wrote ' + cfgPath)
+  }
   if (!engineFound) {
     console.log('\nConfig is ready, but setup is NOT complete: the engine binary is still missing.')
     console.log(isWin ? 'Finish SETUP.md step 5 (download opencode.exe into ./engine/), then build + launch:'

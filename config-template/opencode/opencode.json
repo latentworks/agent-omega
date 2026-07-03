@@ -8,9 +8,6 @@
     "reserved": 1024
   },
   "plugin": ["./skill-router/index.js", "./verify-guard/index.js", "./iterate-loop/index.js", "./council/index.js", "./engram/index.js"],
-  "keybinds": {
-    "display_thinking": "<leader>t"
-  },
   "enabled_providers": [
     "local",
     "anthropic",

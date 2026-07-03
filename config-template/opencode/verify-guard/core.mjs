@@ -91,16 +91,12 @@ export function isVerificationCommand(command) {
   if (isWebBridge(c)) return false
   // A bare version/help probe runs no real code — it must NOT count as having verified anything.
   if (/^\s*\S*\b(python3?|node|deno|bun|ruby|php|perl|rscript|go|cargo|npm|pnpm|yarn|dotnet|tsc)\b\s+(-v|-V|--version|version|--help|-h|help)\s*$/i.test(c)) return false
+  // Compile-only syntax checks that would otherwise trip an EXEC pattern (`node <arg>`, etc.):
+  // `node --check` only parses, it does not RUN — so it must NOT count as a verification run.
+  if (/\bnode\s+(--check|-c)\b/.test(c) || /\bpython3?\s+-m\s+py_compile\b/.test(c) || /\bruby\s+-c\b/.test(c) || /\bphp\s+-l\b/.test(c)) return false
   if (EXEC_PATTERNS.some((re) => re.test(c))) return true
   if (COMPILE_ONLY_PATTERNS.some((re) => re.test(c))) return false
   return false
-}
-
-// A compile/lint/typecheck-only command (used to nudge: "built, but did you RUN it?").
-export function isCompileOnlyCommand(command) {
-  const c = String(command || '')
-  if (isVerificationCommand(c)) return false
-  return COMPILE_ONLY_PATTERNS.some((re) => re.test(c))
 }
 
 function argPath(args) {

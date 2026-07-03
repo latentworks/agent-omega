@@ -8,7 +8,7 @@
 // same JSON the graphical UI uses, just rendered as text.
 //
 // It talks only to the loopback control socket, using the port+token the running sidecar wrote
-// to ~/.agent-omega/attach.json — so nothing is exposed to the network; SSH is what gets you
+// to ~/.agent-omega/instances/<pid>.json — so nothing is exposed to the network; SSH is what gets you
 // onto the machine. Requires the desktop app to be running (that's where the session lives).
 //
 //   node scripts/attach.mjs            # attach, show last 20, go live

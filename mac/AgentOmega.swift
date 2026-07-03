@@ -332,6 +332,15 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
             // Write it to ~/Downloads natively, reveal it in Finder, and ack back to the UI so it
             // reports the truth (real path on success, honest failure otherwise).
             saveFile(msg.body as? [String: Any])
+        case "openExternal":
+            // Open http/https links in the user's default browser. WKWebView cancels
+            // non-file:// navigations and returns nil for createWebViewWith, so the UI
+            // routes external links here instead of the no-op window.open.
+            if let d = msg.body as? [String: Any], let s = d["url"] as? String,
+               let url = URL(string: s), let scheme = url.scheme?.lowercased(),
+               scheme == "http" || scheme == "https" {
+                NSWorkspace.shared.open(url)
+            }
         default: break
         }
     }

@@ -1,9 +1,10 @@
 # Agent Omega
 
 A desktop coding agent that runs on your own machine. Agent Omega is a frameless
-Windows app — a single quiet window — wired to a coding engine that reads and
-writes your files, runs commands, searches your code, and reaches the web. You
-talk to it; it does the work.
+desktop app — a single quiet window — that ships on Windows and macOS from a
+single trunk, wired to a coding engine that reads and writes your files, runs
+commands, searches your code, and reaches the web. You talk to it; it does the
+work.
 
 The point isn't a bigger model. The point is the **harness** around the model:
 skills it can load on demand, real tools, persistent memory, a verify-before-done
@@ -118,9 +119,10 @@ for your say-so; reading and local edits just happen.
 
 ## Quick start
 
-Agent Omega ships in two modes:
+Agent Omega ships as a native desktop app on **Windows** and **macOS** from a single trunk, plus a **Linux browser mode**:
 
-- **Windows desktop shell**: WinForms + WebView2. Full setup lives in **[SETUP.md](SETUP.md)**.
+- **Windows desktop shell**: WinForms + WebView2 (.NET 8, Node.js, WebView2 runtime). Setup lives in **[SETUP.md](SETUP.md)**.
+- **macOS desktop shell**: a self-contained Swift + WKWebView build (Apple Silicon, macOS 13+). Setup lives in **[SETUP.md](SETUP.md)**.
 - **Linux browser mode**: the existing HTML UI + Node sidecar + Linux opencode engine in a normal browser. Setup lives in **[SETUP-LINUX.md](SETUP-LINUX.md)**.
 
 The native Linux desktop shell is not shipped yet. The Linux target here is browser-mode portability for the existing core stack.
@@ -138,8 +140,8 @@ Roadmap — flagged as what's ahead, not shipped yet:
 
 - **A council that doesn't just discuss but builds** — carrying a task through to a verified,
   working result, with real end-to-end examples to back the claim.
-- **macOS and Linux** — native builds/branches are in progress (the app is already largely
-  cross-platform under the Windows shell).
+- **Linux** — a native build/branch is in progress (the app is already largely
+  cross-platform under the desktop shell).
 - **A richer graphical workspace** — an editor-style view in the spirit of Cursor / Codex,
   alongside the current terminal-first UI.
 - **More themes** beyond the CRT + Modern pair.
