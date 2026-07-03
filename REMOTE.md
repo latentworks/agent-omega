@@ -88,4 +88,4 @@ without clobbering each other — you pick which to attach to.
 - **No desktop "remote attached" indicator yet.** The attach is additive and local-only; a future
   polish could badge the window when a terminal is connected.
 - **Cross-platform:** the client is plain Node, so the same `scripts/attach.mjs` works on the macOS
-  build once that shell exists — only enabling SSH differs per OS. Nothing platform-specific here.
+  build (`mac/AgentOmega.swift`) today — only enabling SSH differs per OS. Nothing platform-specific here.

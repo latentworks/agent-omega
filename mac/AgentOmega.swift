@@ -304,10 +304,14 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         a.addButton(withTitle: "Retry")
         a.addButton(withTitle: "Open Log")
         a.addButton(withTitle: "Quit")
-        switch a.runModal() {
-        case .alertFirstButtonReturn: startSidecar()
-        case .alertSecondButtonReturn: NSWorkspace.shared.activateFileViewerSelecting([logURL])
-        default: NSApp.terminate(nil)
+        // Open Log only reveals the log; loop so it re-presents the alert instead of dead-ending.
+        // Only Retry (respawn) or Quit exit the loop.
+        while true {
+            switch a.runModal() {
+            case .alertFirstButtonReturn: startSidecar(); return
+            case .alertSecondButtonReturn: NSWorkspace.shared.activateFileViewerSelecting([logURL])
+            default: NSApp.terminate(nil); return
+            }
         }
     }
 
@@ -317,7 +321,9 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         comp.path = RES + "/ui/app.html"
         comp.queryItems = [URLQueryItem(name: "ws", value: String(WS_PORT)),
                            URLQueryItem(name: "token", value: WS_TOKEN)]
-        guard let url = comp.url else { return }
+        guard let url = comp.url else {
+            fatalAlert("Agent Omega couldn't build the UI address. Please reinstall.")
+        }
         web.loadFileRequest(URLRequest(url: url), allowingReadAccessTo: URL(fileURLWithPath: RES, isDirectory: true))
     }
 
@@ -391,6 +397,28 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     }
     func webView(_ w: WKWebView, createWebViewWith cfg: WKWebViewConfiguration,
                  for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
+
+    // A failed ui/app.html load would otherwise leave a silent blank window — surface it loudly
+    // and let the user retry rather than stare at nothing.
+    func webView(_ w: WKWebView, didFailProvisionalNavigation nav: WKNavigation!, withError error: Error) {
+        uiLoadFailed(error)
+    }
+    func webView(_ w: WKWebView, didFail nav: WKNavigation!, withError error: Error) {
+        uiLoadFailed(error)
+    }
+    func uiLoadFailed(_ error: Error) {
+        if ProcessInfo.processInfo.environment["AO_SHELL_TESTSHOT"] != nil { return }   // silent in automated runs
+        let a = NSAlert()
+        a.messageText = "Agent Omega's window couldn't load"
+        a.informativeText = error.localizedDescription
+        a.alertStyle = .warning
+        a.addButton(withTitle: "Retry")
+        a.addButton(withTitle: "Quit")
+        switch a.runModal() {
+        case .alertFirstButtonReturn: loadUI()
+        default: NSApp.terminate(nil)
+        }
+    }
 
     func applicationWillTerminate(_ note: Notification) {
         quitting = true
