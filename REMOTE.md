@@ -1,5 +1,9 @@
 # Remote control (terminal attach)
 
+> **Beta (v2.3.0-beta.1).** This works end to end — attach to the live session, replay history,
+> stream turns, approve permissions, switch models — but it's still getting polish. Expect rough
+> edges in the terminal rendering and a few unwired commands.
+
 Drive or watch a **running** Agent Omega from another device — your phone, a laptop — over SSH,
 in a plain terminal. You join the **live session the desktop window is showing** (it never spins
 up a new one), the recent thread pops up so you have context, and everything streams live:
