@@ -91,8 +91,15 @@ const ATTACH_DIR = process.env.AGENT_OMEGA_ATTACH_DIR || path.join(os.homedir(),
 const ATTACH_FILE = process.env.AGENT_OMEGA_ATTACH || path.join(ATTACH_DIR, process.pid + '.json')
 function writeAttachDescriptor() {
   try {
-    fs.mkdirSync(path.dirname(ATTACH_FILE), { recursive: true })
+    const dir = path.dirname(ATTACH_FILE)
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
     fs.writeFileSync(ATTACH_FILE, JSON.stringify({ port: WS_PORT, apiPort: API_PORT, token: WS_TOKEN, pid: process.pid, cwd: WORKDIR }), { mode: 0o600 })
+    // The descriptor holds the control-socket token, so it MUST stay user-only. writeFileSync's
+    // mode is masked by umask AND ignored on filesystems with a permissive default ACL (some
+    // NAS/network mounts create 0777 regardless) — chmod explicitly, and lock the dir too, so a
+    // world-readable token can't leak the live session on a shared box. Same guard the file vault uses.
+    try { fs.chmodSync(ATTACH_FILE, 0o600) } catch {}
+    try { fs.chmodSync(dir, 0o700) } catch {}
   } catch (e) { console.error('[sidecar] attach descriptor write failed', e.message) }
 }
 function removeAttachDescriptor() { try { fs.unlinkSync(ATTACH_FILE) } catch {} }

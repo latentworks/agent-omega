@@ -1,5 +1,9 @@
 # Remote control (terminal attach)
 
+> **Beta (v2.3.0-beta.1).** This works end to end — attach to the live session, replay history,
+> stream turns, approve permissions, switch models — but it's still getting polish. Expect rough
+> edges in the terminal rendering and a few unwired commands.
+
 Drive or watch a **running** Agent Omega from another device — your phone, a laptop — over SSH,
 in a plain terminal. You join the **live session the desktop window is showing** (it never spins
 up a new one), the recent thread pops up so you have context, and everything streams live:
@@ -18,6 +22,7 @@ talks to the same loopback socket the desktop UI uses. Requires the desktop app 
    - **Windows:** OpenSSH Server (Settings → Optional Features → *OpenSSH Server*, then start the
      `sshd` service). Already enabled on the dev machine.
    - **macOS:** System Settings → General → Sharing → **Remote Login** on.
+   - **Linux:** install + enable OpenSSH server (`sudo apt install openssh-server && sudo systemctl enable --now ssh`, or the distro equivalent). Linux runs Agent Omega in browser mode (`npm run start:linux`); attach the same way — the sidecar it launches writes the same descriptor.
 3. **An SSH client on the phone** — e.g. **Termius**. Add the desktop's Tailscale name/IP.
 
 ## Using it
