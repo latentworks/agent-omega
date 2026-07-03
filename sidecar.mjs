@@ -274,14 +274,6 @@ function validateCouncilPatch(patch) {
     if (patch.memberAccess !== 'none' && patch.memberAccess !== 'readonly') return { ok: false, error: "memberAccess must be 'none' or 'readonly'" }
     clean.memberAccess = patch.memberAccess
   }
-  if ('mode' in patch) {
-    if (patch.mode !== 'manual' && patch.mode !== 'auto') return { ok: false, error: "mode must be 'manual' or 'auto'" }
-    clean.mode = patch.mode
-  }
-  if ('rung' in patch) {
-    if (!['minimal', 'moderate', 'partner'].includes(patch.rung)) return { ok: false, error: "rung must be 'minimal', 'moderate', or 'partner'" }
-    clean.rung = patch.rung
-  }
   if ('members' in patch) {
     if (!Array.isArray(patch.members)) return { ok: false, error: 'members must be an array' }
     const cm = []
@@ -466,7 +458,16 @@ wss.on('connection', (ws) => {
           const resolve = pendingPerms.get(m.toolCallId); if (resolve) { pendingPerms.delete(m.toolCallId); resolve({ outcome: { outcome: 'selected', optionId: m.optionId } }) }
           break
         }
-        case 'setModel': { const prev = curModel; curModel = m.model; try { await conn.unstable_setSessionModel({ sessionId, modelId: curModel }) } catch (e) { curModel = prev; log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + m.model + '" — ' + e.message }) } broadcast({ type: 'model', model: curModel }); break }
+        case 'setModel': {
+          const prev = curModel; curModel = m.model
+          // Switch via set-config-option, whose response carries the FRESH configOptions, rather
+          // than unstable_setSessionModel (empty response): after a mid-session model change the
+          // effort levels/variants differ, so re-extract and re-broadcast so the effort control
+          // stays in sync instead of going stale. (configId 'model' — same parse as the model picker.)
+          try { const r = await conn.setSessionConfigOption({ sessionId, configId: 'model', value: curModel }); extractConfig(r && r.configOptions); broadcast(readyMsg()) }
+          catch (e) { curModel = prev; log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + m.model + '" — ' + e.message }); broadcast({ type: 'model', model: curModel }) }
+          break
+        }
         case 'setAgent': { const prev = curAgent; curAgent = m.agent; try { await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: curAgent }) } catch (e) { curAgent = prev; log('setAgent', e.message); broadcast({ type: 'error', message: 'Could not switch agent — ' + e.message }) } broadcast({ type: 'agent', agent: curAgent }); break }
         case 'setEffort': { if (!effortLevels.length) { broadcast({ type: 'error', message: 'This model has no effort levels.' }); break } const prev = curEffort; curEffort = m.value; try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: curEffort }) } catch (e) { curEffort = prev; log('setEffort', e.message); broadcast({ type: 'error', message: 'Could not set effort — ' + e.message }) } broadcast({ type: 'effort', effort: curEffort }); break }
         case 'getCouncilConfig': {
@@ -541,6 +542,7 @@ wss.on('connection', (ws) => {
           // ordinary update frames between replay-start / replay-end brackets.
           if (typeof m.sessionId !== 'string' || !m.sessionId.trim()) break
           if (busy) { try { await conn.cancel({ sessionId }) } catch {} drainPerms(); busy = false }
+          const prev = sessionId           // capture before replay-start wipes the UI; on failure we stay on this session
           broadcast({ type: 'replay-start', sessionId: m.sessionId })
           try {
             const r = await conn.loadSession({ sessionId: m.sessionId, cwd: WORKDIR, mcpServers: [] })
@@ -551,7 +553,22 @@ wss.on('connection', (ws) => {
             broadcast(readyMsg())
           } catch (e) {
             log('load', e.message)
-            broadcast({ type: 'replay-end', sessionId: m.sessionId, error: friendlyError(e.message) })
+            // Load failed: sessionId was never reassigned, so the sidecar is still on `prev`, but the
+            // UI already cleared its transcript on replay-start. Re-replay `prev` to repopulate it
+            // (mirror the restartEngine restore path) so the UI matches the still-active session.
+            if (prev && conn) {
+              broadcast({ type: 'replay-start', sessionId: prev })
+              try {
+                const r = await conn.loadSession({ sessionId: prev, cwd: WORKDIR, mcpServers: [] })
+                sessionId = prev
+                curModel = ''
+                extractConfig(r && r.configOptions)
+                broadcast({ type: 'replay-end', sessionId, error: friendlyError(e.message) })
+                broadcast(readyMsg())
+              } catch (e2) { log('load-restore', e2.message); broadcast({ type: 'replay-end', sessionId: prev, error: friendlyError(e.message) }); broadcast(readyMsg()) }
+            } else {
+              broadcast({ type: 'replay-end', sessionId: m.sessionId, error: friendlyError(e.message) })
+            }
           }
           break
         }
