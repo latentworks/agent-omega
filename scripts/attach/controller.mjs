@@ -75,7 +75,6 @@ function runRich(d) {
   }
   function buildLive() {
     const w = cols()
-    if (st.menu) { const mv = Math.max(3, Math.min(8, rows() - 9)); return { lines: [...U.selectMenu({ ...st.menu, maxVisible: mv }, w), footer()], cursor: null, menu: true } }
     const lines = []
     if (st.streaming && st.streamBuf) { const tail = st.hasBullet ? U.continuationBlock(st.streamBuf, w) : U.assistantBlock(st.streamBuf, w); for (const r of tail) lines.push(r) }
     if (st.busy) lines.push(U.spinnerLine(st.spin, U.spinnerVerbFor(elapsed()), elapsed(), w))
@@ -84,9 +83,17 @@ function runRich(d) {
     const boxStart = lines.length
     for (const r of ib.rows) lines.push(r)
     lines.push(footer())
-    return { lines, cursor: { row: boxStart + ib.cursorRow, col: ib.cursorCol }, menu: false }
+    return { lines, cursor: { row: boxStart + ib.cursorRow, col: ib.cursorCol } }
   }
-  function paint() { drainStream(); if (st.menu) st.menu.selected = input.menuIndex(); const lr = buildLive(); painter.paint(lr.lines, lr.cursor, lr.menu) }
+  function paint() {
+    drainStream()
+    if (st.menu) {
+      const mv = Math.max(3, Math.min(10, rows() - 6))
+      painter.drawMenu([...U.selectMenu({ ...st.menu, selected: input.menuIndex(), maxVisible: mv }, cols()), '', footer()])
+    } else {
+      const lr = buildLive(); painter.paint(lr.lines, lr.cursor)
+    }
+  }
 
   // ---- input actions ----
   const input = createInput({
@@ -138,9 +145,9 @@ function runRich(d) {
   function openModelMenu() {
     if (!st.models.length) { commit([U.metaLine('(no models reported)', cols())]); return schedule() }
     st.menu = { kind: 'model', title: 'Select model', question: 'Switch the model for this session', options: st.models.map((m) => (m.value || m.name) + (m.value === st.model ? '  (current)' : '')), selected: Math.max(0, st.models.findIndex((m) => m.value === st.model)), hint: '↑/↓ + enter · number · esc cancels' }
-    input.setMenu(st.models.length); schedule()
+    painter.enterMenu(); input.setMenu(st.models.length); schedule()
   }
-  function openPermission(ev) { st.pendingPerm = ev; st.menu = { kind: 'perm', title: 'Permission required', question: ev.title, options: ev.options.map((o) => o.name), selected: 0, hint: '↑/↓ + enter · number · esc denies' }; input.setMenu(ev.options.length); schedule() }
+  function openPermission(ev) { st.pendingPerm = ev; st.menu = { kind: 'perm', title: 'Permission required', question: ev.title, options: ev.options.map((o) => o.name), selected: 0, hint: '↑/↓ + enter · number · esc denies' }; painter.enterMenu(); input.setMenu(ev.options.length); schedule() }
   function menuPick(i) {
     const m = st.menu; if (!m) return
     if (m.kind === 'perm') { const opt = st.pendingPerm.options[i]; transport.permissionReply(st.pendingPerm.toolCallId, opt.optionId); const name = opt.name; closeMenu(); commit([U.metaLine('  ' + U.glyph.elbow + '  ' + name, cols())]) }
@@ -152,7 +159,7 @@ function runRich(d) {
     if (m.kind === 'perm') { const opts = st.pendingPerm.options; const deny = opts.find((o) => /den|reject|no/i.test(o.name)) || opts[opts.length - 1]; transport.permissionReply(st.pendingPerm.toolCallId, deny.optionId); commit([U.metaLine('  ' + U.glyph.elbow + '  ' + deny.name, cols())]) }
     closeMenu(); schedule()
   }
-  function closeMenu() { st.menu = null; st.pendingPerm = null; input.setCompose() }
+  function closeMenu() { painter.exitMenu(); st.menu = null; st.pendingPerm = null; input.setCompose() }
 
   // ---- frames ----
   const transport = createTransport(d, {
@@ -205,10 +212,10 @@ function runRich(d) {
 
   function startSpin() { stopSpin(); spinTimer = setInterval(() => { st.spin++; schedule() }, 120) }
   function stopSpin() { if (spinTimer) clearInterval(spinTimer); spinTimer = null }
-  function shutdown(code) { stopSpin(); try { input.stop() } catch {} try { transport.close() } catch {} process.stdout.write('\x1b[?2004l\x1b[?25h\x1b[0m\n'); process.exit(code) }
-  process.on('exit', () => { try { process.stdout.write('\x1b[?2004l\x1b[?25h\x1b[0m') } catch {} })
+  function shutdown(code) { stopSpin(); try { input.stop() } catch {} try { transport.close() } catch {} process.stdout.write('\x1b[?1049l\x1b[?2004l\x1b[?25h\x1b[0m\n'); process.exit(code) }
+  process.on('exit', () => { try { process.stdout.write('\x1b[?1049l\x1b[?2004l\x1b[?25h\x1b[0m') } catch {} })
   process.on('SIGTERM', () => shutdown(0))
-  process.on('uncaughtException', (e) => { try { process.stdout.write('\x1b[?2004l\x1b[?25h\x1b[0m\n' + String((e && e.stack) || e) + '\n') } catch {}; process.exit(1) })
+  process.on('uncaughtException', (e) => { try { process.stdout.write('\x1b[?1049l\x1b[?2004l\x1b[?25h\x1b[0m\n' + String((e && e.stack) || e) + '\n') } catch {}; process.exit(1) })
   if (process.stdout.on) process.stdout.on('resize', () => paint())   // best-effort erase w/ stale count (steer #3); Ctrl+L = hard resync
 
   input.start(); transport.connect(); paint()

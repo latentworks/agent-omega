@@ -154,40 +154,34 @@ export function headerBox(sessionId, model, width) {
 
 const CSI = '\x1b['
 export function createPainter({ write, cols, rows }) {
-  let cursorUpFromTop = 0, firstPaint = true, pendingCommit = []
+  let cursorUpFromTop = 0, firstPaint = true, pendingCommit = [], inMenu = false
   const termRows = () => (rows ? (rows() || 0) : 0) || 9999
   const commit = (r) => { for (const x of (Array.isArray(r) ? r : [r])) pendingCommit.push(x) }
 
-  function paint(liveLines, cursor, menu) {
-    // cap the live region to the terminal height so it can't scroll its own top off-screen (finding 4)
-    const cap = termRows() - 1
-    if (cap > 2 && liveLines.length > cap) {
-      const drop = liveLines.length - cap
-      liveLines = liveLines.slice(drop)
-      if (cursor) cursor = { row: cursor.row - drop, col: cursor.col }
-    }
+  // Primary-buffer paint: erase the previous live region (exact row count) and redraw. NO menus here.
+  function paint(liveLines, cursor) {
+    const cap = termRows() - 1   // never let the live region be taller than the screen (finding 4)
+    if (cap > 2 && liveLines.length > cap) { const drop = liveLines.length - cap; liveLines = liveLines.slice(drop); if (cursor) cursor = { row: cursor.row - drop, col: cursor.col } }
     const lastRow = liveLines.length - 1
     let out = ''
     if (!firstPaint) { const up = Math.min(Math.max(0, cursorUpFromTop), termRows() - 1); if (up > 0) out += CSI + up + 'A'; out += '\r' + CSI + '0J' }
-    else out += '\r'                                  // finding 9: normalize col before first paint
+    else out += '\r'
     firstPaint = false
     for (const r of pendingCommit) out += r + '\r\n'
     pendingCommit = []
     out += liveLines.join('\r\n')
-    if (menu) {
-      out += CSI + '?25l'
-      if (lastRow > 0) out += CSI + lastRow + 'A'
-      out += '\r'
-      cursorUpFromTop = 0
-    } else {
-      const tr = Math.max(0, Math.min(cursor ? cursor.row : lastRow, lastRow))   // finding 3: clamp
-      const tc = cursor ? Math.max(0, cursor.col) : 0
-      const up = lastRow - tr
-      if (up > 0) out += CSI + up + 'A'
-      out += '\r' + (tc > 0 ? CSI + tc + 'C' : '') + CSI + '?25h'
-      cursorUpFromTop = tr
-    }
+    const tr = Math.max(0, Math.min(cursor ? cursor.row : lastRow, lastRow))
+    const tc = cursor ? Math.max(0, cursor.col) : 0
+    const up = lastRow - tr
+    if (up > 0) out += CSI + up + 'A'
+    out += '\r' + (tc > 0 ? CSI + tc + 'C' : '') + CSI + '?25h'
+    cursorUpFromTop = tr
     write(out)
   }
-  return { commit, paint, reset() { firstPaint = true; cursorUpFromTop = 0; pendingCommit = [] } }
+  // Menus render as a modal on the ALTERNATE screen — cleared on every redraw, transcript restored on
+  // exit. This is immune to scroll drift (the cause of the stacked box-tops on mobile).
+  function enterMenu() { if (!inMenu) { inMenu = true; write(CSI + '?1049h' + CSI + '?25l') } }
+  function drawMenu(menuLines) { write(CSI + 'H' + CSI + '2J' + menuLines.join('\r\n')) }
+  function exitMenu() { if (inMenu) { inMenu = false; write(CSI + '?25h' + CSI + '?1049l') } }
+  return { commit, paint, enterMenu, drawMenu, exitMenu, inMenu: () => inMenu, reset() { firstPaint = true; cursorUpFromTop = 0; pendingCommit = [] } }
 }
