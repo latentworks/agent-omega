@@ -79,11 +79,10 @@ export function errorBlock(text, width) {                                       
   return wrap(text, Math.max(1, width - 2)).map((r, i) => T.errc((i === 0 ? g.cross + ' ' : '  ') + r))
 }
 
-const SPIN_VERBS = ['Thinking', 'Cogitating', 'Brewing', 'Percolating', 'Mulling', 'Noodling', 'Tinkering', 'Working', 'Weaving', 'Scheming', 'Pondering', 'Conjuring']
+const SPIN_VERBS = ['Working', 'Crunching', 'Cooking', 'Churning', 'Wrangling', 'Grinding', 'Chewing', 'Hustling']
 export const spinnerVerbFor = (t) => SPIN_VERBS[Math.floor(t / 8) % SPIN_VERBS.length]
 export function spinnerLine(tick, verb, elapsedS, width) {
-  const n = g.spinner.length, p = tick % (2 * n - 2 || 1)         // mirror-reverse cycle (D23, finding 13)
-  const idx = p < n ? p : (2 * n - 2 - p)
+  const idx = tick % g.spinner.length                            // forward cycle (braille dots)
   const paren = width < 50 ? `(esc · ${elapsedS}s)` : `(esc to interrupt · ${elapsedS}s)`
   return T.accent(g.spinner[idx]) + ' ' + T.accent(verb + '…') + ' ' + T.dim(paren)
 }
@@ -113,11 +112,18 @@ export function inputBox(buf, cursor, width) {
   return { rows: out, cursorRow: 1 + Math.max(0, cr - start), cursorCol: 4 + cc }
 }
 
-export function selectMenu({ title, question, options, selected, hint }, width) {
+// Inner-scrolls when there are more than maxVisible options, so the menu box always fits the screen
+// (a taller-than-terminal menu breaks the live-region erase → the stacking glitch on mobile).
+export function selectMenu({ title, question, options, selected, hint, maxVisible = 8 }, width) {
   const rows = [boxTop(title, width)]
   if (question) { rows.push(boxRow('', width)); for (const r of boxRows(T.warnc(question), width)) rows.push(r) }
   rows.push(boxRow('', width))
-  options.forEach((o, i) => rows.push(boxRow(`${i === selected ? T.accent(g.pointer) : ' '} ${i + 1}. ${o}`, width)))
+  const n = options.length
+  const start = n > maxVisible ? Math.max(0, Math.min((selected | 0) - (maxVisible >> 1), n - maxVisible)) : 0
+  const end = Math.min(n, start + maxVisible)
+  if (start > 0) rows.push(boxRow(T.dim(`  ↑ ${start} more`), width))
+  for (let i = start; i < end; i++) rows.push(boxRow(`${i === selected ? T.accent(g.pointer) : ' '} ${i + 1}. ${options[i]}`, width))
+  if (end < n) rows.push(boxRow(T.dim(`  ↓ ${n - end} more`), width))
   rows.push(boxRow('', width), boxBottom(width))
   if (hint) rows.push('  ' + T.dim(hint))
   return rows

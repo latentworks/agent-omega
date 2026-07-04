@@ -75,7 +75,7 @@ function runRich(d) {
   }
   function buildLive() {
     const w = cols()
-    if (st.menu) return { lines: [...U.selectMenu(st.menu, w), footer()], cursor: null, menu: true }
+    if (st.menu) { const mv = Math.max(3, Math.min(8, rows() - 9)); return { lines: [...U.selectMenu({ ...st.menu, maxVisible: mv }, w), footer()], cursor: null, menu: true } }
     const lines = []
     if (st.streaming && st.streamBuf) { const tail = st.hasBullet ? U.continuationBlock(st.streamBuf, w) : U.assistantBlock(st.streamBuf, w); for (const r of tail) lines.push(r) }
     if (st.busy) lines.push(U.spinnerLine(st.spin, U.spinnerVerbFor(elapsed()), elapsed(), w))
@@ -137,7 +137,7 @@ function runRich(d) {
   }
   function openModelMenu() {
     if (!st.models.length) { commit([U.metaLine('(no models reported)', cols())]); return schedule() }
-    st.menu = { kind: 'model', title: 'Select model', question: 'Switch the model for this session', options: st.models.map((m) => (m.name || m.value) + (m.value === st.model ? '  (current)' : '')), selected: Math.max(0, st.models.findIndex((m) => m.value === st.model)), hint: '↑/↓ + enter · number · esc cancels' }
+    st.menu = { kind: 'model', title: 'Select model', question: 'Switch the model for this session', options: st.models.map((m) => (m.value || m.name) + (m.value === st.model ? '  (current)' : '')), selected: Math.max(0, st.models.findIndex((m) => m.value === st.model)), hint: '↑/↓ + enter · number · esc cancels' }
     input.setMenu(st.models.length); schedule()
   }
   function openPermission(ev) { st.pendingPerm = ev; st.menu = { kind: 'perm', title: 'Permission required', question: ev.title, options: ev.options.map((o) => o.name), selected: 0, hint: '↑/↓ + enter · number · esc denies' }; input.setMenu(ev.options.length); schedule() }

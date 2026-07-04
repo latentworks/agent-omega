@@ -52,6 +52,6 @@ export const bold = (s) => (depth === 0 ? String(s) : `\x1b[1m${s}\x1b[0m`)
 export const italic = (s) => (depth === 0 ? String(s) : `\x1b[3m${s}\x1b[0m`)
 
 // glyphs: Unicode default, ASCII fallback behind ATTACH_ASCII=1
-const U = { bullet: '⏺', elbow: '⎿', pointer: '❯', cross: '✗', tl: '╭', tr: '╮', bl: '╰', br: '╯', h: '─', v: '│', rule: '─', sparkle: '✻', spinner: ['·', '✢', '✳', '✶', '✻', '✽'] }
-const A = { bullet: '*', elbow: 'L', pointer: '>', cross: 'x', tl: '+', tr: '+', bl: '+', br: '+', h: '-', v: '|', rule: '-', sparkle: '*', spinner: ['-', '\\', '|', '/', '|', '\\'] }
+const U = { bullet: '⏺', elbow: '⎿', pointer: '❯', cross: '✗', tl: '╭', tr: '╮', bl: '╰', br: '╯', h: '─', v: '│', rule: '─', sparkle: 'Ω', spinner: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'] }
+const A = { bullet: '*', elbow: 'L', pointer: '>', cross: 'x', tl: '+', tr: '+', bl: '+', br: '+', h: '-', v: '|', rule: '-', sparkle: 'O', spinner: ['-', '\\', '|', '/'] }
 export const glyph = ASCII ? A : U
