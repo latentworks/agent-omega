@@ -1,5 +1,28 @@
 # Harness Experiments — Methods & Results
 
+> ## ⚠️ FINDINGS INVALIDATED — confound discovered 2026-07-03 (kept up for transparency)
+>
+> **Every experiment below is confounded; its conclusions should not be relied on.** The runs did
+> not control for the largest variable in the system prompt: the underlying **opencode engine
+> silently injects its own ~1,400-word base system prompt** (*"You are opencode, an interactive
+> CLI tool…"*) **ahead of** Agent Omega's `AGENTS.md`, in **every** condition — the "full harness"
+> control *and* every "instructions stubbed", "gutted", "both stripped", and "reworded" ablation
+> alike.
+>
+> Consequence: **no run ever executed without a complete coding-agent system prompt.** These tables
+> measure the *marginal* effect of the Agent Omega layer stacked on top of opencode's prompt — not
+> whether Agent Omega's harness is load-bearing (H2), not that it is a local optimum (the aggregate
+> finding), and not the cross-model ordering, all of which assumed the ablated conditions were
+> prompt-light. They were not. This also explains the live symptom that triggered the finding:
+> models identified *as opencode* and behaved nearly the same with or without Agent Omega's prompt —
+> opencode's base prompt was doing the work the entire time.
+>
+> **Fix:** on 2026-07-03 the engine was patched (`session/system.ts` → `provider()` returns `[]`) so
+> it no longer emits opencode's base prompt; Agent Omega's `AGENTS.md` is now the sole system-prompt
+> voice (verified: identity resolves to "Agent Omega", opencode base string absent from the assembled
+> prompt, tool use intact). **Every experiment here must be re-run against that corrected baseline
+> before any conclusion is trusted.** The original text is preserved below, unedited.
+
 A scientific summary of the testing behind the shipped configuration (see [TUNES.md](TUNES.md)
 for the practical guidance it produced). Roughly **3,000 scored task runs** across three models,
 probing the harness from every direction it can be probed: adding to it, removing from it, and

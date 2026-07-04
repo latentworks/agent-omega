@@ -18,7 +18,6 @@
     "local",
     "anthropic",
     "openai",
-    "google",
     "deepseek",
     "moonshotai",
     "zai"
@@ -93,12 +92,6 @@
       "whitelist": [
         "kimi-k2.7-code",
         "kimi-k2.6"
-      ]
-    },
-    "google": {
-      "whitelist": [
-        "gemini-3.5-flash",
-        "gemini-3.1-flash-lite"
       ]
     }
   },

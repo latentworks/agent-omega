@@ -21,6 +21,20 @@ debugging, code-review, run-app, orchestration) are adapted from patterns in the
 MIT-licensed "superpowers" skills collection and Anthropic's Claude Code / OpenAI
 Codex working styles — ideas borrowed and rewritten, credited here.
 
+## System prompts (engine fork change)
+
+Agent Omega's modified engine **replaces opencode's built-in base system prompts with its own**
+(`AGENTS.md`). In the fork, `session/system.ts` no longer emits opencode's identity/behavior
+prompts (`session/prompt/anthropic.txt`, `default.txt`, `beast.txt`, etc.); Agent Omega's prompt
+is the sole system-prompt voice instead of being appended beneath opencode's. The opencode prompt
+files remain present in the fork source, unused — nothing is deleted or hidden.
+
+This is **not** an attempt to strip opencode's branding and pass its work off as Agent Omega's —
+it is the opposite intent: Agent Omega uses opencode's **engine and infrastructure** (agent
+runtime, tool execution, ACP protocol, provider plumbing) while supplying its **own prompts**, so
+the two systems' identities and instructions don't collide. When asked what it is, Agent Omega
+answers as *"Agent Omega, built on opencode"* — explicitly crediting the engine it runs on.
+
 ---
 
 opencode — MIT License
