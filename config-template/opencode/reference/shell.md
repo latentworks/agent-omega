@@ -1,7 +1,7 @@
 # shell
-Running zsh/bash correctly through the `bash` tool on macOS — syntax, useful command equivalents, exit-code traps, and what hangs.
+Running shell commands correctly through the `bash` tool — syntax, useful command equivalents, exit-code traps, and what hangs.
 
-This machine runs zsh (the macOS default login shell) and bash. Use the `bash` tool for terminal work: git, npm, docker, and standard Unix commands. Do NOT use the shell for file work — use the dedicated tools:
+The `bash` tool runs a POSIX shell — zsh/bash on macOS/Linux, git-bash on Windows. Use it for terminal work: git, npm, docker, and standard Unix commands. Do NOT use the shell for file work — use the dedicated tools:
 - Find files: `glob` (NOT `find` / `ls -R`)
 - Search content: `grep` (NOT `grep`/`rg` through the shell)
 - Read files: `read` (NOT `cat` / `head` / `tail`)
@@ -21,10 +21,10 @@ The shell's working directory persists between calls; shell state (variables, fu
 - Commands are plain executables/builtins: `ls`, `cd`, `mkdir`, `rm`, `cat`. Prefer POSIX flags (`-r`, `-f`, `-p`).
 - `|` pipes text (bytes/lines), not objects — filter/shape with `grep`, `cut`, `awk`, `sort`, `xargs`.
 - Env vars: read `$NAME` (or `${NAME}`), set for the session `export NAME="value"`, set for one command inline `NAME=value cmd` (a real bash feature — use it).
-- macOS settings live in `defaults` domains (`defaults read com.apple.finder`), not a registry — read/write with the `defaults` tool, not raw plist paths.
+- OS settings live in a platform store, not a flat file: on Windows use the registry (`reg query` / `reg add`, e.g. `reg query "HKCU\Software\..."`); on macOS use `defaults` domains (`defaults read com.apple.finder`) rather than raw plist paths.
 - Run a native binary whose path has spaces by quoting it: `"/Applications/My App.app/Contents/MacOS/app" arg1 arg2`.
 
-## Handy command notes (macOS is BSD, not GNU — some flags differ)
+## Handy command notes (flags differ by platform — GNU/Linux vs macOS/BSD vs git-bash on Windows)
 - `head` / `tail` → `head -n N file` / `tail -n N file` (prefer the `read` tool)
 - `which` → `command -v name` (portable) or `which name`
 - `touch` → `touch path` (creates if absent, updates mtime if present; does NOT truncate)
@@ -65,11 +65,11 @@ For a message on the command line, `git commit -m "$(cat <<'EOF' … EOF)"` also
 - For big jobs you can offload, hand the unit of work to a subagent via the `task` tool (helper1 / helper2) rather than running everything inline.
 
 ## Secrets vault
-Pull credentials from the local vault instead of hardcoding or prompting. On macOS the vault is backed by the login Keychain:
-```bash
-sh ~/.agent-omega/secrets.sh get KEY
-```
-That wrapper reads from the Keychain; the underlying call is `security find-generic-password -s agent-omega -a vault -w` (returns the stored value on stdout). Don't print a fetched secret except where the immediate command consumes it (e.g. `TOKEN=$(sh ~/.agent-omega/secrets.sh get GH_TOKEN) gh auth …`).
+Pull credentials from the local vault instead of hardcoding or prompting. The vault is encrypted at rest and login-scoped; the CLI contract is identical on every OS — `get NAME | set NAME VALUE | list | rm NAME`, and a value is only ever printed by `get`. Use the wrapper for the host you're on:
+- **Windows:** `powershell -File ~/.agent-omega/scripts/secrets.ps1 get KEY` — Windows DPAPI (CurrentUser scope), stored at `~/.agent-omega/vault.dat`.
+- **macOS:** `sh ~/.agent-omega/secrets.sh get KEY` — the login Keychain (underlying call `security find-generic-password -s agent-omega -a vault -w`).
+
+Don't print a fetched secret except where the immediate command consumes it — e.g. Windows `TOKEN=$(powershell -File ~/.agent-omega/scripts/secrets.ps1 get GH_TOKEN) gh auth …`, macOS `TOKEN=$(sh ~/.agent-omega/secrets.sh get GH_TOKEN) gh auth …`.
 
 ## git
 - Prefer a new commit over amending.

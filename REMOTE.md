@@ -1,8 +1,9 @@
 # Remote control (terminal attach)
 
-> **Beta (v2.3.0-beta.1).** This works end to end — attach to the live session, replay history,
-> stream turns, approve permissions, switch models — but it's still getting polish. Expect rough
-> edges in the terminal rendering and a few unwired commands.
+> **Beta (v2.3.0-beta.2).** Terminal rendering redesigned to a Claude-Code-style TUI — bordered input
+> box, live spinner, tool/permission cards, `+`/`−` diff tinting, arrow-or-digit menus — attach to the
+> live session, replay history, stream turns, approve permissions, switch models. Falls back to a plain
+> scrolling log on dumb terminals / non-TTY (`ATTACH_PLAIN=1`).
 
 Drive or watch a **running** Agent Omega from another device — your phone, a laptop — over SSH,
 in a plain terminal. You join the **live session the desktop window is showing** (it never spins
@@ -25,38 +26,48 @@ talks to the same loopback socket the desktop UI uses. Requires the desktop app 
    - **Linux:** install + enable OpenSSH server (`sudo apt install openssh-server && sudo systemctl enable --now ssh`, or the distro equivalent). Linux browser mode ships on the `linux-browser-mode` branch (not `main`): check out that branch and run `npm run start:linux`; attach the same way — the sidecar it launches writes the same descriptor.
 3. **An SSH client on the phone** — e.g. **Termius**. Add the desktop's Tailscale name/IP.
 
+## Install the `omg` command (one time, on the desktop)
+
+```
+node scripts/install-connect.mjs
+```
+
+Installs a short launcher **`omg`** (and `omega`) onto your PATH so you never type a long path again.
+Open a new shell for it to take effect. `--remove` uninstalls; `--force` installs even if something
+else named `omg` already exists.
+
 ## Using it
 
-SSH into the desktop from Termius, then:
+SSH into the desktop from Termius, then just:
 
 ```
-cd <path-to>/agent-omega     # e.g. ~/agent-omega  (where node_modules is)
-node scripts/attach.mjs
+omg                 # attach — auto-picks if one app is running
+omg <selector>      # a port, a cwd substring, or a descriptor .json path
 ```
 
-You'll see the last ~20 messages, then a live prompt. Type to send. Commands:
+No-install fallback (always works): `node <repo>/scripts/attach.mjs [selector]`.
 
-If more than one Agent Omega is running, `attach.mjs` lists the live ones and asks which to join.
-To skip that, pass a selector — a port or a substring of the instance's folder:
+You land in a Claude-Code-style TUI — a header card, your recent thread, then a bordered input box.
+**Termius tip:** set the host's *on-connect command* to `omg` to drop straight into the agent on SSH.
 
-```
-node scripts/attach.mjs 4599          # attach to the instance on that port
-node scripts/attach.mjs workspace     # attach to the one whose cwd matches
-```
+### Keys
 
-Once attached:
-
-| command | does |
+| key / input | does |
 |---|---|
-| *(any text)* | send it to the agent as a prompt |
-| `1`/`2`/… or `/deny` | answer a permission request when one appears |
-| `/abort` | stop the current turn |
-| `/new` | start a fresh session (leaves the current one) |
-| `/model` | list models (and show current); `/model <number\|name>` switches the active model |
-| `/quit` `/q` | detach (the desktop session keeps running) |
+| *type + Enter* | send a prompt |
+| `\` + Enter, or `Ctrl+J` | newline (multi-line); a paste is inserted, never auto-sent |
+| `↑` / `↓` | recall your recent prompts (history) |
+| in a menu: `↑`/`↓` + Enter, or a digit | choose (permissions, `/model`) |
+| `Esc` | abort the turn · deny a permission · cancel a menu |
+| `Ctrl+C` ×2 | detach · `Ctrl+L` redraws a garbled screen |
+| `/model` | list/switch model (`/model <n\|name>` is non-interactive) |
+| `/commands` | list the agent's slash commands |
+| `/abort` · `/new` · `/quit` | stop the turn · fresh session · detach |
+| any other `/cmd` | forwarded to the agent (`/verify`, `/tdd`, …) |
 
-Tune history depth with `ATTACH_HISTORY=50 node scripts/attach.mjs`. Tip: set the attach command as
-Termius's on-connect command so SSHing in drops you straight into the agent.
+Env knobs: `ATTACH_HISTORY=50` (replay depth) · `ATTACH_PLAIN=1` (force the plain log) ·
+`ATTACH_ASCII=1` (ASCII glyphs for odd fonts) · `ATTACH_THOUGHTS=1` (show thinking) ·
+`ATTACH_DEBUG=1` (raw frames).
 
 ## How it works (short version)
 
@@ -84,7 +95,9 @@ without clobbering each other — you pick which to attach to.
 - **Multiple instances coexist.** Each writes its own `instances/<pid>.json`; attach lists the live
   ones (or takes a port/name selector). Stale descriptors from a crashed instance are ignored
   (the pid is checked) and cleaned up on the next normal exit.
-- **Text, not graphics.** You lose the diff/syntax rendering of the graphical UI by design.
+- **Text, not graphics.** The desktop's graphical chrome (Ω globe, themes) stays on the desktop; the
+  TUI carries the full *functional* session — streaming, tool cards, `+`/`−` diff coloring, menus. Only
+  full syntax-highlighting of code blocks is dropped (a deliberate scope call).
 - **No desktop "remote attached" indicator yet.** The attach is additive and local-only; a future
   polish could badge the window when a terminal is connected.
 - **Cross-platform:** the client is plain Node, so the same `scripts/attach.mjs` works on the macOS

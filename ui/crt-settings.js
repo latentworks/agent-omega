@@ -187,9 +187,21 @@
   }
 
   /* ---- vault edit flow ---- */
-  function startAdd() { ST.editing = { mode: "add" }; ST.delArm = ""; render(); }
-  function startEdit(name) { ST.editing = { mode: "edit", name }; ST.delArm = ""; render(); }
-  function cancelEdit() { ST.editing = null; setFlash(""); render(); }
+  /* ST.row = -1 while a form is open: the inputs own focus, so the selection
+     bar must not linger on a key row (render() would otherwise clamp it to the
+     last row and highlight the wrong line under the open add/edit form). */
+  function startAdd() { ST.editing = { mode: "add" }; ST.delArm = ""; ST.row = -1; render(); }
+  function startEdit(name) { ST.editing = { mode: "edit", name }; ST.delArm = ""; ST.row = -1; render(); }
+  /* After a form closes, put the selection bar back on a key row (the one just edited, or 0)
+     instead of leaving it stranded up on the tab row where startAdd/startEdit parked it (row -1). */
+  function rowAfterForm(editing) {
+    if (editing && editing.mode === "edit" && editing.name && Array.isArray(ST.vaultNames)) {
+      const i = ST.vaultNames.indexOf(editing.name);
+      if (i >= 0) return i;
+    }
+    return 0;
+  }
+  function cancelEdit() { const was = ST.editing; ST.editing = null; setFlash(""); ST.row = rowAfterForm(was); render(); }
   function focusNextEditField() {
     const n = ST.editing && ST.editing.nameEl, v = ST.editing && ST.editing.valEl;
     if (n && typeof n.focus === "function") { if (document.activeElement === n) v && v.focus(); else n.focus(); }
@@ -203,7 +215,7 @@
     if (!val) { setFlash("value required"); ST.editing.valEl && ST.editing.valEl.focus(); return; }
     ws({ type: "vaultSet", name, value: val });
     pendingVault = true; setFlash("saving " + name + "…");
-    ST.editing = null; render();
+    const was = ST.editing; ST.editing = null; ST.row = rowAfterForm(was); render();
   }
   function delKey(name) {
     if (ST.delArm === name) { ws({ type: "vaultRemove", name }); pendingVault = true; setFlash("removing " + name + "…"); ST.delArm = ""; render(); }
@@ -629,13 +641,47 @@
     C.setAction("settings.open", () => open());
   }
   function wireGear() {
-    if (document.getElementById("ftpGearBtn")) return;
     const tb = document.getElementById("titlebar"); if (!tb) return;
-    const right = tb.querySelector("div:last-child"); if (!right) return;
-    const g = el("span", "ctl", "⚙"); g.id = "ftpGearBtn"; g.title = "Settings (/settings · " + (/Mac/.test(navigator.platform || "") ? "⌘," : "Ctrl+,") + ")";
-    g.style.cssText = "cursor:default; color:#3f4a44;";
-    g.addEventListener("click", (e) => { e.stopPropagation(); open(); });
-    right.insertBefore(g, right.firstChild);
+    const isMac = /Mac/.test(navigator.platform || "");
+    /* --- CRT gear: lives in .crt-tb-controls (hidden in the Modern skin) --- */
+    if (!document.getElementById("ftpGearBtn")) {
+      const right = tb.querySelector("div:last-child");
+      if (right) {
+        const g = el("span", "ctl", "⚙"); g.id = "ftpGearBtn"; g.title = "Settings (/settings · " + (isMac ? "⌘," : "Ctrl+,") + ")";
+        g.style.cssText = "cursor:pointer; color:#7c8b82; transition:color .12s;";
+        g.addEventListener("mouseenter", () => { g.style.color = "#cfe0d6"; });
+        g.addEventListener("mouseleave", () => { g.style.color = "#7c8b82"; });
+        g.addEventListener("click", (e) => { e.stopPropagation(); open(); });
+        right.insertBefore(g, right.firstChild);
+      }
+    }
+    /* --- Modern skin: .crt-tb-controls (and its gear) is display:none, so the
+       Modern titlebar had NO mouse path to Settings. Give the inert ⌘K pill a
+       real action (open the command palette) + an honest per-platform label,
+       and drop a Settings gear beside it. Both are styled in modern-theme.css
+       and only shown under body.theme-modern. --- */
+    const pill = tb.querySelector(".m-cmdkpill");
+    if (pill && !pill.dataset.aoWired) {
+      pill.dataset.aoWired = "1";
+      pill.textContent = isMac ? "⌘P" : "Ctrl P";   // the palette is bound to mod+P, not K
+      pill.title = "Command palette (" + (isMac ? "⌘P" : "Ctrl+P") + ")";
+      pill.addEventListener("mousedown", (e) => e.stopPropagation());   // don't start a window drag
+      pill.addEventListener("click", (e) => {
+        e.stopPropagation();
+        try {
+          const C = window.AgentOmegaCommands;
+          if (C && typeof C.open === "function") C.open();
+          else if (C && C.palette && C.palette.show) C.palette.show();
+        } catch (_) {}
+      });
+    }
+    if (pill && !document.getElementById("mGearBtn")) {
+      const mg = el("span", "m-gearbtn", "⚙"); mg.id = "mGearBtn";
+      mg.title = "Settings (/settings · " + (isMac ? "⌘," : "Ctrl+,") + ")";
+      mg.addEventListener("mousedown", (e) => e.stopPropagation());     // don't start a window drag
+      mg.addEventListener("click", (e) => { e.stopPropagation(); open(); });
+      pill.insertAdjacentElement("afterend", mg);
+    }
   }
   /* Ctrl+, global open accelerator (works even before the palette boots) */
   function wireAccelerator() {

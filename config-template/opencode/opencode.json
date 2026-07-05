@@ -7,12 +7,17 @@
     "prune": true,
     "reserved": 1024
   },
-  "plugin": ["./skill-router/index.js", "./verify-guard/index.js", "./iterate-loop/index.js", "./council/index.js", "./engram/index.js"],
+  "plugin": [
+    "./skill-router/index.js",
+    "./verify-guard/index.js",
+    "./iterate-loop/index.js",
+    "./council/index.js",
+    "./engram/index.js"
+  ],
   "enabled_providers": [
     "local",
     "anthropic",
     "openai",
-    "google",
     "deepseek",
     "moonshotai",
     "zai"
@@ -28,7 +33,10 @@
       "models": {
         "local-model": {
           "name": "Local model",
-          "limit": { "context": 32768, "output": 8192 }
+          "limit": {
+            "context": 32768,
+            "output": 8192
+          }
         }
       }
     },
@@ -40,29 +48,51 @@
         "apiKey": "{env:ZAI_API_KEY}",
         "setCacheKey": true
       },
-      "whitelist": ["glm-5.2", "glm-5.1"],
+      "whitelist": [
+        "glm-5.2",
+        "glm-5.1"
+      ],
       "models": {
-        "glm-5.2": { "name": "GLM-5.2" },
-        "glm-5.1": { "name": "GLM-5.1" }
+        "glm-5.2": {
+          "name": "GLM-5.2"
+        },
+        "glm-5.1": {
+          "name": "GLM-5.1"
+        }
       }
     },
     "anthropic": {
-      "whitelist": ["claude-opus-4-8", "claude-fable-5"]
+      "whitelist": [
+        "claude-opus-4-8",
+        "claude-fable-5"
+      ]
     },
     "openai": {
-      "options": { "setCacheKey": true },
-      "whitelist": ["gpt-5.5-pro", "gpt-5.5"]
+      "options": {
+        "setCacheKey": true
+      },
+      "whitelist": [
+        "gpt-5.5-pro",
+        "gpt-5.5"
+      ]
     },
     "deepseek": {
-      "options": { "setCacheKey": true },
-      "whitelist": ["deepseek-v4-pro", "deepseek-v4-flash"]
+      "options": {
+        "setCacheKey": true
+      },
+      "whitelist": [
+        "deepseek-v4-pro",
+        "deepseek-v4-flash"
+      ]
     },
     "moonshotai": {
-      "options": { "setCacheKey": true },
-      "whitelist": ["kimi-k2.7-code", "kimi-k2.6"]
-    },
-    "google": {
-      "whitelist": ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
+      "options": {
+        "setCacheKey": true
+      },
+      "whitelist": [
+        "kimi-k2.7-code",
+        "kimi-k2.6"
+      ]
     }
   },
   "model": "anthropic/claude-opus-4-8",
@@ -84,7 +114,6 @@
     },
     "bash": {
       "*": "allow",
-
       "format *": "deny",
       "diskpart*": "deny",
       "diskutil*": "deny",
@@ -100,7 +129,6 @@
       "wget *": "deny",
       "Invoke-WebRequest*": "deny",
       "Invoke-RestMethod*": "deny",
-
       "*secrets.ps1*": "deny",
       "*secrets.sh*": "deny",
       "*.agent-omega*": "deny",
@@ -126,7 +154,6 @@
       "*GOOGLE_GENERATIVE_AI_API_KEY*": "deny",
       "*process.env*": "deny",
       "*os.environ*": "deny",
-
       "*rm -rf*": "ask",
       "*rm -fr*": "ask",
       "*rm -Rf*": "ask",
@@ -149,8 +176,12 @@
     }
   },
   "agent": {
-    "general": { "disable": true },
-    "explore": { "disable": true },
+    "general": {
+      "disable": true
+    },
+    "explore": {
+      "disable": true
+    },
     "helper1": {
       "mode": "subagent",
       "model": "local/local-model",
@@ -163,5 +194,8 @@
       "description": "Second local worker subagent that runs ALONGSIDE helper1 for parallel work. Use when you want a second subtask running at the same time as helper1.",
       "prompt": "You are a fast worker. The lead hands you a self-contained subtask. Do EXACTLY what you are given - concisely, correctly, completely. You only have what is in the task; rely on it. Return just the result, no preamble."
     }
-  }
+  },
+  "instructions": [
+    "{env:AGENT_OMEGA_AGENTS}"
+  ]
 }

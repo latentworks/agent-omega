@@ -11,6 +11,7 @@
 .m-trafficlights,
 .m-brand,
 .m-cmdkpill,
+.m-gearbtn,
 .m-home-content,
 .m-modelpill-row,
 .m-sendbtn,
@@ -139,7 +140,7 @@ body.theme-modern .m-brand-dot {
 }
 body.theme-modern .m-brand-name { color: #c5c9cf; font-weight: 500; }
 
-/* ⌘K pill */
+/* ⌘K pill — wired to open the command palette (crt-settings.js) */
 body.theme-modern .m-cmdkpill {
   display: flex !important;
   align-items: center;
@@ -153,6 +154,34 @@ body.theme-modern .m-cmdkpill {
   cursor: pointer;
   margin-left: auto;
   flex: 0 0 auto;
+  transition: color .12s, border-color .12s, background .12s;
+}
+body.theme-modern .m-cmdkpill:hover {
+  color: #c5c9cf;
+  border-color: rgba(255,255,255,.14);
+  background: rgba(255,255,255,.06);
+}
+
+/* Settings gear — the only mouse path to Settings in the Modern skin
+   (the CRT gear sits inside .crt-tb-controls, which is hidden here) */
+body.theme-modern .m-gearbtn {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-left: 8px;
+  border-radius: 7px;
+  font-size: 15px;
+  line-height: 1;
+  color: #6b7178;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: color .12s, background .12s;
+}
+body.theme-modern .m-gearbtn:hover {
+  color: #c5c9cf;
+  background: rgba(255,255,255,.06);
 }
 
 /* ===================================================================
@@ -414,7 +443,7 @@ body.theme-modern .think .pk {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 0 !important;   /* hide " thinking" text node (beats inline 21px) */
+  font-size: 0 !important;  /* hide " thinking" text node — !important beats the inline font-size:21px the JS sets, so the invisible label no longer wedges the 3rd dot ~90px away */
   color: transparent;
   text-shadow: none;
 }
@@ -448,7 +477,8 @@ body.theme-modern .think .pk::after {
   animation: mpulse 1.2s ease-in-out infinite;
   animation-delay: .36s;
 }
-/* hide thought body in Modern (wall of debug text isn't part of the design) */
+/* hide thought body in Modern while LIVE (wall of debug text isn't part of the
+   live 3-dot design); the settled block below re-enables it on expand */
 body.theme-modern .think .body { display: none !important; }
 /* Settled thought (settleThinking adds .think-done but keeps .think): stop the
    dots pulsing and drop the invisible/dead disclosure. Modern deliberately hides
@@ -457,6 +487,62 @@ body.theme-modern .think-done .pk::before,
 body.theme-modern .think-done .pk::after { animation: none; opacity: .45; }
 body.theme-modern .think-done .pk { font-size: 12px !important; color: #6b7178; cursor: default; }
 body.theme-modern .think-done .thchev { display: none; }
+
+/* -------------------------------------------------------------------
+   SETTLED "thought" block (.think-done, added by settleThinking()).
+   Without these rules the frozen block inherited the live 3-dot styling:
+   a transparent header + two pulsing pseudo-dots that ran forever and an
+   unreachable body. Restore a readable, collapsible "▸ thought" row.
+   ------------------------------------------------------------------- */
+body.theme-modern .think-done {
+  display: block;          /* header + body stack instead of the 3-dot flex row */
+  font-size: 13px;
+  line-height: 1.4;
+}
+body.theme-modern .think-done .pk {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px !important;   /* beat the inline font-size:21px */
+  color: #6b7178 !important;    /* beat the live color:transparent */
+  cursor: pointer;
+  font-family: 'Geist', 'Segoe UI', system-ui, sans-serif;
+  transition: color .12s;
+}
+body.theme-modern .think-done .pk:hover { color: #9197a0 !important; }
+/* silence the three pulsing pseudo-dots inherited from the live .think .pk */
+body.theme-modern .think-done .pk::before,
+body.theme-modern .think-done .pk::after {
+  content: none !important;
+  display: none !important;
+  animation: none !important;
+}
+body.theme-modern .think-done .thchev {
+  color: var(--ac);
+  font-size: 11px;
+  font-family: 'Geist Mono', 'Courier New', monospace;
+}
+/* reveal the reasoning body when the block is expanded (click toggles .collapsed) */
+body.theme-modern .think-done:not(.collapsed) .body {
+  display: block !important;
+  margin-top: 7px;
+  padding: 9px 11px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: rgba(255,255,255,.022);
+  border: 1px solid rgba(255,255,255,.06);
+  border-radius: 8px;
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #8b9097;
+  white-space: pre-wrap;
+}
+body.theme-modern .think-done:not(.collapsed) .body::-webkit-scrollbar { width: 6px; }
+body.theme-modern .think-done:not(.collapsed) .body::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.08);
+  border-radius: 3px;
+}
 
 /* ===================================================================
    ANSWER TEXT
@@ -487,6 +573,16 @@ body.theme-modern .arow > div > span[style*="color:#ffb454"]::before {
   vertical-align: middle;
   margin-top: -1px;
   font-size: 0;
+}
+/* Fenced code lines: renderMarkdown emits each as an inline-styled
+   <span style="…white-space:pre; font-size:19px;">. That inline 19px + the
+   inherited Geist sans made code blocks larger than body text and non-mono.
+   white-space:pre uniquely marks these spans inside .arow — remap to Geist Mono
+   at 13px (the same size the diff/output cards use). */
+body.theme-modern .arow span[style*="white-space:pre"] {
+  font-family: 'Geist Mono', 'Courier New', monospace !important;
+  font-size: 13px !important;
+  color: #c0c5ce;
 }
 
 /* ===================================================================
@@ -708,13 +804,16 @@ body.theme-modern #chat .inp {
 }
 body.theme-modern #chat .inp::placeholder { color: #5a606a; }
 
-/* The meta line (agent · model · local) inside chat box */
+/* The meta line (agent · model · local) inside chat box.
+   The app.html div carries inline font-size:18px + padding-left:26px, so these
+   overrides need !important (matching the .inp/.urow pattern) or the chip renders
+   oversized and indented, unlike the tidy 12px home pill. */
 body.theme-modern #chat .box > div:last-child {
   font-family: 'Geist Mono', 'Courier New', monospace;
-  font-size: 12px;
+  font-size: 12px !important;
   color: #4d525a;
   text-shadow: none;
-  padding-left: 0;
+  padding-left: 0 !important;
 }
 body.theme-modern #chat .box > div:last-child .metaAgent { color: var(--ac); }
 body.theme-modern #chat .box > div:last-child .metaModel { color: #6b7178; }
@@ -749,6 +848,11 @@ body.theme-modern #statusText {
 }
 body.theme-modern #statusDot { font-size: 10px; }
 
+/* token / cost pills carry a chip background unconditionally, but app.html only
+   fills their text once usage/cost arrive (and resetSession empties them). Hide
+   the empty chips so they don't render as two blank pills before any usage. */
+body.theme-modern #tok:empty,
+body.theme-modern #cost:empty { display: none; }
 body.theme-modern #tok {
   font-family: 'Geist Mono', 'Courier New', monospace;
   font-size: 12px;

@@ -15,12 +15,15 @@ import { readFileSync, appendFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
-import { loadSkills, route, buildDirective, lastUserMessages, ROUTER_N } from './router.mjs'
+import { loadSkills, route, buildDirective, lastUserMessages, ROUTER_N, EXTRACT_URL } from './router.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SKILL_DIR = process.env.ROUTER_SKILL_DIR || join(HERE, '..', 'skill')
+// The router prompt lives HERE (skill-router/router-prompt.md), NOT under skill/, so the engine's
+// per-skill command discovery does not surface an internal /router command that returns "NONE"
+// when a user invokes it (SKL-4). This module is the only consumer of the template.
 const ROUTER_BODY = (() => {
-  try { return readFileSync(join(HERE, 'router.prompt.md'), 'utf8').replace(/^---[\s\S]*?---\s*/, '') } catch { return '' }
+  try { return readFileSync(join(HERE, 'router-prompt.md'), 'utf8').replace(/^---[\s\S]*?---\s*/, '') } catch { return '' }
 })()
 const LOG = process.env.ROUTER_LOG || join(tmpdir(), 'skill-router.log')
 const DRYRUN = ['1', 'true'].includes(process.env.ROUTER_DRYRUN || '')
@@ -30,6 +33,39 @@ const SkillRouterPlugin = async ({ client }) => {
   const skills = loadSkills(SKILL_DIR)
   log(`loaded skills=[${Object.keys(skills).join(', ')}] n=${ROUTER_N} dryrun=${DRYRUN} routerBody=${ROUTER_BODY.length}b`)
   const cache = new Map() // sessionID -> { query, directive } : route once per user message, not per sub-step
+
+  // The router fails OPEN (a classify failure resolves to '' and never blocks a turn), but that
+  // silence hid a whole disabled feature behind a file-log line the user never sees. Surface it
+  // ONCE per app run via the SDK's toast channel so a broken/unset classifier is not invisible.
+  // (Unset endpoint on a pure-cloud lead is acceptable-by-design — frontier models self-invoke
+  // skills — so word that case softly; an endpoint that's set but unreachable is worded as a fault.)
+  let inertNotified = false
+  async function notifyInert(err) {
+    if (inertNotified) return
+    inertNotified = true
+    const detail = String((err && err.message) || err)
+    // Three distinct states, not two: (a) no endpoint configured; (b) endpoint set but the
+    // classifier could not be reached AT ALL (refused / DNS / timeout); (c) the classifier was
+    // reached but its reply was unusable (non-2xx, or a 200 with an unparseable body). Only (b) is
+    // "unreachable" — routerCall tags the error with `.reachable` so (c) isn't mislabeled as (b).
+    let state, msg
+    if (!EXTRACT_URL) {
+      state = 'unconfigured'
+      msg = 'Skill router: no local classifier configured — automatic skill routing is off (fine for cloud models, which invoke skills themselves).'
+    } else if (err && err.reachable === true) {
+      state = 'bad-response'
+      msg = `Skill router: local classifier responded but its reply was unusable (${detail}) — automatic skill routing is off this session.`
+    } else {
+      state = 'unreachable'
+      msg = `Skill router: local classifier unreachable (${detail}) — automatic skill routing is off this session.`
+    }
+    log(`INERT NOTICE (${state}): ${msg}`)
+    try {
+      if (client && client.tui && typeof client.tui.showToast === 'function') {
+        await client.tui.showToast({ body: { title: 'Skill router', message: msg, variant: 'warning' } })
+      }
+    } catch (e) { log(`toast failed: ${e}`) }
+  }
 
   async function recentMessages(sessionID) {
     try {
@@ -61,6 +97,7 @@ const SkillRouterPlugin = async ({ client }) => {
                 names = await route({ routerBody: ROUTER_BODY, skills, messages })
               } catch (e) {
                 log(`route error ${sessionID}: ${e}`)
+                notifyInert(e) // one-time visible notice; never awaited (fully self-guarded)
                 return ''
               }
               log(`routed ${sessionID} -> [${names.join(', ') || 'NONE'}]  «${messages[messages.length - 1].slice(0, 60)}»`)
