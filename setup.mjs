@@ -74,6 +74,21 @@ async function main() {
   } else if (isAgentOmega(CFG_DIR)) {
     cpSync(tmpl, CFG_DIR, { recursive: true, force: true, filter: copyFilter(true) })
     console.log('  upgraded Agent Omega plugin config in ' + CFG_DIR + ' (kept your opencode.json, council roster, and memory)')
+    // PRESERVE keeps the user's opencode.json, so critical NEW template keys never reach an upgraded
+    // install. Patch in the ones that MUST be present — currently the `instructions` injection that
+    // guarantees AGENTS.md reaches the model (opencode ignores the config-dir AGENTS.md, #7003/#11534);
+    // without it an UPGRADED install silently runs with NO operating instructions (the shipped heart).
+    try {
+      const up = path.join(CFG_DIR, 'opencode.json')
+      const uc = JSON.parse(readFileSync(up, 'utf8'))
+      const want = '{env:AGENT_OMEGA_AGENTS}'
+      const list = Array.isArray(uc.instructions) ? uc.instructions : []
+      if (!list.includes(want)) {
+        uc.instructions = [want, ...list]
+        writeFileSync(up, JSON.stringify(uc, null, 2) + '\n')
+        console.log('  patched opencode.json: restored AGENTS.md system-prompt injection (instructions)')
+      }
+    } catch (e) { console.error('  WARN: could not ensure `instructions` in opencode.json:', e.message) }
   } else {
     console.error('\n  ' + CFG_DIR + ' already exists and is NOT an Agent Omega install')
     console.error('  (it looks like your own opencode config). Refusing to overwrite it.')
