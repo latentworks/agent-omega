@@ -24,6 +24,7 @@ const EngramPlugin = async ({ client, directory }) => {
 
   const fmt = (f) => { const s = String((f && f.statement) || ''); const body = s.length > 600 ? s.slice(0, 600) + '…' : s; const tag = (f && f.source && f.source !== 'chat') ? `⚠ [from ${f.source} content, unverified] ` : ''; return `• ${tag}${body}${f && f.status === 'superseded' ? '  (superseded)' : ''}` }
   const recallCache = new Map() // sessionID -> { query, block } so we don't re-query each sub-step
+  const compactingNow = new Map() // sessionID -> ts; set on compaction, consumed by messages.transform so memory is never injected INTO a summary request (would create a capture feedback loop)
 
   // Read the latest user message in a session (the auto-recall query).
   async function latestUserText(sessionID) {
@@ -49,6 +50,7 @@ const EngramPlugin = async ({ client, directory }) => {
       // guarantee than a wrapper here.
       try {
         const sessionID = input && input.sessionID // destructure inside (a null arg must not throw uncaught)
+        if (sessionID) compactingNow.set(sessionID, Date.now()) // stamp: messages.transform fires next on this same compaction path — it must skip so facts aren't baked into the summary
         log(`compaction on ${sessionID} — capturing what falls off`)
         const r = await engram.captureAtCompaction(sessionID, directory)
         // A brief, visible "writing memory" pause — like Claude. The currently-loaded
@@ -67,17 +69,40 @@ const EngramPlugin = async ({ client, directory }) => {
       }
     },
 
-    // AUTO-RECALL: every turn, surface the durable facts relevant to what the user
-    // just asked into the system prompt — so the agent (esp. a weak local lead) gets
-    // its memory WITHOUT having to decide to call recall.
+    // Curated file-based memory index (memory/MEMORY.md) — the "loaded each session" index AGENTS.md
+    // promises. It's STABLE within a session (unchanging text), so it stays in the front system array
+    // where it's cache-safe. The DYNAMIC auto-recall block does NOT go here — see messages.transform below.
     'experimental.chat.system.transform': async (input, output) => {
       try {
         const sessionID = input && input.sessionID
         if (!sessionID || !output || !Array.isArray(output.system)) return
-        // Curated file-based memory index (memory/MEMORY.md) — the "loaded each session" index
-        // AGENTS.md promises. Injected every turn (it's small); absent file => nothing added.
         const memIndex = readMemoryIndex()
         if (memIndex) output.system.push(`## Curated memory index (memory/MEMORY.md)\nYour standing notes across sessions. When a task relates to a listed entry, read that memory file before acting.\n\n${memIndex}`)
+      } catch (e) {
+        log(`system.transform error: ${e}`)
+      }
+    },
+
+    // AUTO-RECALL: every turn, surface durable facts relevant to what the user just asked — as a
+    // synthetic text part on the LAST USER message (the recency slot, OpenCode's own reminders.ts
+    // pattern), NOT a front system message. A dynamic block at the front changes every turn and
+    // invalidates llama.cpp's prefix cache right after the base prompt → full re-prefill of the whole
+    // context each turn (~98s on big local contexts, e.g. the 122B). At the end, the STABLE prefix
+    // (base system prompt + older history) stays byte-identical so the cache holds; because the block is
+    // ephemeral, only the previous exchange + the new user msg re-prefill — hundreds of tokens, not ~20K.
+    'experimental.chat.messages.transform': async (input, output) => {
+      try {
+        if (!output || !Array.isArray(output.messages)) return
+        const userMessage = output.messages.findLast((m) => m && m.info && m.info.role === 'user')
+        if (!userMessage || !userMessage.info) return
+        const sessionID = userMessage.info.sessionID // this hook's input is {} — derive session from the messages
+        if (!sessionID) return
+        // Compaction guard: this hook ALSO fires while summarizing (compaction.ts). Never inject memory
+        // into the text being summarized, or facts get baked into the summary and re-captured (feedback loop).
+        const stamped = compactingNow.get(sessionID)
+        if (stamped && Date.now() - stamped < 10000) { compactingNow.delete(sessionID); return }
+        // Idempotency: never double-inject onto the same message object.
+        if ((userMessage.parts || []).some((p) => p && p.type === 'text' && typeof p.text === 'string' && p.text.startsWith('## Long-term memory (engram)'))) return
         const query = await latestUserText(sessionID)
         if (!query || query.length < 4) return
         const cached = recallCache.get(sessionID)
@@ -96,11 +121,12 @@ const EngramPlugin = async ({ client, directory }) => {
           recallCache.set(sessionID, { query, block })
         }
         if (block) {
-          output.system.push(block)
-          log(`auto-recall injected ${block.split('\n').length - 2} fact(s) for ${sessionID}`)
+          if (!Array.isArray(userMessage.parts)) userMessage.parts = []
+          userMessage.parts.push({ id: 'prt-engram-recall', messageID: userMessage.info.id, sessionID, type: 'text', text: block, synthetic: true })
+          log(`auto-recall appended ${block.split('\n').length - 2} fact(s) to last user msg for ${sessionID}`)
         }
       } catch (e) {
-        log(`system.transform error: ${e}`)
+        log(`messages.transform error: ${e}`)
       }
     },
 
