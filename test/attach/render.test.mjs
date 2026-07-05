@@ -13,10 +13,11 @@ test('headerBox: box integrity + fits width (60 and 44)', () => {
     assert.ok(rows[rows.length - 1].includes('╰') && rows[rows.length - 1].includes('╯'), 'bottom border')
   }
 })
-test('assistantBlock: bullet on row 0, hang-indent, fits', () => {
+test('assistantBlock: Ω sparkle on row 0, hang-indent, fits', () => {
   const rows = U.assistantBlock('a fairly long assistant response that must wrap across several lines at this width for sure', 40)
   allFit(rows, 40)
-  assert.ok(rows[0].startsWith('⏺ '), 'bullet')
+  const bare = (s) => s.replace(/\x1b\[[0-9;]*m/g, '')
+  assert.ok(bare(rows[0]).startsWith(U.glyph.sparkle + ' '), 'Ω sparkle (theme-aware)')
   for (let i = 1; i < rows.length; i++) assert.ok(rows[i].startsWith('  '), 'hang indent row ' + i)
 })
 test('inputBox: bordered at 60, borderless below 30, cursor inside', () => {

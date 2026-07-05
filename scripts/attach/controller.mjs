@@ -49,6 +49,7 @@ function runRich(d) {
     busy: false, conn: 'connecting', streamBuf: '', streaming: false, hasBullet: false,
     menu: null, pendingPerm: null, spin: 0, turnStart: 0, historyDone: false, exit: false, busyFlash: false,
     thoughtBuf: '', thinking: false, thoughtBullet: false, waiting: false,
+    primed: false, gotOutput: false,   // primed=cache warm for this session/model; gotOutput=first token seen this turn
   }
   let paintQueued = false, spinTimer = null
   const commit = (r) => painter.commit(r)
@@ -82,7 +83,11 @@ function runRich(d) {
     const lines = []
     if (st.thinking && st.thoughtBuf) { const tt = st.thoughtBullet ? U.thinkingCont(st.thoughtBuf, w) : U.thinkingBlock(st.thoughtBuf, w); for (const r of tt) lines.push(r) }
     if (st.streaming && st.streamBuf) { const tail = st.hasBullet ? U.continuationBlock(st.streamBuf, w) : U.assistantBlock(st.streamBuf, w); for (const r of tail) lines.push(r) }
-    if (st.busy || st.waiting) lines.push(U.spinnerLine(st.spin, st.waiting && !st.busy ? 'Waiting for the model' : U.spinnerVerbFor(elapsed()), elapsed(), w))
+    if (st.busy || st.waiting) {
+      // first turn of a session/model, before any token → the model is prefilling + priming the cache (the slow ~one-time cost)
+      const verb = (!st.primed && !st.gotOutput) ? 'First-round caching' : (st.waiting && !st.busy ? 'Waiting for the model' : U.spinnerVerbFor(elapsed()))
+      lines.push(U.spinnerLine(st.spin, verb, elapsed(), w))
+    }
     lines.push('')
     const ib = U.inputBox(input.buffer().buf, input.buffer().cursor, w)
     const boxStart = lines.length
@@ -119,7 +124,7 @@ function runRich(d) {
   function sendPrompt(t) {
     const ok = transport.prompt(t)
     commit(U.userBlock(t, cols())); commit([''])
-    if (ok) { st.waiting = true; st.turnStart = now(); startSpin() } else commit([U.metaLine('(not sent — reconnecting; resend when live)', cols())])
+    if (ok) { st.waiting = true; st.gotOutput = false; st.turnStart = now(); startSpin() } else commit([U.metaLine('(not sent — reconnecting; resend when live)', cols())])
     schedule()
   }
   function slash(t) {
@@ -132,7 +137,7 @@ function runRich(d) {
     if (name === 'model' || name === 'models') return args ? switchModel(args) : openModelMenu()
     const ok = transport.command(head, args)
     commit(U.userBlock('/' + head + (args ? ' ' + args : ''), cols())); commit([''])
-    if (ok) { st.waiting = true; st.turnStart = now(); startSpin() } else commit([U.metaLine('(not sent — reconnecting)', cols())])
+    if (ok) { st.waiting = true; st.gotOutput = false; st.turnStart = now(); startSpin() } else commit([U.metaLine('(not sent — reconnecting)', cols())])
     schedule()
   }
   function listCommands() {
@@ -184,20 +189,20 @@ function runRich(d) {
         if (ev.models) st.models = ev.models
         st.conn = 'live'
         if (!st.historyDone) { commit(U.headerBox(st.sessionId, st.model, cols())); commit(['']); replay() }
-        else if (!same) { commit([U.ruleLine('new session', cols()), '']); st.historyDone = false; if (st.menu) closeMenu(); replay() }
+        else if (!same) { st.primed = false; commit([U.ruleLine('new session', cols()), '']); st.historyDone = false; if (st.menu) closeMenu(); replay() }
         else commit([U.ruleLine('reconnected', cols())])
         schedule(); break
       }
       case 'commands': st.commands = ev.commands; break
-      case 'text': st.waiting = false; flushThought(); st.streaming = true; st.streamBuf += ev.text; schedule(); break
-      case 'tool': st.waiting = false; flushThought(); flushStream(); commit(['']); commit(U.toolBlock(ev.title, cols())); commit(['']); schedule(); break
-      case 'thinking': st.waiting = false; st.thinking = true; st.thoughtBuf += ev.text; schedule(); break
+      case 'text': st.waiting = false; st.gotOutput = true; flushThought(); st.streaming = true; st.streamBuf += ev.text; schedule(); break
+      case 'tool': st.waiting = false; st.gotOutput = true; flushThought(); flushStream(); commit(['']); commit(U.toolBlock(ev.title, cols())); commit(['']); schedule(); break
+      case 'thinking': st.waiting = false; st.gotOutput = true; st.thinking = true; st.thoughtBuf += ev.text; schedule(); break
       case 'permission': flushThought(); flushStream(); openPermission(ev); break
       case 'turn-start': st.busy = true; st.waiting = false; if (!st.turnStart) st.turnStart = now(); startSpin(); schedule(); break
-      case 'turn-end': st.busy = false; st.waiting = false; st.turnStart = 0; stopSpin(); flushThought(); flushStream(); commit(['']); schedule(); break
+      case 'turn-end': st.busy = false; st.waiting = false; st.primed = true; st.turnStart = 0; stopSpin(); flushThought(); flushStream(); commit(['']); schedule(); break
       case 'error': st.busy = false; st.waiting = false; st.turnStart = 0; stopSpin(); flushThought(); flushStream(); commit(U.errorBlock(ev.message, cols())); schedule(); break
       case 'engine-down': st.conn = 'down'; commit(U.errorBlock('engine down: ' + ev.message, cols())); schedule(); break
-      case 'model': st.model = ev.model; commit([U.metaLine('model → ' + ev.model, cols())]); schedule(); break
+      case 'model': st.model = ev.model; st.primed = false; commit([U.metaLine('model → ' + ev.model, cols())]); schedule(); break
       case 'agent': commit([U.metaLine('agent → ' + ev.agent, cols())]); schedule(); break
       case 'effort': commit([U.metaLine('effort → ' + ev.effort, cols())]); schedule(); break
       case 'replay-start': commit([U.metaLine('(reloading session…)', cols())]); schedule(); break

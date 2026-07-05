@@ -59,8 +59,8 @@ function proseBlock(prefix, text, width, { md = false } = {}) {
 export function userBlock(text, width) {
   return (wrap(text, Math.max(1, width - 2)) || ['']).map((ln, i) => T.dim((i === 0 ? '> ' : '  ') + ln))
 }
-// assistant bullet is DEFAULT foreground (fg), not accent — accent is reserved for sparkle/spinner/pointer (§3.2, finding 12)
-export function assistantBlock(text, width) { return proseBlock(g.bullet + ' ', text, width, { md: true }) }
+// assistant responses are marked with the Ω sparkle (accent) — the Agent Omega brand mark (theme-aware: Ω in CRT, O in ASCII)
+export function assistantBlock(text, width) { return proseBlock(T.accent(g.sparkle) + ' ', text, width, { md: true }) }
 export function continuationBlock(text, width) { return proseBlock('  ', text, width, { md: true }) }
 export function toolBlock(title, width) {
   const m = /^(\w+)(\(.*)$/.exec(title)
