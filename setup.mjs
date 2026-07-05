@@ -74,6 +74,31 @@ async function main() {
   } else if (isAgentOmega(CFG_DIR)) {
     cpSync(tmpl, CFG_DIR, { recursive: true, force: true, filter: copyFilter(true) })
     console.log('  upgraded Agent Omega plugin config in ' + CFG_DIR + ' (kept your opencode.json, council roster, and memory)')
+    // PRESERVE keeps the user's opencode.json, so critical NEW template keys never reach an upgraded
+    // install. Patch in the ones that MUST be present — currently the `instructions` injection that
+    // guarantees AGENTS.md reaches the model (opencode ignores the config-dir AGENTS.md, #7003/#11534);
+    // without it an UPGRADED install silently runs with NO operating instructions (the shipped heart).
+    try {
+      const up = path.join(CFG_DIR, 'opencode.json')
+      const uc = JSON.parse(readFileSync(up, 'utf8'))
+      const tc = JSON.parse(readFileSync(path.join(tmpl, 'opencode.json'), 'utf8'))
+      let changed = false
+      // (a) AGENTS.md injection — the shipped operating instructions reach the model (b67d6d6).
+      const want = '{env:AGENT_OMEGA_AGENTS}'
+      const instr = Array.isArray(uc.instructions) ? uc.instructions : []
+      if (!instr.includes(want)) { uc.instructions = [want, ...instr]; changed = true }
+      // (b) Shipped plugins: PRESERVE keeps the user's plugin[], so a NEW template plugin (e.g. the
+      // `setup` subsystem) never loads on upgrade — its tools/commands silently vanish. Union in any
+      // shipped plugin the user is missing (append in template order; their extras/order untouched).
+      const shipped = Array.isArray(tc.plugin) ? tc.plugin : []
+      const have = Array.isArray(uc.plugin) ? uc.plugin : []
+      const missing = shipped.filter((p) => !have.includes(p))
+      if (missing.length) { uc.plugin = [...have, ...missing]; changed = true }
+      if (changed) {
+        writeFileSync(up, JSON.stringify(uc, null, 2) + '\n')
+        console.log('  patched opencode.json: ensured AGENTS.md injection + shipped plugins reach this upgrade')
+      }
+    } catch (e) { console.error('  WARN: could not reconcile opencode.json on upgrade:', e.message) }
   } else {
     console.error('\n  ' + CFG_DIR + ' already exists and is NOT an Agent Omega install')
     console.error('  (it looks like your own opencode config). Refusing to overwrite it.')
