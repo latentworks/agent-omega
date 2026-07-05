@@ -48,6 +48,7 @@ function runRich(d) {
     sessionId: null, model: '', apiPort: d.apiPort, apiAuth: '', commands: [], models: [],
     busy: false, conn: 'connecting', streamBuf: '', streaming: false, hasBullet: false,
     menu: null, pendingPerm: null, spin: 0, turnStart: 0, historyDone: false, exit: false, busyFlash: false,
+    thoughtBuf: '', thinking: false, thoughtBullet: false, waiting: false,
   }
   let paintQueued = false, spinTimer = null
   const commit = (r) => painter.commit(r)
@@ -58,6 +59,9 @@ function runRich(d) {
   function commitAssistant(text) { if (!text) return; commit(st.hasBullet ? U.continuationBlock(text, cols()) : U.assistantBlock(text, cols())); st.hasBullet = true }
   function drainStream() { const nl = st.streamBuf.lastIndexOf('\n'); if (nl < 0) return; commitAssistant(st.streamBuf.slice(0, nl)); st.streamBuf = st.streamBuf.slice(nl + 1) }
   function flushStream() { if (st.streamBuf) commitAssistant(st.streamBuf); st.streamBuf = ''; st.streaming = false; st.hasBullet = false }
+  function commitThought(text) { if (!text) return; commit(st.thoughtBullet ? U.thinkingCont(text, cols()) : U.thinkingBlock(text, cols())); st.thoughtBullet = true }
+  function drainThought() { const nl = st.thoughtBuf.lastIndexOf('\n'); if (nl < 0) return; commitThought(st.thoughtBuf.slice(0, nl)); st.thoughtBuf = st.thoughtBuf.slice(nl + 1) }
+  function flushThought() { if (st.thoughtBuf) commitThought(st.thoughtBuf); st.thoughtBuf = ''; st.thinking = false; st.thoughtBullet = false }
 
   // ---- live region (cursor offset applied in exactly one place — steer #2) ----
   function footer() {
@@ -76,8 +80,9 @@ function runRich(d) {
   function buildLive() {
     const w = cols()
     const lines = []
+    if (st.thinking && st.thoughtBuf) { const tt = st.thoughtBullet ? U.thinkingCont(st.thoughtBuf, w) : U.thinkingBlock(st.thoughtBuf, w); for (const r of tt) lines.push(r) }
     if (st.streaming && st.streamBuf) { const tail = st.hasBullet ? U.continuationBlock(st.streamBuf, w) : U.assistantBlock(st.streamBuf, w); for (const r of tail) lines.push(r) }
-    if (st.busy) lines.push(U.spinnerLine(st.spin, U.spinnerVerbFor(elapsed()), elapsed(), w))
+    if (st.busy || st.waiting) lines.push(U.spinnerLine(st.spin, st.waiting && !st.busy ? 'Waiting for the model' : U.spinnerVerbFor(elapsed()), elapsed(), w))
     lines.push('')
     const ib = U.inputBox(input.buffer().buf, input.buffer().cursor, w)
     const boxStart = lines.length
@@ -86,7 +91,7 @@ function runRich(d) {
     return { lines, cursor: { row: boxStart + ib.cursorRow, col: ib.cursorCol } }
   }
   function paint() {
-    drainStream()
+    drainThought(); drainStream()
     if (st.menu) {
       const mv = Math.max(3, Math.min(10, rows() - 6))
       painter.drawMenu([...U.selectMenu({ ...st.menu, selected: input.menuIndex(), maxVisible: mv }, cols()), '', footer()])
@@ -114,7 +119,7 @@ function runRich(d) {
   function sendPrompt(t) {
     const ok = transport.prompt(t)
     commit(U.userBlock(t, cols())); commit([''])
-    if (!ok) commit([U.metaLine('(not sent — reconnecting; resend when live)', cols())])
+    if (ok) { st.waiting = true; st.turnStart = now(); startSpin() } else commit([U.metaLine('(not sent — reconnecting; resend when live)', cols())])
     schedule()
   }
   function slash(t) {
@@ -127,7 +132,7 @@ function runRich(d) {
     if (name === 'model' || name === 'models') return args ? switchModel(args) : openModelMenu()
     const ok = transport.command(head, args)
     commit(U.userBlock('/' + head + (args ? ' ' + args : ''), cols())); commit([''])
-    if (!ok) commit([U.metaLine('(not sent — reconnecting)', cols())])
+    if (ok) { st.waiting = true; st.turnStart = now(); startSpin() } else commit([U.metaLine('(not sent — reconnecting)', cols())])
     schedule()
   }
   function listCommands() {
@@ -184,13 +189,13 @@ function runRich(d) {
         schedule(); break
       }
       case 'commands': st.commands = ev.commands; break
-      case 'text': st.streaming = true; st.streamBuf += ev.text; schedule(); break
-      case 'tool': flushStream(); commit(['']); commit(U.toolBlock(ev.title, cols())); commit(['']); schedule(); break
-      case 'thinking': flushStream(); commit(U.thinkingBlock(ev.text, cols())); schedule(); break
-      case 'permission': flushStream(); openPermission(ev); break
-      case 'turn-start': st.busy = true; st.turnStart = now(); startSpin(); schedule(); break
-      case 'turn-end': st.busy = false; stopSpin(); flushStream(); commit(['']); schedule(); break
-      case 'error': st.busy = false; stopSpin(); flushStream(); commit(U.errorBlock(ev.message, cols())); schedule(); break
+      case 'text': st.waiting = false; flushThought(); st.streaming = true; st.streamBuf += ev.text; schedule(); break
+      case 'tool': st.waiting = false; flushThought(); flushStream(); commit(['']); commit(U.toolBlock(ev.title, cols())); commit(['']); schedule(); break
+      case 'thinking': st.waiting = false; st.thinking = true; st.thoughtBuf += ev.text; schedule(); break
+      case 'permission': flushThought(); flushStream(); openPermission(ev); break
+      case 'turn-start': st.busy = true; st.waiting = false; if (!st.turnStart) st.turnStart = now(); startSpin(); schedule(); break
+      case 'turn-end': st.busy = false; st.waiting = false; st.turnStart = 0; stopSpin(); flushThought(); flushStream(); commit(['']); schedule(); break
+      case 'error': st.busy = false; st.waiting = false; st.turnStart = 0; stopSpin(); flushThought(); flushStream(); commit(U.errorBlock(ev.message, cols())); schedule(); break
       case 'engine-down': st.conn = 'down'; commit(U.errorBlock('engine down: ' + ev.message, cols())); schedule(); break
       case 'model': st.model = ev.model; commit([U.metaLine('model → ' + ev.model, cols())]); schedule(); break
       case 'agent': commit([U.metaLine('agent → ' + ev.agent, cols())]); schedule(); break

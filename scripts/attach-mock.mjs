@@ -79,9 +79,11 @@ async function main() {
     ok('history replayed (SKIP_PART skipped)', /earlier answer/.test(plain()) && /earlier question/.test(plain()))
 
     ws1.send(JSON.stringify({ type: 'turn-start' }))
+    ws1.send(JSON.stringify({ type: 'update', update: { sessionUpdate: 'agent_thought_chunk', content: { text: 'Let me reason about the failing test first.\n' } } }))
     ws1.send(JSON.stringify({ type: 'update', update: { sessionUpdate: 'assistant', content: { text: 'Looking at the auth test.\n' } } }))
     ws1.send(JSON.stringify({ type: 'update', update: { toolCall: { title: 'Bash(npm test -- auth)' } } }))
     await sleep(250)
+    ok('thinking trace shown by default', /Thinking…/.test(plain()) && /reason about the failing/.test(plain()))
     ok('streamed text rendered', /Looking at the auth test/.test(plain()))
     ok('tool call rendered', /Bash\(npm test -- auth\)/.test(plain()))
 

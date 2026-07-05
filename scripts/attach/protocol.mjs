@@ -4,7 +4,7 @@
 // (CR resets the cursor; tabs render up to 8 cols; emoji VS16 renders 2-wide but measures 0).
 
 const DEBUG = ['1', 'true'].includes(process.env.ATTACH_DEBUG || '')
-const THOUGHTS = !!process.env.ATTACH_THOUGHTS   // match original: ANY truthy value shows thoughts
+const THOUGHTS = !['1', 'true'].includes(process.env.ATTACH_NO_THOUGHTS || '')   // show thinking traces by DEFAULT (hide with ATTACH_NO_THOUGHTS=1)
 
 // Strip ESC/CSI/OSC + C0 controls. Class \x0b-\x1f also removes CR (0x0d). Keeps \n (0x0a).
 const STRIP = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]|[\x00-\x08\x0b-\x1f\x7f]/g

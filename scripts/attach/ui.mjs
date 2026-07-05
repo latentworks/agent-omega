@@ -68,10 +68,12 @@ export function toolBlock(title, width) {
   return proseBlock(T.okc(g.bullet) + ' ', styled, width)
 }
 export function thinkingBlock(text, width) {
-  const rows = [T.accent(g.sparkle) + ' ' + T.accent('Thinking…')]   // label is accent (§3.4.5, finding 12)
+  const rows = [T.accent(g.sparkle) + ' ' + T.accent('Thinking…')]   // label once, then dim-italic trace
   for (const r of wrap(text, Math.max(1, width - 2))) rows.push('  ' + T.dim(T.italic(r)))
   return rows
 }
+// continuation of a thinking burst already begun (no fresh label; dim-italic, indent 2)
+export function thinkingCont(text, width) { return wrap(text, Math.max(1, width - 2)).map((r) => '  ' + T.dim(T.italic(r))) }
 export const metaLine = (text, width) => T.dim(truncate(text, width))                        // single line (footer/inline)
 export const metaBlock = (text, width) => wrap(text, width).map((r) => T.dim(r))               // wrapped (transcript)
 export const errorLine = (text, width) => T.errc(truncate(g.cross + ' ' + text, width))        // single line (footer)
