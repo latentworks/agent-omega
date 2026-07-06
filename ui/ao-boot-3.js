@@ -615,11 +615,7 @@
         teardownSkip();
         clearTimers();
         if (globeRaf) { cancelAnimationFrame(globeRaf); globeRaf = null; }
-        finishTimers.push(setTimeout(function () {
-          root.style.transition = 'opacity ' + (DONE_FADE / 1000) + 's ease';
-          root.style.opacity    = '0';
-          finishTimers.push(setTimeout(unmount, DONE_FADE + 40));
-        }, POST_SETTLE));
+        finishTimers.push(setTimeout(function () { crossfadeAndUnmount(DONE_FADE); }, POST_SETTLE));
       }
     }
     requestAnimationFrame(frame);
@@ -706,11 +702,14 @@
     clearTimers();
     teardownSkip();
     if (globeRaf) { cancelAnimationFrame(globeRaf); globeRaf = null; }
+    crossfadeAndUnmount((reason === 'skip') ? SKIP_FADE : DONE_FADE);
+  }
 
-    var dur = (reason === 'skip') ? SKIP_FADE : DONE_FADE;
-    // Seamless hand-off: cross-fade the live app IN while the boot overlay fades OUT, so the settled
-    // mock DISSOLVES into the real UI instead of the real screen popping through underneath (the seam
-    // the user noticed). The overlay bg is opaque, so starting the app at 0 can't flash black.
+  // Seamless hand-off: cross-fade the live app IN (.win, 0->1) while the boot overlay fades OUT, so the
+  // settled mock DISSOLVES into the real UI instead of the real screen popping through (the seam the user
+  // noticed). The overlay bg is opaque, so starting .win at 0 can't flash black. Shared by BOTH the
+  // natural settle-complete path AND requestFinish (skip / api / timeout / modern).
+  function crossfadeAndUnmount(dur) {
     var appEl = document.querySelector('.win');
     if (appEl) {
       appEl.style.transition = 'none';                           // commit opacity:0 with NO transition first...
@@ -720,7 +719,6 @@
         appEl.style.transition = 'opacity ' + (dur / 1000) + 's ease';
         appEl.style.opacity = '1';
       });
-      finishTimers.push(setTimeout(function () { try { appEl.style.transition = ''; appEl.style.opacity = ''; } catch (_) {} }, dur + 200));
     }
     root.style.transition = 'opacity ' + (dur / 1000) + 's ease';
     root.style.opacity    = '0';
@@ -733,6 +731,8 @@
     window.AOBoot.__proof.unmountedAt = now();
     window.AOBoot.done = true;
     finishTimers.forEach(clearTimeout); finishTimers = [];
+    var appEl = document.querySelector('.win');   // clear the cross-fade inline styles so transition/opacity don't linger on the app root
+    if (appEl) { appEl.style.transition = ''; appEl.style.opacity = ''; }
     try { if (root && root.parentNode) root.parentNode.removeChild(root); } catch (_) {}
     try { if (typeof window.focusActive === 'function') window.focusActive(); } catch (_) {}
   }

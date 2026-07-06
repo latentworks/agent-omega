@@ -219,7 +219,7 @@ if (cfg && cfg.permission) {
   const localBase = cfg && cfg.provider && cfg.provider.local && cfg.provider.local.options && typeof cfg.provider.local.options.baseURL === 'string' ? cfg.provider.local.options.baseURL : ''
   const extractUrl = process.env.ENGRAM_EXTRACT_URL || localBase
   if (!extractUrl) info('memory: manual "remember" and the memory file are ON. AUTOMATIC fact-saving at the end of long chats needs a small model to summarize — it uses your LOCAL model, so it switches on the moment you add one (or set ENGRAM_EXTRACT_URL). Manual memory works fine until then.')
-  else pass('memory: automatic fact-saving is ON (distilling via ' + extractUrl.replace(/\/chat\/completions.*/, '') + ')')
+  else pass('memory: automatic fact-saving is configured (distilling via ' + extractUrl.replace(/\/chat\/completions.*/, '') + ') — active whenever that endpoint is reachable')
 }
 
 // ---- 9c) skill-router just-in-time directives ------------------------------------
@@ -227,8 +227,8 @@ if (cfg && cfg.permission) {
   // Mirror skill-router's endpoint derivation: process.env.ROUTER_EXTRACT_URL || provider.local.options.baseURL.
   const localBase = cfg && cfg.provider && cfg.provider.local && cfg.provider.local.options && typeof cfg.provider.local.options.baseURL === 'string' ? cfg.provider.local.options.baseURL : ''
   const routerUrl = process.env.ROUTER_EXTRACT_URL || localBase
-  if (!routerUrl) info('skill routing: AUTOMATIC — your model invokes skills itself (all cloud models do). The optional local classifier is only for local models that do not; not configured, which is fine unless you run local models.')
-  else pass('skill routing: local classifier configured (' + routerUrl + ') for local models')
+  if (!routerUrl) info('skill routing: your model invokes skills itself (all cloud models do) — automatic, nothing to set up. The optional just-in-time router (extra "use skill X now" nudges) is off; it turns on when a local model is configured.')
+  else pass('skill routing: just-in-time router ON (classifier at ' + routerUrl + ') — adds skill nudges on top of the model self-invoking')
 }
 
 // ---- 10) workspace ----------------------------------------------------------------
