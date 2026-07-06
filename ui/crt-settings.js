@@ -489,10 +489,11 @@
   /* ---------- SKIN ---------- */
   function buildSkin(wallRow, add, info, pushNav) {
     info("APPEARANCE · theme skin", "fs-head");
-    const current = document.body.classList.contains("theme-modern") ? "modern" : "crt";
+    const current = document.body.classList.contains("theme-modern") ? "modern" : document.body.classList.contains("theme-tokyo") ? "tokyo" : "crt";
     const skins = [
-      { id: "crt",    label: "CRT",    desc: "phosphor terminal" },
-      { id: "modern", label: "Modern", desc: "glassy minimal UI" },
+      { id: "crt",    label: "CRT",         desc: "phosphor terminal" },
+      { id: "modern", label: "Modern",      desc: "glassy minimal UI" },
+      { id: "tokyo",  label: "Tokyo Dream", desc: "daylight city-pop" },
     ];
     skins.forEach((s) => {
       const w = wallRow();

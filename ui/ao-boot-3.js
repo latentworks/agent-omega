@@ -120,6 +120,7 @@
   // persists the choice to localStorage 'ao.skin' before this script runs, so read it and, when
   // Modern, run a short brand-only intro with the terminal boot log suppressed.
   var MODERN = (function () { try { return localStorage.getItem('ao.skin') === 'modern'; } catch (_) { return false; } })();
+  var TOKYO  = (function () { try { return localStorage.getItem('ao.skin') === 'tokyo';  } catch (_) { return false; } })();
 
   window.AOBoot = {
     skip:    function () { requestFinish('skip'); },
@@ -639,10 +640,27 @@
     at(MAX_HOLD, function () { requestFinish('timeout'); });
   }
 
+  /* Tokyo Dream: a light daylight skin — no CRT phosphor boot, no dark flash.
+     Wash the overlay to paper, suppress the terminal log + globe + ONLINE +
+     hero cards, hold a calm beat, then hand off to the app's light home. */
+  function playTokyo() {
+    try { root.classList.add('aob-tokyo'); root.style.background = '#FAF6EE'; } catch (_) {}
+    if (termBox) termBox.style.display = 'none';
+    try { var sc = root.querySelector('.aob-scan'); if (sc) sc.style.display = 'none'; } catch (_) {}
+    try { var vg = root.querySelector('.aob-vign'); if (vg) vg.style.display = 'none'; } catch (_) {}
+    try { if (globeCanvas) globeCanvas.style.display = 'none'; } catch (_) {}
+    try { if (onlineEl) onlineEl.style.display = 'none'; } catch (_) {}
+    try { if (heroEl) heroEl.style.display = 'none'; } catch (_) {}
+    window.AOBoot.__proof.tokyo = true;
+    at(420, function () { requestFinish('tokyo'); });
+    at(MAX_HOLD, function () { requestFinish('timeout'); });
+  }
+
   function play() {
     startT = now();
     mounted = true;
     window.AOBoot.__proof.mountedAt = startT;
+    if (TOKYO) { playTokyo(); return; }
     if (MODERN) { playModern(); return; }
 
     /* stream boot lines */

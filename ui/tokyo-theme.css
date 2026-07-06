@@ -1,0 +1,874 @@
+/* ===================================================================
+   Agent Omega — TOKYO DREAM THEME
+   A light-mode skin. City-pop daylight nostalgia: clear sky, white
+   buildings, chalky pastel color, calm air. A sun-faded postcard.
+
+   All rules scoped under body.theme-tokyo. CRT + Modern rules are never
+   touched — this file only adds.
+
+   Palette (nothing over ~40% saturation; a drop of gray/cream in each):
+     Paper  #FAF6EE   base surface, dominant field
+     Powder #C4D8E5   sky, large secondary fields
+     Blush  #EAD1CC   warm secondary fields
+     Sage   #CDDCC9   tertiary, quiet contrast
+     Ink    #3B4250   text + line work (never pure black)
+     Clay   #C98D80   the single accent — one point of emphasis per view
+
+   --ac is pinned to Ink so every inherited accent stays calm; Clay is
+   painted by hand on exactly one element per surface (home: the hero "/").
+   =================================================================== */
+
+body.theme-tokyo {
+  --paper:  #FAF6EE;
+  --powder: #C4D8E5;
+  --blush:  #EAD1CC;
+  --sage:   #CDDCC9;
+  --ink:    #3B4250;
+  --clay:   #C98D80;
+
+  /* derived from the six, no new hues */
+  --ink-80: rgba(59,66,80,.84);
+  --ink-70: rgba(59,66,80,.70);
+  --ink-55: rgba(59,66,80,.55);
+  --ink-40: rgba(59,66,80,.40);
+  --ink-28: rgba(59,66,80,.28);
+  --line:   rgba(59,66,80,.13);
+  --line-2: rgba(59,66,80,.20);
+  --sky:    #AEC7D6;   /* powder, deepened for small marks (dots) */
+  --leaf:   #9DB39A;   /* sage, deepened for small marks */
+  --sand:   #DCC7B6;   /* blush, warmed for a soft field */
+  --shadow: rgba(96,84,78,.16);   /* warm-gray, diffuse */
+  --shadow-soft: rgba(96,84,78,.10);
+  --surface: rgba(255,255,255,.55);   /* elevated paper card */
+  --surface-2: rgba(255,255,255,.40);
+
+  --ac: #3B4250;   /* pin accents to Ink; Clay is applied by hand */
+
+  font-family: 'Zen Kaku Gothic New', 'Segoe UI', system-ui, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+  letter-spacing: .01em;
+}
+
+/* ---- reveal the shared Modern DOM this skin reuses ---- */
+body.theme-tokyo .m-trafficlights { display: flex !important; }
+body.theme-tokyo .m-brand         { display: flex !important; }
+body.theme-tokyo .m-cmdkpill      { display: flex !important; }
+body.theme-tokyo .m-gearbtn       { display: flex !important; }
+body.theme-tokyo .m-home-content  { display: flex !important; }
+body.theme-tokyo .m-modelpill-row { display: flex !important; }
+body.theme-tokyo .m-sendbtn       { display: flex !important; }
+body.theme-tokyo .m-chips         { display: flex !important; }
+body.theme-tokyo .m-homefoot      { display: flex !important; }
+/* the indigo ambient glow belongs to Modern — the sun replaces it here */
+body.theme-tokyo .m-ambient       { display: none !important; }
+
+/* ---- hide the CRT layer ---- */
+body.theme-tokyo .crt-tb-brand,
+body.theme-tokyo .crt-tb-controls,
+body.theme-tokyo .crt-wordmark,
+body.theme-tokyo .crt-cmdhints,
+body.theme-tokyo .crt-tip,
+body.theme-tokyo .crt-home-meta,
+body.theme-tokyo .crt-homefoot,
+body.theme-tokyo .promptmark { display: none !important; }
+
+/* prompt/message box legend becomes a small tinted tab (a color cue) */
+body.theme-tokyo .box-label {
+  display: inline-block !important;
+  top: -11px;
+  background: rgba(176,205,224,.95);
+  color: var(--ink-70);
+  border: 1px solid rgba(118,150,170,.4);
+  border-radius: 7px;
+  font-family: 'Zen Kaku Gothic New', sans-serif;
+  font-size: 10px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
+  padding: 2px 9px;
+  text-shadow: none;
+}
+
+/* kill the CRT overlays + phosphor flicker + the Ω globe (too electric for daylight) */
+body.theme-tokyo .scan,
+body.theme-tokyo .roll,
+body.theme-tokyo .grille,
+body.theme-tokyo .vignette { display: none !important; }
+body.theme-tokyo #omegaGlobe { display: none !important; }
+
+/* ===================================================================
+   SHELL
+   =================================================================== */
+body.theme-tokyo .win {
+  background: #D9E1DE url("tokyo-street.jpg") no-repeat center center;
+  background-size: cover;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  box-shadow: 0 30px 80px -34px var(--shadow), 0 2px 8px -4px var(--shadow-soft);
+  overflow: hidden;
+}
+
+/* ---- the backdrop: a sun-faded Tokyo morning street ----
+   Swap ui/tokyo-street.png with your generated image; the wash/grain/vignette
+   below re-key any image into the same quiet daylight morning. ---- */
+body.theme-tokyo .screen {
+  position: relative;
+  animation: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+/* faded-postcard wash + morning tint + soft vignette over the photo */
+body.theme-tokyo .screen::before {
+  content: "";
+  position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(189,213,226,.32) 0%, rgba(236,235,226,.10) 44%, rgba(241,223,211,.32) 100%),
+    radial-gradient(125% 100% at 50% 42%, rgba(255,251,244,.12) 0%, rgba(255,251,244,0) 46%, rgba(74,62,54,.20) 100%);
+}
+/* postcard grain (unifies any dropped-in image) */
+body.theme-tokyo .screen::after {
+  content: "";
+  position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  opacity: .45; mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='150'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.83  0 0 0 0 0.79  0 0 0 0 0.72  0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='150' height='150' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+body.theme-tokyo .content { position: relative; z-index: 2; animation: none; }
+
+/* ---- the operating surface: a glass panel floating over the street ---- */
+body.theme-tokyo .m-surface {
+  display: flex !important;
+  flex-direction: column;
+  align-items: center;
+  box-sizing: border-box;
+  width: min(880px, calc(100% - 80px));
+  padding: 36px 44px 28px;
+  /* clear storefront glass: mostly see-through, faint tint + a diagonal window sheen */
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.16) 0%, rgba(255,255,255,0) 28%, rgba(255,255,255,0) 72%, rgba(255,255,255,.08) 100%),
+    rgba(250,247,241,.22);
+  backdrop-filter: blur(6px) saturate(1.12);
+  -webkit-backdrop-filter: blur(6px) saturate(1.12);
+  border: 1px solid rgba(255,255,255,.5);
+  border-radius: 24px;
+  box-shadow: 0 36px 92px -30px rgba(64,52,46,.46), inset 0 1px 0 rgba(255,255,255,.55), 0 0 0 1px rgba(118,138,150,.08);
+  position: relative;
+  z-index: 2;
+}
+/* a little Ohm/omega charm, tucked into the panel's top-right corner */
+body.theme-tokyo .m-surface::after {
+  content: "Ω";
+  position: absolute; top: 13px; right: 15px;
+  width: 27px; height: 27px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Zen Maru Gothic', 'Zen Kaku Gothic New', sans-serif;
+  font-size: 15px; font-weight: 700;
+  color: #C77E93;
+  background: rgba(240,224,226,.5);
+  border: 1px solid rgba(199,126,147,.32);
+  border-radius: 50%;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.6);
+  pointer-events: none;
+}
+
+/* ===================================================================
+   TITLEBAR
+   =================================================================== */
+body.theme-tokyo .titlebar {
+  height: 46px;
+  background: rgba(250,247,241,.42);
+  backdrop-filter: blur(20px) saturate(1.15);
+  -webkit-backdrop-filter: blur(20px) saturate(1.15);
+  border-bottom: 1px solid rgba(255,255,255,.42);
+  padding: 0 16px;
+  position: relative;
+  z-index: 2;
+}
+
+/* Window controls — soft frosted-glass squircle buttons, thin ink glyphs always visible */
+body.theme-tokyo .m-trafficlights { align-items: center; gap: 8px; flex: 0 0 auto; }
+body.theme-tokyo .m-tl {
+  width: 22px; height: 18px; border-radius: 7px;
+  cursor: default; flex-shrink: 0;
+  background: rgba(255,255,255,.4);
+  border: 1px solid rgba(255,255,255,.55);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.5), 0 1px 2px rgba(64,52,46,.1);
+  display: flex; align-items: center; justify-content: center;
+  transition: background .13s, transform .13s;
+}
+body.theme-tokyo .m-tl:hover { transform: translateY(-1px); }
+body.theme-tokyo .m-tl svg { opacity: 1; }
+body.theme-tokyo .m-tl svg path { stroke: rgba(59,66,80,.5) !important; }
+body.theme-tokyo .m-tl:hover svg path { stroke: rgba(59,66,80,.72) !important; }
+body.theme-tokyo .m-tl-close:hover { background: rgba(224,158,146,.6); }
+body.theme-tokyo .m-tl-min:hover  { background: rgba(150,190,216,.6); }
+body.theme-tokyo .m-tl-zoom:hover { background: rgba(158,198,152,.6); }
+
+/* Center brand */
+body.theme-tokyo .m-brand {
+  align-items: center; gap: 7px;
+  position: absolute; left: 50%; transform: translateX(-50%);
+  font-size: 13px; font-family: 'Zen Kaku Gothic New', sans-serif;
+  white-space: nowrap; pointer-events: none;
+}
+body.theme-tokyo .m-brand-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--leaf); box-shadow: none; flex-shrink: 0;
+}
+body.theme-tokyo .m-brand-name { color: var(--ink-70); font-weight: 500; letter-spacing: .04em; }
+
+/* Command palette pill */
+body.theme-tokyo .m-cmdkpill {
+  align-items: center;
+  background: rgba(255,255,255,.5);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-family: 'Zen Kaku Gothic New', monospace;
+  color: var(--ink-55);
+  cursor: pointer;
+  margin-left: auto;
+  flex: 0 0 auto;
+  transition: color .12s, border-color .12s, background .12s;
+}
+body.theme-tokyo .m-cmdkpill:hover {
+  color: var(--ink); border-color: var(--line-2); background: rgba(255,255,255,.72);
+}
+
+/* Settings gear */
+body.theme-tokyo .m-gearbtn {
+  align-items: center; justify-content: center;
+  width: 26px; height: 26px; margin-left: 8px;
+  border-radius: 9px; font-size: 15px; line-height: 1;
+  color: var(--ink-55); cursor: pointer; flex: 0 0 auto;
+  transition: color .12s, background .12s;
+}
+body.theme-tokyo .m-gearbtn:hover { color: var(--ink); background: rgba(255,255,255,.6); }
+
+/* ===================================================================
+   HOME — hero
+   =================================================================== */
+body.theme-tokyo .m-home-content {
+  flex-direction: column; align-items: center;
+  position: relative; width: 100%; margin-bottom: 34px;
+}
+
+/* kicker hidden — the katakana wordmark is the hero now */
+body.theme-tokyo .m-kicker { display: none; }
+
+/* /agent-omega hero — rounded display; the "/" is the one Clay moment */
+/* hero: katakana wordmark big, english as a small subtitle beneath */
+body.theme-tokyo .m-hero {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 4px;
+  position: relative; z-index: 1; max-width: 100%;
+  white-space: nowrap;
+}
+body.theme-tokyo .m-hero-en { display: none; }
+body.theme-tokyo .m-caret { display: none; }
+body.theme-tokyo .m-hero-jp {
+  display: block !important;
+  font-family: 'Zen Maru Gothic', 'Zen Kaku Gothic New', sans-serif;
+  font-size: clamp(30px, 4.4vw, 46px); font-weight: 700;
+  color: var(--ink); line-height: 1.05; letter-spacing: .045em;
+  text-shadow: 0 1px 18px rgba(255,251,245,.62), 0 1px 2px rgba(255,249,242,.5);
+}
+body.theme-tokyo .m-hero-jp-slash { color: #D65F86; margin-right: .05em; font-weight: 700; }
+body.theme-tokyo .m-hero-sub {
+  display: block !important;
+  font-family: 'Zen Kaku Gothic New', ui-monospace, monospace;
+  font-size: 13px; font-weight: 500; letter-spacing: .14em;
+  color: var(--ink-40);
+  text-shadow: 0 1px 8px rgba(255,251,245,.55);
+}
+@keyframes tokyo-blink { 0%,54%{opacity:.55} 55%,100%{opacity:0} }
+
+/* ===================================================================
+   HOME — input box
+   =================================================================== */
+body.theme-tokyo #home .box {
+  border: 1px solid rgba(118,140,150,.22);
+  background: rgba(255,255,255,.46);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border-radius: 16px;
+  padding: 16px 18px 13px;
+  box-shadow: 0 10px 26px -18px rgba(64,52,46,.5), inset 0 1px 0 rgba(255,255,255,.75);
+  width: 100% !important;
+  max-width: 620px !important;
+  margin-top: 26px !important;
+  position: relative;
+  z-index: 1;
+}
+body.theme-tokyo #home .box > div.home-input-row {
+  display: flex; align-items: center; gap: 10px; min-height: 30px;
+}
+body.theme-tokyo #home .inp {
+  font-family: 'Zen Kaku Gothic New', sans-serif;
+  font-size: 16px !important;
+  color: var(--ink);
+  caret-color: var(--clay);
+  letter-spacing: .01em;
+  line-height: 1.55;
+  text-shadow: none;
+}
+body.theme-tokyo #home .inp::placeholder { color: var(--ink-28); }
+
+/* Send — a soft, quiet button (Clay is spent on the hero, not here) */
+body.theme-tokyo .m-sendbtn {
+  align-items: center; justify-content: center;
+  width: 36px; height: 36px; flex-shrink: 0;
+  background: rgba(150,190,216,.62);
+  border: 1px solid rgba(108,158,190,.6);
+  border-radius: 11px;
+  box-shadow: 0 3px 8px -5px var(--shadow), inset 0 1px 0 rgba(255,255,255,.4);
+  cursor: default; transition: filter .12s;
+}
+body.theme-tokyo .m-sendbtn:hover { filter: saturate(1.15) brightness(1.04); }
+body.theme-tokyo .m-sendbtn svg { stroke: #274255 !important; }
+
+/* Model pill */
+body.theme-tokyo .m-modelpill-row { align-items: center; margin-top: 12px; padding: 0 2px; }
+body.theme-tokyo .m-modelpill {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: rgba(158,198,152,.5);
+  border: 1px solid rgba(112,162,108,.5);
+  border-radius: 10px; padding: 4px 11px;
+  font-size: 12px; font-family: 'Zen Kaku Gothic New', sans-serif;
+  color: var(--ink-70); cursor: default;
+}
+body.theme-tokyo .m-modelpill-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--leaf); flex-shrink: 0; }
+body.theme-tokyo .m-modelpill-name { color: var(--ink-80); }
+body.theme-tokyo .m-modelpill-sep  { color: var(--ink-28); }
+body.theme-tokyo .m-modelpill-local{ color: var(--ink-40); }
+
+/* ===================================================================
+   HOME — suggestion chips (flat pastel color-blocking)
+   =================================================================== */
+body.theme-tokyo .m-chips {
+  gap: 9px; flex-wrap: wrap; justify-content: center;
+  margin-top: 18px; position: relative; z-index: 1;
+  width: 620px; max-width: calc(100% - 48px);
+}
+body.theme-tokyo .m-chip {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  border: 1px solid rgba(255,255,255,.5);
+  border-radius: 13px;
+  padding: 7px 16px 8px;
+  font-family: 'Zen Kaku Gothic New', sans-serif;
+  font-size: 10px; font-weight: 500; letter-spacing: .08em;
+  color: var(--ink-40);
+  line-height: 1.15; cursor: default; white-space: nowrap;
+  backdrop-filter: blur(7px) saturate(1.1);
+  -webkit-backdrop-filter: blur(7px) saturate(1.1);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.5);
+  transition: transform .18s ease, box-shadow .18s ease, filter .18s ease;
+}
+/* katakana label above, english beneath — matching the hero lockup */
+body.theme-tokyo .m-chip::before {
+  font-family: 'Zen Maru Gothic', 'Zen Kaku Gothic New', sans-serif;
+  font-size: 14px; font-weight: 700; letter-spacing: .04em;
+  color: var(--ink);
+}
+body.theme-tokyo .m-chip:nth-child(1) { background: rgba(150,190,216,.32); border-color: rgba(108,158,190,.5); }
+body.theme-tokyo .m-chip:nth-child(1)::before { content: "技術スタック"; }
+body.theme-tokyo .m-chip:nth-child(2) { background: rgba(158,198,152,.32); border-color: rgba(112,162,108,.5); }
+body.theme-tokyo .m-chip:nth-child(2)::before { content: "アーキテクチャ"; }
+body.theme-tokyo .m-chip:nth-child(3) { background: rgba(224,158,146,.3);  border-color: rgba(196,120,106,.5); }
+body.theme-tokyo .m-chip:nth-child(3)::before { content: "最近の変更"; }
+body.theme-tokyo .m-chip:hover {
+  transform: translateY(-1px);
+  filter: saturate(1.12) brightness(1.03);
+  box-shadow: 0 8px 18px -10px rgba(64,52,46,.5), inset 0 1px 0 rgba(255,255,255,.5);
+}
+
+/* Footer */
+body.theme-tokyo .m-homefoot {
+  gap: 24px; margin-top: 22px;
+  font-size: 12px; font-family: 'Zen Kaku Gothic New', sans-serif;
+  color: var(--ink-40); letter-spacing: .03em;
+  position: relative; z-index: 1;
+}
+
+/* ===================================================================
+   CHAT — conversation
+   =================================================================== */
+/* the conversation floats on a frosted work-panel — readable over the street,
+   while the idle home stays a clear "shop window" */
+body.theme-tokyo #chat {
+  margin: 20px 26px;
+  padding: 4px 22px 16px;
+  /* match the home "shop window" glass — clear + faint sheen */
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.16) 0%, rgba(255,255,255,0) 28%, rgba(255,255,255,0) 72%, rgba(255,255,255,.08) 100%),
+    rgba(250,247,241,.22);
+  backdrop-filter: blur(6px) saturate(1.12);
+  -webkit-backdrop-filter: blur(6px) saturate(1.12);
+  border: 1px solid rgba(255,255,255,.5);
+  border-radius: 24px;
+  box-shadow: 0 36px 92px -30px rgba(64,52,46,.46), inset 0 1px 0 rgba(255,255,255,.55), 0 0 0 1px rgba(118,138,150,.08);
+  animation: tokyo-rise .34s ease-out;
+}
+@keyframes tokyo-rise { from { opacity: 0; transform: translateY(10px) scale(.992); } to { opacity: 1; transform: none; } }
+/* the idle surface rises in the same way, so home↔working feels like one panel */
+body.theme-tokyo #home .m-surface { animation: tokyo-rise .34s ease-out; }
+body.theme-tokyo .convo::-webkit-scrollbar { width: 7px; }
+body.theme-tokyo .convo::-webkit-scrollbar-thumb { background: rgba(59,66,80,.16); border-radius: 4px; }
+
+/* user bubble — right, soft powder */
+body.theme-tokyo .urow {
+  justify-content: flex-end;
+  font-size: 15px !important;
+  color: var(--ink);
+  text-shadow: none;
+}
+body.theme-tokyo .urow > .ac { display: none !important; }
+body.theme-tokyo .urow .utext {
+  max-width: 74%;
+  flex: none !important;
+  background: rgba(196,216,229,.5);
+  border: 1px solid rgba(59,66,80,.10);
+  border-radius: 15px 15px 5px 15px;
+  padding: 10px 15px;
+  white-space: pre-wrap;
+}
+
+/* thinking — three soft ink dots */
+@keyframes tokyo-pulse { 0%,80%,100%{ transform:scale(.7); opacity:.35 } 40%{ transform:scale(1); opacity:.9 } }
+body.theme-tokyo .think { display: flex; align-items: center; gap: 8px; font-size: 14px; line-height: 1; text-shadow: none; }
+body.theme-tokyo .think .pk { display: inline-flex; align-items: center; gap: 5px; font-size: 0 !important; color: transparent; text-shadow: none; }
+body.theme-tokyo .think .pk::before,
+body.theme-tokyo .think .pk::after,
+body.theme-tokyo .think .pk .spin {
+  content: ''; display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--ink-40); font-size: 0;
+  animation: tokyo-pulse 1.25s ease-in-out infinite;
+}
+body.theme-tokyo .think .pk .spin { animation-delay: .18s; }
+body.theme-tokyo .think .pk::after { animation-delay: .36s; }
+body.theme-tokyo .think .body { display: none !important; }
+
+/* settled "thought" — calm, collapsible */
+body.theme-tokyo .think-done { display: block; font-size: 13px; line-height: 1.5; }
+body.theme-tokyo .think-done .pk {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px !important; color: var(--ink-55) !important; cursor: pointer;
+  font-family: 'Zen Kaku Gothic New', sans-serif; transition: color .12s;
+}
+body.theme-tokyo .think-done .pk:hover { color: var(--ink-80) !important; }
+body.theme-tokyo .think-done .pk::before,
+body.theme-tokyo .think-done .pk::after { content: none !important; display: none !important; animation: none !important; }
+body.theme-tokyo .think-done .thchev { color: var(--clay); font-size: 11px; }
+body.theme-tokyo .think-done:not(.collapsed) .body {
+  display: block !important; margin-top: 8px; padding: 10px 12px; max-height: 320px; overflow-y: auto;
+  background: rgba(255,255,255,.45); border: 1px solid var(--line); border-radius: 10px;
+  font-family: 'Zen Kaku Gothic New', sans-serif; font-size: 12.5px; line-height: 1.6;
+  color: var(--ink-70); white-space: pre-wrap;
+}
+
+/* answer */
+body.theme-tokyo .arow {
+  font-family: 'Zen Kaku Gothic New', sans-serif;
+  font-size: 15px !important; line-height: 1.7; color: var(--ink); text-shadow: none;
+}
+/* bullet ">" markers → calm ink */
+body.theme-tokyo .arow span[style*="color:var(--ac)"],
+body.theme-tokyo .arow span[style*="color:#ffb454"] { color: var(--ink-40) !important; text-shadow: none !important; }
+/* fenced code lines */
+body.theme-tokyo .arow span[style*="white-space:pre"] {
+  font-family: 'Zen Kaku Gothic New', ui-monospace, monospace !important;
+  font-size: 13px !important; color: var(--ink-80);
+}
+
+/* ===================================================================
+   CHAT — tool card
+   =================================================================== */
+body.theme-tokyo .toolwrap {
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  border-radius: 14px; padding: 11px 15px;
+  font-family: 'Zen Kaku Gothic New', sans-serif;
+}
+body.theme-tokyo .toolline { font-size: 13px; color: var(--ink-55); align-items: center; text-shadow: none; }
+body.theme-tokyo .tglyph { color: var(--clay); font-size: 12px; }
+body.theme-tokyo .tname { color: var(--ink); font-weight: 500; font-size: 13px; text-shadow: none; }
+body.theme-tokyo .ttime {
+  font-size: 11px; font-family: 'Zen Kaku Gothic New', monospace;
+  background: rgba(59,66,80,.07); border-radius: 6px; padding: 1px 7px; color: var(--ink-55);
+}
+body.theme-tokyo .tsub  { font-size: 13px; color: var(--ink-55); text-shadow: none; }
+body.theme-tokyo .ttodo { font-size: 13px; color: var(--ink-55); text-shadow: none; }
+body.theme-tokyo .ttodo.active { color: var(--clay); }
+
+/* ===================================================================
+   CHAT — diff (added → sage field, removed → blush field, faded)
+   =================================================================== */
+body.theme-tokyo .diff {
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,.4);
+  border-radius: 12px;
+  font-family: 'Zen Kaku Gothic New', ui-monospace, monospace;
+  font-size: 13px; line-height: 1.6; overflow: hidden;
+}
+body.theme-tokyo .dk-row-add { background: rgba(205,220,201,.34); }
+body.theme-tokyo .dk-row-del { background: rgba(234,209,204,.34); }
+body.theme-tokyo .dk-row-del .dk-code { opacity: .55; }
+body.theme-tokyo .dk-num  { color: var(--ink-28); }
+body.theme-tokyo .dk-sign-add { color: var(--leaf); }
+body.theme-tokyo .dk-sign-del { color: var(--clay); }
+body.theme-tokyo .dk-sign-ctx { color: var(--ink-28); }
+body.theme-tokyo .dk-code { color: var(--ink-80); }
+body.theme-tokyo .dk-foot { border-top: 1px solid var(--line); font-size: 12px; }
+body.theme-tokyo .dk-add  { color: var(--leaf); }
+body.theme-tokyo .dk-del  { color: var(--clay); }
+body.theme-tokyo .dk-file { color: var(--ink-40); }
+
+/* light syntax palette — chalky, low-saturation, derived from the six */
+body.theme-tokyo .tk-comment { color: var(--ink-40); font-style: italic; }
+body.theme-tokyo .tk-string  { color: #7E9A76; }   /* sage-deep */
+body.theme-tokyo .tk-number  { color: #C08A6E; }   /* clay-warm */
+body.theme-tokyo .tk-keyword { color: #7E7CA0; }   /* muted iris (powder+ink) */
+body.theme-tokyo .tk-type    { color: #5E86A0; }   /* powder-deep */
+body.theme-tokyo .tk-capital { color: #6E8199; }   /* ink-blue */
+body.theme-tokyo .tk-default { color: var(--ink-80); }
+body.theme-tokyo .tk-punct   { color: var(--ink-40); }
+
+/* ===================================================================
+   CHAT — output / error / plan / pickers / permission
+   =================================================================== */
+body.theme-tokyo .out-head { font-family: 'Zen Kaku Gothic New', sans-serif; font-size: 13px; color: var(--ink-55); text-shadow: none; }
+body.theme-tokyo .out-head:hover { color: var(--ink-80); }
+body.theme-tokyo .out-pre {
+  font-family: 'Zen Kaku Gothic New', ui-monospace, monospace; font-size: 13px;
+  background: rgba(59,66,80,.05); border: 1px solid var(--line); border-radius: 10px;
+  color: var(--ink-70); text-shadow: none;
+}
+body.theme-tokyo .out-pre::-webkit-scrollbar { width: 7px; }
+body.theme-tokyo .out-pre::-webkit-scrollbar-thumb { background: rgba(59,66,80,.16); border-radius: 4px; }
+
+body.theme-tokyo .errrow { font-family: 'Zen Kaku Gothic New', sans-serif; font-size: 15px !important; color: #B5776C; text-shadow: none; }
+body.theme-tokyo .fallback { font-family: 'Zen Kaku Gothic New', sans-serif; font-size: 14px; color: var(--ink-55); text-shadow: none; }
+
+body.theme-tokyo .plan {
+  border: 1px solid var(--line); background: var(--surface-2);
+  border-radius: 14px; box-shadow: none;
+}
+body.theme-tokyo .plan-title { font-family: 'Zen Kaku Gothic New', sans-serif; font-size: 13px; font-weight: 600; color: var(--ink-70); text-shadow: none; }
+body.theme-tokyo .plan-row { font-family: 'Zen Kaku Gothic New', sans-serif; font-size: 14px; color: var(--ink-70); text-shadow: none; }
+body.theme-tokyo .plan-mark { color: var(--leaf); }
+
+body.theme-tokyo .panel {
+  border: 1px solid var(--line); background: rgba(250,246,238,.97);
+  border-radius: 14px; box-shadow: 0 20px 48px -18px var(--shadow); backdrop-filter: blur(6px);
+}
+body.theme-tokyo .panel-title {
+  font-family: 'Zen Kaku Gothic New', sans-serif; font-size: 10.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .1em; color: var(--ink-55); text-shadow: none;
+}
+body.theme-tokyo .pick { font-family: 'Zen Kaku Gothic New', sans-serif; font-size: 13px; border-radius: 9px; padding: 6px 10px; color: var(--ink-80); text-shadow: none; }
+body.theme-tokyo .pick:hover { background: rgba(59,66,80,.06); color: var(--ink); }
+body.theme-tokyo .pk-key { color: var(--clay); font-family: 'Zen Kaku Gothic New', monospace; font-size: 12px; text-shadow: none; }
+body.theme-tokyo .pk-cur { color: var(--leaf); font-size: 12px; text-shadow: none; }
+
+body.theme-tokyo .perm {
+  border: 1px solid rgba(201,141,128,.4); background: rgba(250,246,238,.98);
+  border-radius: 14px; box-shadow: 0 20px 48px -18px var(--shadow); backdrop-filter: blur(6px);
+}
+body.theme-tokyo .perm-title { font-family: 'Zen Kaku Gothic New', sans-serif; font-size: 14px; color: #B5776C; text-shadow: none; }
+body.theme-tokyo .perm-btn {
+  font-family: 'Zen Kaku Gothic New', sans-serif; font-size: 13px; border-radius: 9px;
+  border: 1px solid var(--line-2); background: rgba(255,255,255,.6); color: var(--ink-80); text-shadow: none;
+}
+body.theme-tokyo .perm-btn:hover { background: #fff; }
+body.theme-tokyo .perm-btn.sel { box-shadow: 0 0 0 2px var(--clay) inset; }
+body.theme-tokyo .perm-hint { font-family: 'Zen Kaku Gothic New', sans-serif; font-size: 12px; color: var(--ink-40); }
+
+/* ---- chat message input row ---- */
+body.theme-tokyo #chat .box {
+  border: 1px solid rgba(118,140,150,.22);
+  background: rgba(255,255,255,.46);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  padding: 14px 16px 11px !important;
+  border-radius: 16px;
+  box-shadow: 0 10px 26px -18px rgba(64,52,46,.5), inset 0 1px 0 rgba(255,255,255,.7);
+}
+body.theme-tokyo #chat .inp {
+  font-family: 'Zen Kaku Gothic New', sans-serif; font-size: 15px !important;
+  color: var(--ink); caret-color: var(--clay); text-shadow: none; letter-spacing: .01em;
+}
+body.theme-tokyo #chat .inp::placeholder { color: var(--ink-28); }
+/* normalize the oversized (CRT-scale) chat chrome back to the home scale */
+body.theme-tokyo #chat .box > div:last-child {
+  font-size: 12px !important; margin-top: 10px !important; padding-left: 0 !important; color: var(--ink-40) !important;
+}
+body.theme-tokyo #chat .box > div > .metaAgent { color: var(--ink-70); }
+body.theme-tokyo #chat .box > div > .metaModel { color: var(--ink-55); }
+body.theme-tokyo #chat > div:last-child { font-size: 12px !important; color: var(--ink-40) !important; padding-top: 10px !important; }
+body.theme-tokyo #chat > div:last-child .ac { color: var(--ink-55) !important; }
+body.theme-tokyo .box-label { font-size: 10px !important; }
+
+/* generic accent-class calming (kept last so it wins) */
+body.theme-tokyo .ac { color: var(--ink) !important; text-shadow: none !important; }
+body.theme-tokyo .cy { color: var(--ink-70) !important; }
+body.theme-tokyo .gr { color: var(--leaf) !important; }
+/* the hero slash keeps its Clay despite the .ac calming above (it has no .ac class) */
+body.theme-tokyo .m-hero-slash { color: var(--clay) !important; }
+
+/* ===================================================================
+   SETTINGS OVERLAY (crt-settings.js) — light card, no DOS frame
+   Mirrors the Modern override: hide the box-drawing glyphs + scanline,
+   repaint every fs-* class onto paper.
+   =================================================================== */
+body.theme-tokyo .ftpset-overlay {
+  background: rgba(90,80,74,.32);
+  backdrop-filter: blur(5px);
+}
+body.theme-tokyo .ftpset {
+  font-family: 'Zen Kaku Gothic New', 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  letter-spacing: .01em;
+  text-shadow: none;
+  color: var(--ink);
+  width: min(720px, 93vw);
+  background: rgba(250,246,238,.98);
+  border: 1px solid var(--line-2);
+  border-radius: 16px;
+  box-shadow: 0 26px 60px -20px var(--shadow), inset 0 1px 0 rgba(255,255,255,.6);
+  overflow: hidden;
+  padding: 0 10px 10px;
+}
+body.theme-tokyo .ftpset::after { display: none !important; }
+/* hide every box-drawing glyph (side walls, ═ fills, corners, title rule) */
+body.theme-tokyo .ftpset .fs-edge,
+body.theme-tokyo .ftpset .fs-fill { display: none !important; }
+/* replacement header */
+body.theme-tokyo .ftpset::before {
+  content: "Settings";
+  display: block;
+  padding: 15px 15px 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-40);
+}
+
+/* rows / cells */
+body.theme-tokyo .ftpset .fs-cell { padding: 6px 14px; gap: 8px; }
+body.theme-tokyo .ftpset .fs-cell.sel {
+  background: rgba(201,141,128,.14);
+  box-shadow: inset 0 0 0 1px rgba(201,141,128,.34);
+  border-radius: 9px;
+}
+body.theme-tokyo .ftpset .fs-cell.sel,
+body.theme-tokyo .ftpset .fs-cell.sel * { color: var(--ink) !important; text-shadow: none !important; }
+body.theme-tokyo .ftpset .fs-cell.sel .fs-vd,
+body.theme-tokyo .ftpset .fs-cell.sel .fs-needs { color: var(--ink-55) !important; }
+body.theme-tokyo .ftpset .fs-cell.sel .fs-box.on { color: #7E9A76 !important; }
+body.theme-tokyo .ftpset .fs-cell.sel .fs-del    { color: #B5776C !important; }
+
+/* scroll */
+body.theme-tokyo .ftpset .fs-scroll { padding: 2px 0 4px; }
+body.theme-tokyo .ftpset .fs-scroll::-webkit-scrollbar { width: 7px; }
+body.theme-tokyo .ftpset .fs-scroll::-webkit-scrollbar-thumb { background: rgba(59,66,80,.16); border-radius: 4px; }
+
+/* tabs — pastel pills */
+body.theme-tokyo .ftpset .fs-tabs {
+  gap: 4px; padding: 8px 12px 12px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+body.theme-tokyo .ftpset .fs-tab {
+  color: var(--ink-55); padding: 3px 11px; border-radius: 9px;
+  transition: color .12s, background .12s;
+}
+body.theme-tokyo .ftpset .fs-tab.on { background: rgba(196,216,229,.5); color: var(--ink); text-shadow: none; }
+body.theme-tokyo .ftpset .fs-tab.focus { box-shadow: 0 0 0 1.5px rgba(201,141,128,.55); }
+body.theme-tokyo .ftpset .fs-tabsep { color: transparent; }
+
+/* info / heads */
+body.theme-tokyo .ftpset .fs-info { color: var(--ink-55); }
+body.theme-tokyo .ftpset .fs-head {
+  color: var(--ink-40); font-size: 11px; font-weight: 600;
+  letter-spacing: .1em; text-transform: uppercase; text-shadow: none;
+}
+body.theme-tokyo .ftpset .fs-grp .fs-grp-name { color: var(--ink-70); font-size: 12px; letter-spacing: .05em; }
+body.theme-tokyo .ftpset .fs-grp .fs-grp-tag { color: var(--ink-28); font-size: 11px; }
+body.theme-tokyo .ftpset .fs-grp .fs-grp-tag.warn { color: #C08A6E; }
+
+/* vault */
+body.theme-tokyo .ftpset .fs-vk { color: var(--ink); }
+body.theme-tokyo .ftpset .fs-vd { color: var(--ink-40); letter-spacing: 2px; }
+body.theme-tokyo .ftpset .fs-del { color: #B5776C; }
+body.theme-tokyo .ftpset .fs-add { color: var(--clay); }
+body.theme-tokyo .ftpset .fs-form .fs-input {
+  background: rgba(255,255,255,.7);
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  color: var(--ink); caret-color: var(--clay);
+  font-family: inherit; font-size: 13px; letter-spacing: normal;
+  padding: 3px 10px;
+}
+body.theme-tokyo .ftpset .fs-form .fs-input::placeholder { color: var(--ink-28); }
+body.theme-tokyo .ftpset .fs-form .fs-input:focus { border-color: rgba(201,141,128,.5); }
+
+/* models */
+body.theme-tokyo .ftpset .fs-box { color: var(--ink-28); }
+body.theme-tokyo .ftpset .fs-box.on { color: #7E9A76; }
+body.theme-tokyo .ftpset .fs-mname { color: var(--ink); }
+body.theme-tokyo .ftpset .fs-needs { color: var(--ink-40); font-size: 12px; }
+body.theme-tokyo .ftpset .fs-btn {
+  color: var(--ink-70); border: 1px solid var(--line-2);
+  border-radius: 8px; padding: 2px 9px; font-size: 12.5px;
+}
+body.theme-tokyo .ftpset .fs-btn.on { background: rgba(201,141,128,.16); border-color: rgba(201,141,128,.4); color: var(--ink); text-shadow: none; }
+
+/* council */
+body.theme-tokyo .ftpset .fs-key { color: var(--ink-55); width: 120px; }
+body.theme-tokyo .ftpset .fs-val { color: var(--clay); text-shadow: none; }
+body.theme-tokyo .ftpset .fs-arr { color: var(--ink-28); }
+
+/* hints footer */
+body.theme-tokyo .ftpset .fs-hints {
+  color: var(--ink-40); font-size: 12px;
+  border-top: 1px solid var(--line); padding-top: 8px; margin-top: 4px;
+}
+body.theme-tokyo .ftpset .fs-kc {
+  color: var(--ink-70); font-family: 'Zen Kaku Gothic New', monospace;
+  background: rgba(59,66,80,.06); border-radius: 5px; padding: 0 6px;
+}
+body.theme-tokyo .ftpset .fs-flash { color: #7E9A76; text-shadow: none; }
+
+/* ===================================================================
+   COMMAND PALETTE (^P) — light glass card
+   =================================================================== */
+body.theme-tokyo #ftpPalette.ftp-overlay {
+  background: rgba(90,80,74,.28);
+  backdrop-filter: blur(5px);
+}
+body.theme-tokyo .ftp-pal {
+  font-family: 'Zen Kaku Gothic New', 'Segoe UI', system-ui, sans-serif;
+  text-shadow: none;
+  background: rgba(250,247,241,.97);
+  border: 1px solid var(--line-2);
+  border-radius: 16px;
+  box-shadow: 0 26px 60px -20px var(--shadow), inset 0 1px 0 rgba(255,255,255,.6);
+  overflow: hidden;
+  width: 560px;
+}
+body.theme-tokyo .ftp-pal-head {
+  gap: 10px; padding: 13px 16px 11px;
+  border-bottom: 1px solid var(--line);
+}
+body.theme-tokyo .ftp-pal-head .ac {
+  color: var(--clay); font-family: 'Zen Kaku Gothic New', monospace; font-size: 14px; text-shadow: none;
+}
+body.theme-tokyo .ftp-pal-input {
+  font-family: 'Zen Kaku Gothic New', sans-serif; font-size: 14.5px;
+  color: var(--ink); caret-color: var(--clay); letter-spacing: normal; text-shadow: none;
+}
+body.theme-tokyo .ftp-pal-input::placeholder { color: var(--ink-28); }
+body.theme-tokyo .ftp-pal-list { padding: 6px; }
+body.theme-tokyo .ftp-pal-list::-webkit-scrollbar { width: 7px; }
+body.theme-tokyo .ftp-pal-list::-webkit-scrollbar-thumb { background: rgba(59,66,80,.16); border-radius: 4px; }
+body.theme-tokyo .ftp-pal-cat {
+  color: var(--ink-40); font-size: 10.5px; font-weight: 600; letter-spacing: .08em;
+  text-transform: uppercase; padding: 10px 12px 4px;
+}
+body.theme-tokyo .ftp-pal-row {
+  gap: 9px; padding: 6px 12px; font-size: 13.5px; color: var(--ink-70); border-radius: 9px;
+}
+body.theme-tokyo .ftp-pal-row.on { background: rgba(196,216,229,.5); }
+body.theme-tokyo .ftp-pal-title { color: var(--ink); }
+body.theme-tokyo .ftp-pal-row.on .ftp-pal-title { color: var(--ink); }
+body.theme-tokyo .ftp-pal-slash { color: var(--clay); font-family: 'Zen Kaku Gothic New', monospace; font-size: 12px; }
+body.theme-tokyo .ftp-pal-desc { color: var(--ink-40); font-size: 12.5px; }
+body.theme-tokyo .ftp-pal-key {
+  color: var(--ink-55); font-family: 'Zen Kaku Gothic New', monospace; font-size: 11px;
+  background: rgba(59,66,80,.06); border-radius: 5px; padding: 1px 6px;
+}
+body.theme-tokyo .ftp-pal-empty { color: var(--ink-40); font-size: 13.5px; }
+/* bilingual rows: katakana on its own line, english/command small beneath */
+body.theme-tokyo .ftp-pal-row { flex-wrap: wrap; align-items: baseline; row-gap: 0; }
+body.theme-tokyo .ftp-pal-jp {
+  display: block; flex-basis: 100%; order: -1;
+  font-family: 'Zen Maru Gothic', 'Zen Kaku Gothic New', sans-serif;
+  font-size: 14px; font-weight: 700; color: var(--ink); letter-spacing: .03em; line-height: 1.25;
+}
+body.theme-tokyo .ftp-pal-row.on .ftp-pal-jp { color: var(--ink); }
+body.theme-tokyo .ftp-pal-title { font-size: 11.5px; color: var(--ink-55); }
+body.theme-tokyo .ftp-pal-foot {
+  border-top: 1px solid var(--line); padding: 8px 16px; font-size: 11.5px; color: var(--ink-40);
+}
+body.theme-tokyo .ftp-pal-foot .ac {
+  color: var(--ink-55); font-family: 'Zen Kaku Gothic New', monospace; font-size: 11px; text-shadow: none;
+}
+/* fuzzy-match highlight: JS emits inline amber spans — recolor to dusk rose */
+body.theme-tokyo .ftp-pal-title span[style*="color:#ffb454"],
+body.theme-tokyo .ftp-drop-label span[style*="color:#ffb454"] {
+  color: #D65F86 !important; text-shadow: none;
+}
+
+/* ===================================================================
+   SLASH / @ AUTOCOMPLETE DROPDOWN (.ftp-drop) — light glass
+   =================================================================== */
+body.theme-tokyo .ftp-drop {
+  font-family: 'Zen Kaku Gothic New', 'Segoe UI', system-ui, sans-serif;
+  text-shadow: none;
+  background: rgba(250,247,241,.97);
+  border: 1px solid var(--line-2);
+  border-radius: 14px;
+  box-shadow: 0 -14px 44px -10px var(--shadow), inset 0 1px 0 rgba(255,255,255,.6);
+  backdrop-filter: blur(8px);
+}
+body.theme-tokyo .ftp-drop-list { padding: 5px; }
+body.theme-tokyo .ftp-drop-list::-webkit-scrollbar { width: 7px; }
+body.theme-tokyo .ftp-drop-list::-webkit-scrollbar-thumb { background: rgba(59,66,80,.16); border-radius: 4px; }
+body.theme-tokyo .ftp-drop-row {
+  gap: 10px; padding: 5px 11px; font-size: 13.5px; color: var(--ink-70); border-radius: 8px;
+}
+body.theme-tokyo .ftp-drop-row.on { background: rgba(196,216,229,.5); }
+body.theme-tokyo .ftp-drop-label { color: var(--ink); }
+body.theme-tokyo .ftp-drop-row.on .ftp-drop-label { color: var(--ink); }
+body.theme-tokyo .ftp-drop-desc { color: var(--ink-40); font-size: 12.5px; }
+body.theme-tokyo .ftp-drop-empty { color: var(--ink-40); font-size: 13px; }
+/* bilingual dropdown rows */
+body.theme-tokyo .ftp-drop-row { flex-wrap: wrap; align-items: baseline; row-gap: 0; }
+body.theme-tokyo .ftp-drop-jp {
+  display: block; flex-basis: 100%; order: -1;
+  font-family: 'Zen Maru Gothic', 'Zen Kaku Gothic New', sans-serif;
+  font-size: 13.5px; font-weight: 700; color: var(--ink); letter-spacing: .03em; line-height: 1.25;
+}
+body.theme-tokyo .ftp-drop-label { font-size: 11.5px; color: var(--ink-55); }
+
+/* ===================================================================
+   LEADER-KEY HINT BAR (^X which-key) — light glass strip
+   =================================================================== */
+body.theme-tokyo .ftp-leader {
+  font-family: 'Zen Kaku Gothic New', sans-serif; font-size: 12.5px;
+  color: var(--ink-55); text-shadow: none;
+  gap: 8px 16px; padding: 10px 16px;
+  background: rgba(250,247,241,.92);
+  border-top: 1px solid var(--line);
+  backdrop-filter: blur(10px);
+}
+body.theme-tokyo .ftp-leader-title {
+  color: var(--clay); font-family: 'Zen Kaku Gothic New', monospace; font-weight: 700; margin-right: 8px;
+}
+body.theme-tokyo .ftp-leader-item .ac {
+  color: var(--ink-70); font-family: 'Zen Kaku Gothic New', monospace; font-size: 11px;
+  background: rgba(59,66,80,.06); border-radius: 4px; padding: 0 5px;
+}
+
+/* ===================================================================
+   MOTION — respect reduced-motion (still air)
+   =================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  body.theme-tokyo .screen { animation: none; }
+  body.theme-tokyo .screen::before { animation: none; }
+  body.theme-tokyo .m-caret { animation: none; opacity: .5; }
+  body.theme-tokyo .think .pk::before,
+  body.theme-tokyo .think .pk::after,
+  body.theme-tokyo .think .pk .spin { animation: none; opacity: .5; }
+}
