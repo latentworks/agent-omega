@@ -12,7 +12,8 @@
     "./verify-guard/index.js",
     "./iterate-loop/index.js",
     "./council/index.js",
-    "./engram/index.js"
+    "./engram/index.js",
+    "./setup/index.js"
   ],
   "enabled_providers": [
     "local",

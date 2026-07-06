@@ -46,6 +46,7 @@ try { WORKDIR = fs.realpathSync(WORKDIR) } catch {}
 let conn = null, sessionId = null, engineProc = null, restarting = false, lastEngineDown = null
 let models = [], agents = [], commands = [], curModel = DEFAULT_MODEL, curAgent = null
 let agentConfigId = 'mode', effortConfigId = 'effort', curEffort = '', effortLevels = []   // reasoning-effort config, surfaced where the model supports it
+let setupPendingRestart = false, setupFinished = false   // Omega Setup: a setup_* tool call drives an auto-reload after config changes + a hand-back to normal Omega on finish
 let busy = false
 let turnOutput = 0   // meaningful updates seen this turn — 0 at turn-end means the engine swallowed a provider failure
 const pendingPerms = new Map()   // toolCallId -> resolve fn
@@ -257,6 +258,12 @@ function vaultEnv() {
     if (!v && VAULT_LEGACY[vaultName]) v = vaultGet(VAULT_LEGACY[vaultName])
     if (v) out[envName] = v
   }
+  // pass through any additional *_API_KEY the setup flow stored for a NEW provider (e.g. GROQ_API_KEY),
+  // 1:1 name->env, so a provider configured via /customize actually receives its key when the engine spawns.
+  try {
+    const known = new Set([...Object.keys(VAULT_TO_ENV), ...Object.values(VAULT_TO_ENV)])
+    for (const name of vaultListNames()) { if (/^[A-Z0-9]+(_[A-Z0-9]+)*_API_KEY$/.test(name) && !known.has(name) && !out[name]) { const v = vaultGet(name); if (v) out[name] = v } }
+  } catch {}
   keyedEnv = new Set(Object.keys(out))
   log('vault -> engine env: ' + (Object.keys(out).join(', ') || '(none)'))
   return out
@@ -422,6 +429,16 @@ class UIClient {
     // which streams through this same path) is exempt — it legitimately arrives with no active turn.
     if (!replaying && currentTurn === 0 && u && (u.sessionUpdate === 'agent_message_chunk' || u.sessionUpdate === 'agent_thought_chunk')) return
     if (u && u.sessionUpdate !== 'usage_update') turnOutput++   // text/thought/tool call/plan = real output
+    // Omega Setup: the /event SSE carries no tool/part events, so watch the ACP tool-call stream here.
+    // Match on the tool NAME only (u.title = the tool id) — NOT the whole payload, since a skill body /
+    // args could mention a tool name. Fire on the call; the action runs at turn end (the tool has settled
+    // by then). A mutating setup tool -> reload; finish -> hand back. A stale flag from an aborted/errored
+    // turn is dropped at the next turn's start (see the turn-start clears), and the plugin's error paths
+    // don't change config, so a no-op reload is harmless.
+    if (u && curAgent === 'setup' && u.sessionUpdate === 'tool_call' && typeof u.title === 'string') {
+      if (u.title === 'setup_finish') setupFinished = true
+      else if (/^setup_(add_model|set_key|add_skill|set_effort)$/.test(u.title)) setupPendingRestart = true
+    }
     broadcast({ type: 'update', update: u })
   }
   async writeTextFile(p) { try { fs.writeFileSync(p.path, p.content ?? '') } catch (e) { log('writeTextFile', p.path, e.message); broadcast({ type: 'error', message: 'Write to ' + p.path + ' failed: ' + e.message }); throw e } return {} }
@@ -594,29 +611,32 @@ function handleEngineGone(reason, gen) {
   if (wasBusy) broadcast({ type: 'turn-end', stopReason: 'engine-down' })   // unstick the UI's generating state
   const delay = Math.min(400 * 2 ** (crashRestartCount - 1), 8000)
   if (crashRestartTimer) clearTimeout(crashRestartTimer)
-  crashRestartTimer = setTimeout(() => { crashRestartTimer = null; autoRecover(prev).catch(e => log('auto-recover failed', e.message)) }, delay)
+  const prevAgentGone = curAgent   // survive a crash mid-setup: re-apply setup mode after auto-recovery
+  crashRestartTimer = setTimeout(() => { crashRestartTimer = null; autoRecover(prev, prevAgentGone).catch(e => log('auto-recover failed', e.message)) }, delay)
 }
 
 // Reload the session the user was on (if any) after the engine comes back, so a crash mid-work
 // doesn't dump them into a blank session — mirrors restartEngine's restore path.
-async function restoreSession(prev) {
+async function restoreSession(prev, prevAgent) {
   if (!prev || !conn || sessionId === prev) return
   broadcast({ type: 'replay-start', sessionId: prev })
   replaying = true   // history streams through sessionUpdate with no active turn — exempt it from the tail-chunk guard
   try {
+    const wasSetup = (prevAgent === 'setup')   // snapshot from BEFORE start()/extractConfig reset curAgent — re-apply setup so a mid-setup reload stays in setup mode
     const r = await conn.loadSession({ sessionId: prev, cwd: WORKDIR, mcpServers: [] })
     sessionId = prev
     curModel = ''
     extractConfig(r && r.configOptions)
+    if (wasSetup && conn) { try { curAgent = 'setup'; await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: 'setup' }) } catch (e) { log('restore setup mode', e.message) } }
     broadcast({ type: 'replay-end', sessionId })
     broadcast(readyMsg())
   } catch (e) { log('restore-session', e.message); broadcast({ type: 'replay-end', sessionId: prev }) }
   finally { replaying = false }
 }
 
-async function autoRecover(prev) {
+async function autoRecover(prev, prevAgent) {
   await start()          // fresh engine + new session; broadcasts ready (and clears engineReviving on success)
-  await restoreSession(prev)
+  await restoreSession(prev, prevAgent)
 }
 function readyMsg() { return { type: 'ready', sessionId, model: curModel, agent: curAgent, models, agents, commands, effort: curEffort, effortLevels, apiPort: API_PORT, apiAuth: API_AUTH, workdir: WORKDIR } }
 // The engine is not currently connected (crashed and mid-restart, or never came up). Return the
@@ -634,15 +654,32 @@ async function restartEngine() {
   restartInFlight = (async () => {
     restarting = true
     const prev = sessionId || lastSessionBeforeCrash   // fall back to the pre-crash session so a manual restart after the crash budget is spent still restores it (sessionId is null by then)
+    const prevAgent = curAgent   // snapshot before start()->extractConfig resets it, so restoreSession can re-apply setup mode
     drainPerms(); busy = false
     try { if (engineProc) engineProc.kill() } catch {}
     conn = null; sessionId = null
     await new Promise((r) => setTimeout(r, 350))
     restarting = false
     await start()   // fresh vaultEnv() -> the new/removed key is now reflected
-    await restoreSession(prev)
+    await restoreSession(prev, prevAgent)
   })()
   try { return await restartInFlight } finally { restartInFlight = null }
+}
+
+// After a setup-mode turn settles: hand back to normal Omega if the agent called finish, then reload the
+// engine if a setup tool changed config/keys/skills (the engine only reads those at spawn). busy is false
+// here (called post-turn), so restartEngine never kills a live turn.
+async function afterSetupTurn() {
+  if (setupFinished) {
+    setupFinished = false
+    const vals = (agents || []).map((a) => a && (a.value || a.name || a)).filter(Boolean)
+    const back = vals.includes('build') ? 'build' : (vals.find((v) => v !== 'setup') || 'build')
+    try { curAgent = back; if (conn) await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: back }); broadcast({ type: 'agent', agent: back }) } catch (e) { log('setup finish flip', e.message) }
+  }
+  if (setupPendingRestart) {
+    setupPendingRestart = false
+    try { await restartEngine(); broadcast({ type: 'notice', message: 'Reloaded — your setup changes are live.', variant: 'info' }) } catch (e) { log('setup reload', e.message) }
+  }
 }
 
 wss.on('connection', (ws) => {
@@ -664,6 +701,7 @@ wss.on('connection', (ws) => {
           if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break }
           if (busy || !m.text) return
           if (!conn) { broadcast(engineDownNow()); break }   // don't run against a dead engine — say it's down
+          setupPendingRestart = false; setupFinished = false   // drop any stale setup flags from an aborted/crashed prior turn before this one runs
           const myTurn = ++turnSeq; currentTurn = myTurn
           busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
           // The engine can swallow a provider failure (e.g. a 401 from a bad API key) and
@@ -675,6 +713,7 @@ wss.on('connection', (ws) => {
           try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: m.text }] }); if (myTurn === currentTurn) { if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) } }
           catch (e) { if (myTurn === currentTurn && !engineGoneOrRestarting() && !isEngineDeathError(e.message)) broadcast({ type: 'error', message: friendlyError(e.message) }) }   // engine gone/restarting -> handleEngineGone owns the one authoritative message; don't add a contradictory "restart the app" line
           finally { if (myTurn === currentTurn) busy = false }
+          if (myTurn === currentTurn) await afterSetupTurn()
           break
         }
         case 'command': {
@@ -688,11 +727,19 @@ wss.on('connection', (ws) => {
             broadcast({ type: 'error', message: 'Unknown command /' + m.name + ' — type /commands to see the available commands.' })
             break
           }
+          // Omega Setup: /customize and /init switch the session to the setup agent AND make it stick
+          // (a bare cmd.agent frontmatter only covers this one command turn — the next plain message reverts).
+          if ((m.name === 'customize' || m.name === 'init') && curAgent !== 'setup') {
+            try { curAgent = 'setup'; await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: 'setup' }); broadcast({ type: 'agent', agent: 'setup' }) }
+            catch (e) { log('setup enter', e.message) }
+          }
+          setupPendingRestart = false; setupFinished = false   // drop any stale setup flags from an aborted/crashed prior turn before this one runs
           const myTurn = ++turnSeq; currentTurn = myTurn
           busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
           try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + m.name + (m.args ? ' ' + m.args : '') }] }); if (myTurn === currentTurn) { if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) } }
           catch (e) { if (myTurn === currentTurn && !engineGoneOrRestarting() && !isEngineDeathError(e.message)) broadcast({ type: 'error', message: friendlyError(e.message) }) }   // engine gone/restarting -> handleEngineGone owns the one authoritative message
           finally { if (myTurn === currentTurn) busy = false }
+          if (myTurn === currentTurn) await afterSetupTurn()
           break
         }
         case 'permissionReply': {
