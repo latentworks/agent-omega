@@ -491,7 +491,8 @@ class UIClient {
   async sessionUpdate(pp) {
     const u = pp.update
     if (u && u.sessionUpdate === 'available_commands_update') {
-      commands = u.availableCommands || u.commands || []
+      // hide opencode's built-in /customize-opencode — Omega's own /customize replaces it (showing both confuses users)
+      commands = (u.availableCommands || u.commands || []).filter((c) => { const n = (c && (c.name || c.id)) || c; return String(n).toLowerCase() !== 'customize-opencode' })
       broadcast({ type: 'commands', commands })
       return
     }

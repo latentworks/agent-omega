@@ -190,7 +190,7 @@ if (cfg && cfg.provider && cfg.provider.local) {
   const webPy = existsSync(join(ROOT, 'web.py'))
   if (envOk && webPy) pass('anon-web: bridge installed and configured')
   else if (envOk && !webPy) warn('anon-web: env vars set but web.py is missing from the config — bridge broken')
-  else info('anon-web: not configured — web search disabled (the default build; the shipped web.py activates only with an anon-web install)')
+  else info('web search: OFF by default — the free key-less anon-web engine needs Python + the search package installed (not in the base app). Ask setup to explain or walk you through it, or skip it (Omega works without web for most tasks).')
 }
 
 // ---- 8) permissions ---------------------------------------------------------------
@@ -218,7 +218,8 @@ if (cfg && cfg.permission) {
   // Mirror engram's EXTRACT_URL derivation: process.env.ENGRAM_EXTRACT_URL || provider.local.options.baseURL.
   const localBase = cfg && cfg.provider && cfg.provider.local && cfg.provider.local.options && typeof cfg.provider.local.options.baseURL === 'string' ? cfg.provider.local.options.baseURL : ''
   const extractUrl = process.env.ENGRAM_EXTRACT_URL || localBase
-  if (!extractUrl) warn('engram auto-memory: no local extraction endpoint (set provider.local.options.baseURL or ENGRAM_EXTRACT_URL) — automatic fact distillation at compaction is OFF (only manual remember + the MEMORY.md index work)')
+  if (!extractUrl) info('memory: manual "remember" and the memory file are ON. AUTOMATIC fact-saving at the end of long chats needs a small model to summarize — it uses your LOCAL model, so it switches on the moment you add one (or set ENGRAM_EXTRACT_URL). Manual memory works fine until then.')
+  else pass('memory: automatic fact-saving is ON (distilling via ' + extractUrl.replace(/\/chat\/completions.*/, '') + ')')
 }
 
 // ---- 9c) skill-router just-in-time directives ------------------------------------
@@ -226,7 +227,8 @@ if (cfg && cfg.permission) {
   // Mirror skill-router's endpoint derivation: process.env.ROUTER_EXTRACT_URL || provider.local.options.baseURL.
   const localBase = cfg && cfg.provider && cfg.provider.local && cfg.provider.local.options && typeof cfg.provider.local.options.baseURL === 'string' ? cfg.provider.local.options.baseURL : ''
   const routerUrl = process.env.ROUTER_EXTRACT_URL || localBase
-  if (!routerUrl) warn('skill-router: no local endpoint (set provider.local.options.baseURL or ROUTER_EXTRACT_URL) — just-in-time skill directives are OFF (only the standing "use your skills" rule applies)')
+  if (!routerUrl) info('skill routing: AUTOMATIC — your model invokes skills itself (all cloud models do). The optional local classifier is only for local models that do not; not configured, which is fine unless you run local models.')
+  else pass('skill routing: local classifier configured (' + routerUrl + ') for local models')
 }
 
 // ---- 10) workspace ----------------------------------------------------------------
