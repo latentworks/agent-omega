@@ -1570,6 +1570,7 @@ function connect(){
 function onWs(m){
   if(!m || !m.type) return;
   if(window.AgentOmegaSettings){ try{ if(window.AgentOmegaSettings.onWs(m)) return; }catch(e){} }   // settings menu consumes councilConfig/vaultKeys (peeks ready)
+  if(window.AgentOmegaOnboard){ try{ if(window.AgentOmegaOnboard.onWs(m)) return; }catch(e){} }   // first-run onboarding card consumes first-run / onboard-status / onboard-result
   switch(m.type){
     case 'ready':
       sessionId=m.sessionId||sessionId;
@@ -1991,6 +1992,7 @@ connect();
      (defined above) so it shares the ONE unified keydown pipeline. -->
 <script src="command-discovery.js"></script>
 <script src="crt-settings.js"></script>
+<script src="first-run.js"></script>
 <script src="omega-globe.js"></script>
 <!-- Agent Omega boot sequence (Concept 3 · phosphor power-on). Self-mounting:
      plays over the app during engine warm-up, reveals on the sidecar's `ready`. -->

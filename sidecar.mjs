@@ -10,7 +10,7 @@ import os from 'node:os'
 import net from 'node:net'
 import { WebSocketServer } from 'ws'
 import * as acp from '@agentclientprotocol/sdk'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import crypto from 'node:crypto'
 
 const isWin = process.platform === 'win32'
@@ -47,6 +47,7 @@ let conn = null, sessionId = null, engineProc = null, restarting = false, lastEn
 let models = [], agents = [], commands = [], curModel = DEFAULT_MODEL, curAgent = null
 let agentConfigId = 'mode', effortConfigId = 'effort', curEffort = '', effortLevels = []   // reasoning-effort config, surfaced where the model supports it
 let setupPendingRestart = false, setupFinished = false   // Omega Setup: a setup_* tool call drives an auto-reload after config changes + a hand-back to normal Omega on finish
+let onboardBusy = false   // Omega first-run: guard against a double key-submit while one onboarding attempt is in flight
 let busy = false
 let turnOutput = 0   // meaningful updates seen this turn — 0 at turn-end means the engine swallowed a provider failure
 const pendingPerms = new Map()   // toolCallId -> resolve fn
@@ -228,7 +229,8 @@ function ensureVault() {
   } catch {}
   return fs.existsSync(VAULT_SCRIPT)
 }
-const COUNCIL_JSON = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode', 'council', 'council.json') // honors XDG_CONFIG_HOME so an isolated instance reads its own council config
+const CONFIG_DIR = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')   // honors XDG_CONFIG_HOME so an isolated instance reads its own config (council, onboarding marker, AGENTS.md)
+const COUNCIL_JSON = path.join(CONFIG_DIR, 'opencode', 'council', 'council.json')
 // engine-env-var  <-  vault key NAME. The vault names MUST match what the in-app Vault UI
 // (ui/crt-settings.js) and setup.mjs store under, or a key the user added never reaches the
 // engine. These are the canonical names both of those write.
@@ -347,6 +349,76 @@ function modelPickable(modelId) {
   if (prov === 'opencode') return true
   const env = PROVIDER_ENV[prov]
   return env ? keyedEnv.has(env) : false
+}
+
+// ======================= Omega first-run onboarding =======================
+// A fresh install ships providers but no keys -> no model works and every turn fails. Detect that
+// and let the UI collect + validate ONE key via a non-model card (the chicken-and-egg: no model can
+// run the setup conversation until a key exists), then hand off to the Phase 1 setup agent. All the
+// validate/store/config logic is imported from the LIVE setup plugin's lib.mjs (Node-safe, dual-
+// runtime) so onboarding and /customize never diverge.
+const ONBOARD_MARKER = path.join(CONFIG_DIR, 'opencode', 'omega-onboard.json')
+const GLOBAL_CONFIG = path.join(CONFIG_DIR, 'opencode', 'opencode.json')
+const ONBOARD_PROVIDERS = [
+  { id: 'anthropic',  label: 'Anthropic · Claude', keyName: 'ANTHROPIC_API_KEY', kind: 'key', placeholder: 'sk-ant-…' },
+  { id: 'openai',     label: 'OpenAI · GPT',       keyName: 'OPENAI_API_KEY',    kind: 'key', placeholder: 'sk-…' },
+  { id: 'deepseek',   label: 'DeepSeek',           keyName: 'DEEPSEEK_API_KEY',  kind: 'key', placeholder: 'sk-…' },
+  { id: 'moonshotai', label: 'Moonshot · Kimi',    keyName: 'KIMI_API_KEY',      kind: 'key', placeholder: 'sk-…' },
+  { id: 'zai',        label: 'Z.ai · GLM',         keyName: 'ZAI_API_KEY',       kind: 'key', placeholder: '…' },
+  { id: 'local',      label: 'Local server',       kind: 'url',                  placeholder: 'http://127.0.0.1:8080/v1' },
+]
+const ONBOARD_RECOMMENDED = 'anthropic'
+let _setupLib = null, _setupLibTried = false
+async function loadSetupLib() {
+  if (_setupLibTried) return _setupLib
+  _setupLibTried = true
+  try { _setupLib = await import(pathToFileURL(path.join(CONFIG_DIR, 'opencode', 'setup', 'lib.mjs')).href) }
+  catch (e) { log('onboard: setup lib import failed (' + e.message + ') — validation degrades to store-only'); _setupLib = null }
+  return _setupLib
+}
+function onboardDismissed() { try { return !!JSON.parse(fs.readFileSync(ONBOARD_MARKER, 'utf8')).dismissed } catch { return false } }
+// needs onboarding iff: no key reached the engine AND no provider is self-sufficient (a local
+// baseURL or a literal inline apiKey) AND the user hasn't dismissed the card. Statically decidable
+// from live key presence + config content — never a "has run before" flag.
+function computeOnboard() {
+  if (keyedEnv.size > 0) return { needed: false }
+  try {
+    const cfg = JSON.parse(fs.readFileSync(GLOBAL_CONFIG, 'utf8'))
+    const provs = cfg.provider || {}
+    const enabled = Array.isArray(cfg.enabled_providers) ? cfg.enabled_providers : Object.keys(provs)
+    for (const pid of enabled) {
+      const o = (provs[pid] || {}).options || {}
+      const url = String(o.baseURL || '').trim()
+      const key = String(o.apiKey || '')
+      if (key && !/^\{env:/.test(key) && key !== 'local-noauth') return { needed: false }   // an inline literal key works with no vault
+      if (url && (key === '' || key === 'local-noauth')) return { needed: false }             // a local no-auth server works with no key (a cloud baseURL + {env:} key does NOT)
+    }
+  } catch {}
+  if (onboardDismissed()) return { needed: false }
+  return { needed: true }
+}
+function firstRunMsg() { return { type: 'first-run', needed: computeOnboard().needed, providers: ONBOARD_PROVIDERS, recommended: ONBOARD_RECOMMENDED } }
+function broadcastOnboard() { try { broadcast(firstRunMsg()) } catch (e) { log('onboard broadcast', e.message) } }
+// store a key WITHOUT restarting (onboarding does its own restart). Secret on STDIN, never argv.
+function vaultStore(name, cleanVal) { execFileSync(VAULT_CMD, [...VAULT_PRE, 'set', name], { input: cleanVal, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }) }
+// best default model for a provider from the LIVE list: first pickable model of that provider, else
+// first pickable overall (mirrors newSession's auto-select). '' if nothing is usable yet.
+function pickModelFor(providerId) {
+  const mine = models.find((m) => String(m.value).startsWith(providerId + '/') && modelPickable(m.value))
+  if (mine) return mine.value
+  const any = models.find((m) => modelPickable(m.value))
+  return any ? any.value : ''
+}
+// run one slash-command turn (the body of the WS 'command' case) — reused for the onboarding handoff.
+async function runCommandTurn(name, args) {
+  if (!conn || busy) return
+  setupPendingRestart = false; setupFinished = false
+  const myTurn = ++turnSeq; currentTurn = myTurn
+  busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
+  try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + name + (args ? ' ' + args : '') }] }); if (myTurn === currentTurn) { if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) } }
+  catch (e) { if (myTurn === currentTurn && !engineGoneOrRestarting() && !isEngineDeathError(e.message)) broadcast({ type: 'error', message: friendlyError(e.message) }) }
+  finally { if (myTurn === currentTurn) busy = false }
+  if (myTurn === currentTurn) await afterSetupTurn()
 }
 
 // ---- Settings layer: council.json (read/merge/write) + vault (via secrets.ps1) ----
@@ -515,7 +587,7 @@ async function start() {
   // shipped heart silently never loads. We inject it EXPLICITLY via opencode.json's `instructions`
   // field (which IS honored), pointed at this resolved absolute path. Same config-dir convention as
   // the council/vault lookups above (XDG_CONFIG_HOME || ~/.config).
-  const _cfgDir = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')
+  const _cfgDir = CONFIG_DIR
   // Forward slashes ONLY: opencode substitutes {env:AGENT_OMEGA_AGENTS} into the config TEXT before
   // JSON-parsing, so a Windows backslash path (C:\...) would be an invalid JSON escape and break the
   // whole config load. Normalize to '/'.
@@ -535,6 +607,7 @@ async function start() {
   lastEngineDown = null
   engineReviving = false   // the engine is back up; error copy stops advertising an in-flight restart
   broadcast(readyMsg())
+  broadcastOnboard()   // after every (re)start, with fresh keyedEnv: tell the UI whether first-run onboarding is needed
   subscribeEngineEvents(myGen)   // start/refresh the toast->notice forwarder for this engine generation (PLG-4)
 }
 
@@ -691,7 +764,7 @@ wss.on('connection', (ws) => {
       if (conn) conn.cancel({ sessionId }).catch(() => {})
     }
   })
-  if (sessionId) send(ws, readyMsg())
+  if (sessionId) { send(ws, readyMsg()); send(ws, firstRunMsg()) }   // late-joining UI gets the onboarding state too
   else if (lastEngineDown) send(ws, lastEngineDown)   // replay a startup engine failure to a late-connecting UI
   ws.on('message', async (data) => {
     let m; try { m = JSON.parse(data.toString()) } catch { return }
@@ -733,13 +806,7 @@ wss.on('connection', (ws) => {
             try { curAgent = 'setup'; await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: 'setup' }); broadcast({ type: 'agent', agent: 'setup' }) }
             catch (e) { log('setup enter', e.message) }
           }
-          setupPendingRestart = false; setupFinished = false   // drop any stale setup flags from an aborted/crashed prior turn before this one runs
-          const myTurn = ++turnSeq; currentTurn = myTurn
-          busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
-          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + m.name + (m.args ? ' ' + m.args : '') }] }); if (myTurn === currentTurn) { if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) } }
-          catch (e) { if (myTurn === currentTurn && !engineGoneOrRestarting() && !isEngineDeathError(e.message)) broadcast({ type: 'error', message: friendlyError(e.message) }) }   // engine gone/restarting -> handleEngineGone owns the one authoritative message
-          finally { if (myTurn === currentTurn) busy = false }
-          if (myTurn === currentTurn) await afterSetupTurn()
+          await runCommandTurn(m.name, m.args)
           break
         }
         case 'permissionReply': {
@@ -802,6 +869,75 @@ wss.on('connection', (ws) => {
             broadcast({ type: 'vaultKeys', names: vaultListNames(), note })
             if (!busy) restartEngine().catch((e) => log('restart', e.message))
           } catch (e) { log('vaultRemove failed for', m.name, '(exit ' + (e.status ?? '?') + ')'); send(ws, { type: 'vaultKeys', error: 'Could not remove key — vault write failed.' }) }
+          break
+        }
+        case 'onboardKey': {   // Omega first-run: validate a pasted cloud key -> store -> reload -> hand off to the setup agent
+          if (onboardBusy) return
+          onboardBusy = true
+          try {
+            const prov = ONBOARD_PROVIDERS.find((p) => p.id === m.provider && p.kind === 'key')
+            if (!prov) { send(ws, { type: 'onboard-result', ok: false, error: 'Unknown provider.' }); break }
+            const val = sanitizeSecret(m.value)
+            if (!val) { send(ws, { type: 'onboard-result', ok: false, error: 'No key entered.' }); break }
+            send(ws, { type: 'onboard-status', stage: 'validating' })   // per-client: a 2nd window's idle card must not flicker through this window's progress
+            let softNote = ''
+            const lib = await loadSetupLib()
+            if (lib && lib.validateKey) {
+              const v = await lib.validateKey(prov.keyName, val)
+              if (v.known && v.ok === false && !v.soft) { send(ws, { type: 'onboard-result', ok: false, error: 'That key was rejected by ' + prov.label + ' (' + v.why + '). Nothing was stored — check it and try again.' }); break }
+              if (v.known && v.soft) softNote = ' (could not fully verify online — stored anyway)'
+            }
+            send(ws, { type: 'onboard-status', stage: 'saving' })
+            try { vaultStore(prov.keyName, val) } catch (e) { log('onboard store', e.message); send(ws, { type: 'onboard-result', ok: false, error: 'Could not store the key to the vault.' }); break }
+            broadcast({ type: 'vaultKeys', names: vaultListNames() })
+            send(ws, { type: 'onboard-status', stage: 'reloading' })
+            try { await restartEngine() } catch (e) { send(ws, { type: 'onboard-result', ok: false, error: 'The engine did not come back after saving the key.' }); break }
+            const model = pickModelFor(prov.id)
+            if (model) {
+              curModel = model
+              try { await conn.setSessionConfigOption({ sessionId, configId: 'model', value: model }) } catch (e) { log('onboard setModel', e.message) }
+              try { const l2 = await loadSetupLib(); if (l2 && l2.patchConfig) await l2.patchConfig(null, { model }) } catch (e) { log('onboard persist model', e.message) }
+            }
+            broadcast(readyMsg())
+            send(ws, { type: 'onboard-result', ok: true, provider: prov.id, model })   // result BEFORE the card-close broadcast, so the "done" state is seen
+            broadcastOnboard()   // needed:false -> closes the card in every window
+            try { curAgent = 'setup'; await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: 'setup' }); broadcast({ type: 'agent', agent: 'setup' }) } catch (e) { log('onboard enter setup', e.message) }
+            await runCommandTurn('customize', 'FIRST_RUN: a working ' + prov.label + ' key was just validated and stored (default model ' + (model || 'set') + ')' + softNote + '. Do NOT ask for that key again. Warmly greet the user for their very first launch in one or two lines, offer to prove the model with setup_test_model, then guide them through the rest of setup.')
+          } finally { onboardBusy = false }
+          break
+        }
+        case 'onboardLocal': {   // Omega first-run: point at a local server instead of a cloud key
+          if (onboardBusy) return
+          onboardBusy = true
+          try {
+            const url = String(m.baseUrl || '').trim()
+            if (!/^https?:\/\//.test(url)) { send(ws, { type: 'onboard-result', ok: false, error: 'Enter a URL like http://127.0.0.1:8080/v1' }); break }
+            send(ws, { type: 'onboard-status', stage: 'validating' })
+            const lib = await loadSetupLib()
+            if (lib && lib.pingProvider) { const p = await lib.pingProvider({ kind: 'openai', baseURL: url }); if (!p.ok) { send(ws, { type: 'onboard-result', ok: false, error: 'Could not reach ' + url + ' (' + p.why + '). Start the server and try again.' }); break } }
+            let modelId = ''
+            try { const r = await fetch(url.replace(/\/$/, '') + '/models', { signal: AbortSignal.timeout(8000) }); const j = await r.json(); modelId = (j && j.data && j.data[0] && j.data[0].id) || '' } catch {}   // bounded: a server that handshakes but never flushes /models must not wedge the card
+            const guessedModel = !modelId
+            if (!modelId) modelId = 'local-model'
+            send(ws, { type: 'onboard-status', stage: 'saving' })
+            const l2 = await loadSetupLib()
+            if (l2 && l2.patchConfig) await l2.patchConfig(null, { provider: { local: { options: { baseURL: url, apiKey: 'local-noauth' }, models: { [modelId]: { name: modelId } } } }, model: 'local/' + modelId })
+            send(ws, { type: 'onboard-status', stage: 'reloading' })
+            try { await restartEngine() } catch (e) { send(ws, { type: 'onboard-result', ok: false, error: 'The engine did not come back.' }); break }
+            curModel = 'local/' + modelId
+            try { await conn.setSessionConfigOption({ sessionId, configId: 'model', value: curModel }) } catch (e) { log('onboard local setModel', e.message) }   // mirror onboardKey: pin the session's model, don't rely on config inheritance
+            broadcast(readyMsg())
+            send(ws, { type: 'onboard-result', ok: true, provider: 'local', model: curModel })
+            broadcastOnboard()
+            try { curAgent = 'setup'; await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: 'setup' }); broadcast({ type: 'agent', agent: 'setup' }) } catch (e) { log('onboard enter setup', e.message) }
+            const localNote = guessedModel ? ' I could not auto-detect the model name, so I used a placeholder — if the first test fails, tell the user to set the exact model id with /model.' : ''
+            await runCommandTurn('customize', 'FIRST_RUN: a local model server at ' + url + ' was reached and set as the default (' + curModel + ').' + localNote + ' Warmly greet the user for their first launch, offer setup_test_model to prove it, then guide setup.')
+          } finally { onboardBusy = false }
+          break
+        }
+        case 'onboardSkip': {   // Omega first-run: "I'll set it up myself" -> persist a dismiss marker, close the card
+          try { fs.mkdirSync(path.dirname(ONBOARD_MARKER), { recursive: true }); fs.writeFileSync(ONBOARD_MARKER, JSON.stringify({ dismissed: true }) + '\n') } catch (e) { log('onboard skip', e.message) }
+          broadcastOnboard()
           break
         }
         case 'abort': { currentTurn = 0; try { await conn.cancel({ sessionId }) } catch (e) { log('cancel', e.message) } drainPerms(); busy = false; break }
