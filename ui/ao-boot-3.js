@@ -39,7 +39,7 @@
   var SETTLE_DUR    = 860;
   var POST_SETTLE   = 200;   // pause after settle before unmount fade
   var SKIP_FADE     = 250;   // fast fade on skip
-  var DONE_FADE     = 380;   // normal fade on complete
+  var DONE_FADE     = 460;   // normal cross-fade on complete (a touch gentler so the dissolve into the live UI reads as one continuous shot)
   var MAX_HOLD      = 14000; // hard cap
 
   function recalc() {
@@ -708,6 +708,20 @@
     if (globeRaf) { cancelAnimationFrame(globeRaf); globeRaf = null; }
 
     var dur = (reason === 'skip') ? SKIP_FADE : DONE_FADE;
+    // Seamless hand-off: cross-fade the live app IN while the boot overlay fades OUT, so the settled
+    // mock DISSOLVES into the real UI instead of the real screen popping through underneath (the seam
+    // the user noticed). The overlay bg is opaque, so starting the app at 0 can't flash black.
+    var appEl = document.querySelector('.win');
+    if (appEl) {
+      appEl.style.transition = 'none';                           // commit opacity:0 with NO transition first...
+      appEl.style.opacity = '0';
+      void appEl.offsetWidth;                                    // ...force a style resolve so 0 is the transition baseline...
+      requestAnimationFrame(function () {                        // ...then next frame turn the transition on and fade to 1
+        appEl.style.transition = 'opacity ' + (dur / 1000) + 's ease';
+        appEl.style.opacity = '1';
+      });
+      finishTimers.push(setTimeout(function () { try { appEl.style.transition = ''; appEl.style.opacity = ''; } catch (_) {} }, dur + 200));
+    }
     root.style.transition = 'opacity ' + (dur / 1000) + 's ease';
     root.style.opacity    = '0';
     finishTimers.push(setTimeout(unmount, dur + 40));
