@@ -105,8 +105,8 @@ export function migrateJsoncStub() {
 }
 
 export function vaultPath() {
+  if (isLinux) return fileVaultPath()   // Linux always uses the 0600 file vault (honors AGENT_OMEGA_FILE_VAULT); the secrets.{sh,ps1} AGENT_OMEGA_VAULT override doesn't apply here
   if (process.env.AGENT_OMEGA_VAULT) return process.env.AGENT_OMEGA_VAULT
-  if (isLinux) return fileVaultPath()
   return path.join(os.homedir(), '.agent-omega', isWin ? 'secrets.ps1' : 'secrets.sh')
 }
 export function sanitizeSecret(v) {
@@ -126,7 +126,13 @@ export function vaultSet(name, value) {
   })
 }
 export function vaultList() {
-  if (isLinux) { try { return Promise.resolve(Object.keys(fileVaultRead()).sort()) } catch { return Promise.resolve([]) } }
+  // Linux reads keys from the env FIRST (SETUP-LINUX.md), then the file vault — union both so the
+  // setup agent doesn't tell a user with `export ANTHROPIC_API_KEY=…` that their key is missing.
+  if (isLinux) { try {
+    const fromFile = Object.keys(fileVaultRead())
+    const fromEnv = Object.keys(VAULT_TO_ENV).filter((name) => process.env[VAULT_TO_ENV[name]])
+    return Promise.resolve([...new Set([...fromFile, ...fromEnv])].sort())
+  } catch { return Promise.resolve([]) } }
   return new Promise((res) => {
     const [cmd, args] = vaultCmd('list')
     execFile(cmd, args, { timeout: 15000 }, (err, stdout) => res(err ? [] : String(stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)))
