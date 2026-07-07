@@ -152,39 +152,39 @@
   function builtinDefs() {
     return [
       // --- Session ---
-      { id: "session.list", slash: "sessions", aliases: ["resume", "continue"], title: "Switch session", category: "Session", suggested: true },
-      { id: "session.new", slash: "new", aliases: ["clear"], title: "New session", category: "Session", suggested: true },
-      { id: "session.share", slash: "share", title: "Share session", category: "Session" },
-      { id: "session.unshare", slash: "unshare", title: "Unshare session", category: "Session" },
-      { id: "session.rename", slash: "rename", title: "Rename session", category: "Session" },
-      { id: "session.timeline", slash: "timeline", title: "Jump to message", category: "Session" },
-      { id: "session.fork", slash: "fork", title: "Fork session", category: "Session" },
-      { id: "session.compact", slash: "compact", aliases: ["summarize"], title: "Compact session", category: "Session" },
-      { id: "session.undo", slash: "undo", title: "Undo previous message", category: "Session" },
-      { id: "session.redo", slash: "redo", title: "Redo", category: "Session" },
-      { id: "session.copy", slash: "copy", title: "Copy session transcript", category: "Session" },
-      { id: "session.export", slash: "export", title: "Export session transcript", category: "Session" },
-      { id: "messages.copy", title: "Copy last assistant message", category: "Session" },
-      { id: "session.sidebar.toggle", title: "Toggle sidebar", category: "Session" },
+      { id: "session.list", slash: "sessions", aliases: ["resume", "continue"], title: "Switch session", jp: "セッション", category: "Session", suggested: true },
+      { id: "session.new", slash: "new", aliases: ["clear"], title: "New session", jp: "新規セッション", category: "Session", suggested: true },
+      { id: "session.share", slash: "share", title: "Share session", jp: "共有", category: "Session" },
+      { id: "session.unshare", slash: "unshare", title: "Unshare session", jp: "共有解除", category: "Session" },
+      { id: "session.rename", slash: "rename", title: "Rename session", jp: "名前変更", category: "Session" },
+      { id: "session.timeline", slash: "timeline", title: "Jump to message", jp: "メッセージへ", category: "Session" },
+      { id: "session.fork", slash: "fork", title: "Fork session", jp: "フォーク", category: "Session" },
+      { id: "session.compact", slash: "compact", aliases: ["summarize"], title: "Compact session", jp: "圧縮", category: "Session" },
+      { id: "session.undo", slash: "undo", title: "Undo previous message", jp: "元に戻す", category: "Session" },
+      { id: "session.redo", slash: "redo", title: "Redo", jp: "やり直し", category: "Session" },
+      { id: "session.copy", slash: "copy", title: "Copy session transcript", jp: "履歴コピー", category: "Session" },
+      { id: "session.export", slash: "export", title: "Export session transcript", jp: "書き出し", category: "Session" },
+      { id: "messages.copy", title: "Copy last assistant message", jp: "返信コピー", category: "Session" },
+      { id: "session.sidebar.toggle", title: "Toggle sidebar", jp: "サイドバー", category: "Session" },
       // --- Agent / model ---
-      { id: "model.list", slash: "models", aliases: ["mo"], title: "Switch model", category: "Agent", suggested: true },
-      { id: "agent.list", slash: "agents", title: "Switch agent", category: "Agent" },
-      { id: "mcp.list", slash: "mcps", title: "Toggle MCPs", category: "Agent" },
-      { id: "effort.set", slash: "effort", aliases: ["variants", "variant"], title: "Reasoning effort", category: "Agent" },
-      { id: "thinking.toggle", slash: "thinking", aliases: ["thoughts"], title: "Toggle thinking traces", category: "System" },
+      { id: "model.list", slash: "models", aliases: ["mo"], title: "Switch model", jp: "モデル", category: "Agent", suggested: true },
+      { id: "agent.list", slash: "agents", title: "Switch agent", jp: "エージェント", category: "Agent" },
+      { id: "mcp.list", slash: "mcps", title: "Toggle MCPs", jp: "MCP", category: "Agent" },
+      { id: "effort.set", slash: "effort", aliases: ["variants", "variant"], title: "Reasoning effort", jp: "推論の深さ", category: "Agent" },
+      { id: "thinking.toggle", slash: "thinking", aliases: ["thoughts"], title: "Toggle thinking traces", jp: "思考トレース", category: "System" },
       { id: "model.cycle_recent", title: "Model cycle", category: "Agent", hidden: true },
       { id: "agent.cycle", title: "Agent cycle", category: "Agent", hidden: true },
       { id: "variant.cycle", title: "Variant cycle", category: "Agent", hidden: true },
       // --- Provider ---
-      { id: "provider.connect", slash: "connect", title: "Connect provider", category: "Provider" },
+      { id: "provider.connect", slash: "connect", title: "Connect provider", jp: "接続", category: "Provider" },
       // --- System ---
-      { id: "opencode.status", slash: "status", title: "View status", category: "System" },
-      { id: "theme.switch", slash: "themes", title: "Switch theme", category: "System" },
-      { id: "skin.switch", slash: "skin", aliases: ["modern", "crt"], title: "Switch skin (CRT ↔ Modern)", category: "System", suggested: true },
-      { id: "help.show", slash: "help", title: "Help", category: "System" },
-      { id: "docs.open", title: "Open docs", category: "System" },
+      { id: "opencode.status", slash: "status", title: "View status", jp: "ステータス", category: "System" },
+      { id: "theme.switch", slash: "themes", title: "Switch theme", jp: "テーマ", category: "System" },
+      { id: "skin.switch", slash: "skin", aliases: ["modern", "crt", "tokyo"], title: "Switch skin (CRT · Modern · Tokyo)", jp: "スキン", category: "System", suggested: true },
+      { id: "help.show", slash: "help", title: "Help", jp: "ヘルプ", category: "System" },
+      { id: "docs.open", title: "Open docs", jp: "ドキュメント", category: "System" },
       { id: "editor.open", title: "Open external editor", category: "System", hidden: true },
-      { id: "app.exit", slash: "exit", aliases: ["quit", "q"], title: "Exit the app", category: "System" },
+      { id: "app.exit", slash: "exit", aliases: ["quit", "q"], title: "Exit the app", jp: "終了", category: "System" },
     ].map((c) => ({ kind: "builtin", aliases: c.aliases || [], keys: KEYS[c.id] || null, ...c }));
   }
 
@@ -198,9 +198,14 @@
     "skin.switch": (args) => {
       const f = appFn("setSkin");
       if (!f) return notice("skin switch not available");
-      const cur = document.body.classList.contains("theme-modern") ? "modern" : "crt";
+      const order = ["crt", "modern", "tokyo"];
+      const cur = document.body.classList.contains("theme-modern") ? "modern"
+                : document.body.classList.contains("theme-tokyo") ? "tokyo" : "crt";
       const a = String(args || "").toLowerCase();
-      const want = a.indexOf("modern") >= 0 ? "modern" : a.indexOf("crt") >= 0 ? "crt" : cur === "crt" ? "modern" : "crt";
+      const want = a.indexOf("tokyo") >= 0 ? "tokyo"
+                 : a.indexOf("modern") >= 0 ? "modern"
+                 : a.indexOf("crt") >= 0 ? "crt"
+                 : order[(order.indexOf(cur) + 1) % order.length];
       f(want);
       notice("skin → " + want);
     },
@@ -412,6 +417,7 @@
         const slash = c.slash ? ' <span class="ftp-pal-slash">/' + esc(c.slash) + "</span>" : "";
         html +=
           '<div class="ftp-pal-row' + (on ? " on" : "") + '" data-i="' + i + '">' +
+          (c.jp ? '<span class="ftp-pal-jp">' + esc(c.jp) + "</span>" : "") +
           '<span class="ftp-pal-title">' + highlight(label, row.idx) + "</span>" + slash +
           (c.desc ? '<span class="ftp-pal-desc">' + esc(c.desc) + "</span>" : "") +
           (c.keys ? '<span class="ftp-pal-key">' + esc(c.keys) + "</span>" : "") +
@@ -579,6 +585,7 @@
         const list = Registry.slashes().map((c) => ({
           label: "/" + c.slash,
           desc: c.desc || c.title || "",
+          jp: c.jp || "",
           cmd: c,
         }));
         if (!q) return list.sort((a, b) => a.label.localeCompare(b.label)).slice(0, 12);
@@ -612,6 +619,7 @@
         this.items.forEach((it, i) => {
           html +=
             '<div class="ftp-drop-row' + (i === this.sel ? " on" : "") + '" data-i="' + i + '">' +
+            (it.jp ? '<span class="ftp-drop-jp">' + esc(it.jp) + "</span>" : "") +
             '<span class="ftp-drop-label">' + highlight(it.label, it.idx) + "</span>" +
             (it.desc ? '<span class="ftp-drop-desc">' + esc(it.desc) + "</span>" : "") +
             "</div>";
@@ -846,6 +854,7 @@
   function injectCss() {
     const css = `
     .hidden{ display:none !important; }
+    .ftp-pal-jp, .ftp-drop-jp{ display:none; }
     /* ---- command palette ---- */
     #ftpPalette.ftp-overlay{ position:absolute; inset:0; z-index:60;
       background:rgba(4,6,7,.55); display:flex; align-items:flex-start; justify-content:center; }

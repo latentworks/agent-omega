@@ -136,6 +136,9 @@
   .dk-file { color:#46544c; }
 </style>
 <link rel="stylesheet" href="modern-theme.css">
+<!-- Tokyo Dream skin (light). Zen fonts localized in fonts/zen-fonts.css for offline (file://) parity. -->
+<link rel="stylesheet" href="fonts/zen-fonts.css">
+<link rel="stylesheet" href="tokyo-theme.css">
 </head>
 <body>
 <div class="win">
@@ -198,14 +201,17 @@
 
       <!-- ===== HOME / initial-empty state ===== -->
       <div id="home" style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+        <div class="m-surface" style="display:contents">
 
         <!-- Modern: hero section (hidden in CRT) -->
         <div class="m-home-content">
           <div class="m-ambient"></div>
           <div class="m-kicker"><span class="m-kicker-slash">A</span>/O</div>
           <div class="m-hero">
-            <span class="m-hero-slash">/</span>agent-omega
+            <span class="m-hero-en"><span class="m-hero-slash">/</span>agent-omega</span>
             <span class="m-caret"></span>
+            <span class="m-hero-jp" style="display:none"><span class="m-hero-jp-slash">/</span>エージェント・オメガ</span>
+            <span class="m-hero-sub" style="display:none">/agent-omega</span>
           </div>
         </div>
 
@@ -269,6 +275,7 @@
           <span class="footPath"></span>
           <span>agent-omega · v2.3.0-beta</span>
         </div>
+        </div><!-- /.m-surface -->
       </div>
 
       <!-- ===== CHAT ===== -->
@@ -1389,7 +1396,7 @@ function showHelp(){
   let base='<span style="color:#e9f2eb">commands</span><br>'+
     '<span style="color:var(--ac)">/new</span> reset · <span style="color:var(--ac)">/help</span> · <span style="color:var(--ac)">/settings</span> · '+
     '<span style="color:var(--ac)">/model</span> [name] · <span style="color:var(--ac)">/agent</span> [name] · '+
-    '<span style="color:var(--ac)">/theme</span> [amber|green|cyan|pink|mix] · <span style="color:var(--ac)">/skin</span> [crt|modern] · <span style="color:var(--ac)">/status</span><br>'+
+    '<span style="color:var(--ac)">/theme</span> [amber|green|cyan|pink|mix] · <span style="color:var(--ac)">/skin</span> [crt|modern|tokyo] · <span style="color:var(--ac)">/status</span><br>'+
     '<span style="color:var(--ac)">/sessions</span> switch · <span style="color:var(--ac)">/rename</span> · <span style="color:var(--ac)">/fork</span> · <span style="color:var(--ac)">/compact</span> · <span style="color:var(--ac)">/undo</span> · <span style="color:var(--ac)">/redo</span> · <span style="color:var(--ac)">/export</span> · <span style="color:var(--ac)">/copy</span> · <span style="color:var(--ac)">/timeline</span> · <span style="color:var(--ac)">/effort</span> [level] · <span style="color:var(--ac)">/thinking</span> [on|off]';
   if(engineCommands && engineCommands.length){
     base+='<br><span style="color:#7c8b82">engine</span> '+engineCommands.map(c=>'<span style="color:var(--ac)">/'+escapeHtml((c&&c.name)||c)+'</span>').join(' · ');
@@ -1416,11 +1423,12 @@ function handleCommand(text){
     case 'theme': case 'themes': setTheme(args); break;
     case 'skin': {
       const s=(args||'').trim().toLowerCase();
-      if(s==='crt'||s==='modern'){ window.setSkin(s); sysLine('skin → <span style="color:var(--ac)">'+s+'</span>'); }
-      else { const cur=document.body.classList.contains('theme-modern')?'modern':'crt'; sysLine('/skin <span style="color:var(--ac)">crt</span> &nbsp;|&nbsp; <span style="color:var(--ac)">modern</span> &nbsp;&nbsp;<span style="color:#54655b;">current: '+escapeHtml(cur)+'</span>'); }
+      if(s==='crt'||s==='modern'||s==='tokyo'){ window.setSkin(s); sysLine('skin → <span style="color:var(--ac)">'+s+'</span>'); }
+      else { const cur=document.body.classList.contains('theme-modern')?'modern':document.body.classList.contains('theme-tokyo')?'tokyo':'crt'; sysLine('/skin <span style="color:var(--ac)">crt</span> &nbsp;|&nbsp; <span style="color:var(--ac)">modern</span> &nbsp;|&nbsp; <span style="color:var(--ac)">tokyo</span> &nbsp;&nbsp;<span style="color:#54655b;">current: '+escapeHtml(cur)+'</span>'); }
       break;
     }
     case 'status': showStatus(); break;
+    case 'demo': case 'playground': if(window.aoDemo){ window.aoDemo(); } else { sysLine('demo unavailable'); } break;
     case 'model': case 'models': case 'mo': if(args) selectByArg('model',args); else pickerPanel('model'); break;
     case 'agent': case 'agents': if(args) selectByArg('agent',args); else pickerPanel('agent'); break;
     case 'effort': case 'variants': effortCmd(args); break;
@@ -1578,6 +1586,7 @@ function connect(){
 function onWs(m){
   if(!m || !m.type) return;
   if(window.AgentOmegaSettings){ try{ if(window.AgentOmegaSettings.onWs(m)) return; }catch(e){} }   // settings menu consumes councilConfig/vaultKeys (peeks ready)
+  if(window.AgentOmegaOnboard){ try{ if(window.AgentOmegaOnboard.onWs(m)) return; }catch(e){} }   // first-run onboarding card consumes first-run / onboard-status / onboard-result
   switch(m.type){
     case 'ready':
       sessionId=m.sessionId||sessionId;
@@ -1961,29 +1970,33 @@ function wireDiscovery(){
    and persists to localStorage('ao.skin').  Applies automatically on load.
    ===================================================================== */
 window.setSkin = function(skin){
-  skin = (skin === 'modern') ? 'modern' : 'crt';
-  document.body.classList.toggle('theme-modern', skin === 'modern');
+  var SKINS = { crt:1, modern:1, tokyo:1 };
+  skin = SKINS[skin] ? skin : 'crt';
+  document.body.classList.remove('theme-modern','theme-tokyo');
+  if(skin !== 'crt') document.body.classList.add('theme-'+skin);
   /* omega-globe.js reads --ac from documentElement, so mirror the value there */
   if(skin === 'modern'){
     document.documentElement.style.setProperty('--ac', '#6e7bff');
+  } else if(skin === 'tokyo'){
+    document.documentElement.style.setProperty('--ac', '#C98D80');
   } else {
     /* restore the persisted CRT accent (not always amber), so /theme survives a skin round-trip — AUD1-13/UI-12 */
     var t=null; try{ t=localStorage.getItem('ao.theme'); }catch(e){}
     document.documentElement.style.setProperty('--ac', (t && THEMES[t]) ? THEMES[t] : '#ffb454');
   }
-  localStorage.setItem('ao.skin', skin);
+  try{ localStorage.setItem('ao.skin', skin); }catch(e){}
   /* suppress the boot-slide on already-loaded switches */
   document.body.classList.add('skin-loaded');
 };
 /* apply persisted skin immediately (before first paint) */
 (function(){
-  var saved = localStorage.getItem('ao.skin');
-  if(saved === 'modern') window.setSkin('modern');
+  var saved=null; try{ saved = localStorage.getItem('ao.skin'); }catch(e){}
+  if(saved === 'modern' || saved === 'tokyo') window.setSkin(saved);
 })();
-/* re-apply the persisted CRT accent theme (Modern keeps its own indigo accent) — AUD1-13 */
+/* re-apply the persisted CRT accent theme (Modern/Tokyo keep their own accent) — AUD1-13 */
 (function(){
-  try{ var t=localStorage.getItem('ao.theme');
-    if(t && THEMES[t] && localStorage.getItem('ao.skin')!=='modern')
+  try{ var t=localStorage.getItem('ao.theme'); var sk=localStorage.getItem('ao.skin');
+    if(t && THEMES[t] && sk!=='modern' && sk!=='tokyo')
       document.documentElement.style.setProperty('--ac', THEMES[t]);
   }catch(e){}
 })();
@@ -1998,7 +2011,9 @@ connect();
      Self-mounting; registers its masterKeydown through window.registerKeydown
      (defined above) so it shares the ONE unified keydown pipeline. -->
 <script src="command-discovery.js"></script>
+<script src="ao-demo.js"></script>
 <script src="crt-settings.js"></script>
+<script src="first-run.js"></script>
 <script src="omega-globe.js"></script>
 <!-- Agent Omega boot sequence (Concept 3 · phosphor power-on). Self-mounting:
      plays over the app during engine warm-up, reveals on the sidecar's `ready`. -->

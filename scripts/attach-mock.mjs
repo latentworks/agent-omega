@@ -10,6 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { glyph } from './attach/ui.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CLIENT = path.join(HERE, 'attach.mjs')
@@ -78,6 +79,13 @@ async function main() {
     ok('header box rendered', /Agent Omega/.test(plain()))
     ok('history replayed (SKIP_PART skipped)', /earlier answer/.test(plain()) && /earlier question/.test(plain()))
 
+    // first turn of the session: the client sends a prompt → the "First-round caching" runner shows while the
+    // model prefills (no output token yet). Proves the runner + its !primed/!gotOutput gating.
+    toClient('kick off the auth work\r')
+    await waitFor((m) => m.type === 'prompt').catch(() => null)
+    await sleep(160)
+    ok('first-round caching runner shows on the first turn', /First-round caching/.test(plain()))
+
     ws1.send(JSON.stringify({ type: 'turn-start' }))
     ws1.send(JSON.stringify({ type: 'update', update: { sessionUpdate: 'agent_thought_chunk', content: { text: 'Let me reason about the failing test first.\n' } } }))
     ws1.send(JSON.stringify({ type: 'update', update: { sessionUpdate: 'assistant', content: { text: 'Looking at the auth test.\n' } } }))
@@ -85,6 +93,7 @@ async function main() {
     await sleep(250)
     ok('thinking trace shown by default', /Thinking…/.test(plain()) && /reason about the failing/.test(plain()))
     ok('streamed text rendered', /Looking at the auth test/.test(plain()))
+    ok('response marked with the Ω sparkle (not the old bullet)', plain().includes(glyph.sparkle + ' Looking at the auth test') && !plain().includes('⏺ Looking'))
     ok('tool call rendered', /Bash\(npm test -- auth\)/.test(plain()))
 
     ws1.send(JSON.stringify({ type: 'permission', title: 'Write to tests/auth.test.ts', toolCallId: 'tc_1', options: [{ optionId: 'allow_once', name: 'Allow once' }, { optionId: 'deny', name: 'Deny' }] }))
@@ -103,7 +112,7 @@ async function main() {
     ok('setModel: /model 2 → correct value', sm && sm.model === 'evo/gpt-oss-120b', JSON.stringify(sm))
 
     toClient('\x1b[200~multi line\none\x1b[201~\r')
-    const pm = await waitFor((m) => m.type === 'prompt').catch(() => null)
+    const pm = await waitFor((m) => m.type === 'prompt' && /multi line/.test(m.text || '')).catch(() => null)
     ok('pasted multiline prompt = ONE frame, newline preserved', pm && pm.text === 'multi line\none', JSON.stringify(pm))
 
     const restBefore = restCalls

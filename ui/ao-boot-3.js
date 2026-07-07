@@ -39,7 +39,7 @@
   var SETTLE_DUR    = 860;
   var POST_SETTLE   = 200;   // pause after settle before unmount fade
   var SKIP_FADE     = 250;   // fast fade on skip
-  var DONE_FADE     = 380;   // normal fade on complete
+  var DONE_FADE     = 460;   // normal cross-fade on complete (a touch gentler so the dissolve into the live UI reads as one continuous shot)
   var MAX_HOLD      = 14000; // hard cap
 
   function recalc() {
@@ -120,6 +120,7 @@
   // persists the choice to localStorage 'ao.skin' before this script runs, so read it and, when
   // Modern, run a short brand-only intro with the terminal boot log suppressed.
   var MODERN = (function () { try { return localStorage.getItem('ao.skin') === 'modern'; } catch (_) { return false; } })();
+  var TOKYO  = (function () { try { return localStorage.getItem('ao.skin') === 'tokyo';  } catch (_) { return false; } })();
 
   window.AOBoot = {
     skip:    function () { requestFinish('skip'); },
@@ -615,11 +616,7 @@
         teardownSkip();
         clearTimers();
         if (globeRaf) { cancelAnimationFrame(globeRaf); globeRaf = null; }
-        finishTimers.push(setTimeout(function () {
-          root.style.transition = 'opacity ' + (DONE_FADE / 1000) + 's ease';
-          root.style.opacity    = '0';
-          finishTimers.push(setTimeout(unmount, DONE_FADE + 40));
-        }, POST_SETTLE));
+        finishTimers.push(setTimeout(function () { crossfadeAndUnmount(DONE_FADE); }, POST_SETTLE));
       }
     }
     requestAnimationFrame(frame);
@@ -643,10 +640,27 @@
     at(MAX_HOLD, function () { requestFinish('timeout'); });
   }
 
+  /* Tokyo Dream: a light daylight skin — no CRT phosphor boot, no dark flash.
+     Wash the overlay to paper, suppress the terminal log + globe + ONLINE +
+     hero cards, hold a calm beat, then hand off to the app's light home. */
+  function playTokyo() {
+    try { root.classList.add('aob-tokyo'); root.style.background = '#FAF6EE'; } catch (_) {}
+    if (termBox) termBox.style.display = 'none';
+    try { var sc = root.querySelector('.aob-scan'); if (sc) sc.style.display = 'none'; } catch (_) {}
+    try { var vg = root.querySelector('.aob-vign'); if (vg) vg.style.display = 'none'; } catch (_) {}
+    try { if (globeCanvas) globeCanvas.style.display = 'none'; } catch (_) {}
+    try { if (onlineEl) onlineEl.style.display = 'none'; } catch (_) {}
+    try { if (heroEl) heroEl.style.display = 'none'; } catch (_) {}
+    window.AOBoot.__proof.tokyo = true;
+    at(420, function () { requestFinish('tokyo'); });
+    at(MAX_HOLD, function () { requestFinish('timeout'); });
+  }
+
   function play() {
     startT = now();
     mounted = true;
     window.AOBoot.__proof.mountedAt = startT;
+    if (TOKYO) { playTokyo(); return; }
     if (MODERN) { playModern(); return; }
 
     /* stream boot lines */
@@ -706,8 +720,24 @@
     clearTimers();
     teardownSkip();
     if (globeRaf) { cancelAnimationFrame(globeRaf); globeRaf = null; }
+    crossfadeAndUnmount((reason === 'skip') ? SKIP_FADE : DONE_FADE);
+  }
 
-    var dur = (reason === 'skip') ? SKIP_FADE : DONE_FADE;
+  // Seamless hand-off: cross-fade the live app IN (.win, 0->1) while the boot overlay fades OUT, so the
+  // settled mock DISSOLVES into the real UI instead of the real screen popping through (the seam the user
+  // noticed). The overlay bg is opaque, so starting .win at 0 can't flash black. Shared by BOTH the
+  // natural settle-complete path AND requestFinish (skip / api / timeout / modern).
+  function crossfadeAndUnmount(dur) {
+    var appEl = document.querySelector('.win');
+    if (appEl) {
+      appEl.style.transition = 'none';                           // commit opacity:0 with NO transition first...
+      appEl.style.opacity = '0';
+      void appEl.offsetWidth;                                    // ...force a style resolve so 0 is the transition baseline...
+      requestAnimationFrame(function () {                        // ...then next frame turn the transition on and fade to 1
+        appEl.style.transition = 'opacity ' + (dur / 1000) + 's ease';
+        appEl.style.opacity = '1';
+      });
+    }
     root.style.transition = 'opacity ' + (dur / 1000) + 's ease';
     root.style.opacity    = '0';
     finishTimers.push(setTimeout(unmount, dur + 40));
@@ -719,6 +749,8 @@
     window.AOBoot.__proof.unmountedAt = now();
     window.AOBoot.done = true;
     finishTimers.forEach(clearTimeout); finishTimers = [];
+    var appEl = document.querySelector('.win');   // clear the cross-fade inline styles so transition/opacity don't linger on the app root
+    if (appEl) { appEl.style.transition = ''; appEl.style.opacity = ''; }
     try { if (root && root.parentNode) root.parentNode.removeChild(root); } catch (_) {}
     try { if (typeof window.focusActive === 'function') window.focusActive(); } catch (_) {}
   }

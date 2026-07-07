@@ -1,0 +1,43 @@
+/* Zen fonts localized for offline (file://) parity — Tokyo Dream skin.
+   Subset to the skin's used glyphs (Latin + kana + used kanji). Regenerate with
+   tokyo-work/localize_zen.py if new Japanese labels are added. */
+@font-face {
+  font-family: 'Zen Kaku Gothic New';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(zen-zen-kaku-gothic-new-400.woff2) format('woff2');
+  unicode-range: U+20-7e, U+3001-3002, U+300c-300f, U+301c, U+3040-30ff, U+4e86, U+4fe1, U+5143, U+5171, U+51fa, U+524d, U+540d, U+5727, U+5909, U+5b9a, U+5c65, U+601d, U+623b, U+6280, U+63a5, U+63a8, U+65b0, U+66f4, U+66f8, U+6700, U+6709, U+6b74, U+6df1, U+76f4, U+7d42, U+7d9a, U+7e2e, U+8003, U+8853, U+898f, U+89e3, U+8a2d, U+8ad6, U+8fd1, U+8fd4, U+9664, U+ff08-ff09, U+ff1a;
+}
+@font-face {
+  font-family: 'Zen Kaku Gothic New';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(zen-zen-kaku-gothic-new-500.woff2) format('woff2');
+  unicode-range: U+20-7e, U+3001-3002, U+300c-300f, U+301c, U+3040-30ff, U+4e86, U+4fe1, U+5143, U+5171, U+51fa, U+524d, U+540d, U+5727, U+5909, U+5b9a, U+5c65, U+601d, U+623b, U+6280, U+63a5, U+63a8, U+65b0, U+66f4, U+66f8, U+6700, U+6709, U+6b74, U+6df1, U+76f4, U+7d42, U+7d9a, U+7e2e, U+8003, U+8853, U+898f, U+89e3, U+8a2d, U+8ad6, U+8fd1, U+8fd4, U+9664, U+ff08-ff09, U+ff1a;
+}
+@font-face {
+  font-family: 'Zen Kaku Gothic New';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(zen-zen-kaku-gothic-new-700.woff2) format('woff2');
+  unicode-range: U+20-7e, U+3001-3002, U+300c-300f, U+301c, U+3040-30ff, U+4e86, U+4fe1, U+5143, U+5171, U+51fa, U+524d, U+540d, U+5727, U+5909, U+5b9a, U+5c65, U+601d, U+623b, U+6280, U+63a5, U+63a8, U+65b0, U+66f4, U+66f8, U+6700, U+6709, U+6b74, U+6df1, U+76f4, U+7d42, U+7d9a, U+7e2e, U+8003, U+8853, U+898f, U+89e3, U+8a2d, U+8ad6, U+8fd1, U+8fd4, U+9664, U+ff08-ff09, U+ff1a;
+}
+@font-face {
+  font-family: 'Zen Maru Gothic';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(zen-zen-maru-gothic-500.woff2) format('woff2');
+  unicode-range: U+20-7e, U+3001-3002, U+300c-300f, U+301c, U+3040-30ff, U+4e86, U+4fe1, U+5143, U+5171, U+51fa, U+524d, U+540d, U+5727, U+5909, U+5b9a, U+5c65, U+601d, U+623b, U+6280, U+63a5, U+63a8, U+65b0, U+66f4, U+66f8, U+6700, U+6709, U+6b74, U+6df1, U+76f4, U+7d42, U+7d9a, U+7e2e, U+8003, U+8853, U+898f, U+89e3, U+8a2d, U+8ad6, U+8fd1, U+8fd4, U+9664, U+ff08-ff09, U+ff1a;
+}
+@font-face {
+  font-family: 'Zen Maru Gothic';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(zen-zen-maru-gothic-700.woff2) format('woff2');
+  unicode-range: U+20-7e, U+3001-3002, U+300c-300f, U+301c, U+3040-30ff, U+4e86, U+4fe1, U+5143, U+5171, U+51fa, U+524d, U+540d, U+5727, U+5909, U+5b9a, U+5c65, U+601d, U+623b, U+6280, U+63a5, U+63a8, U+65b0, U+66f4, U+66f8, U+6700, U+6709, U+6b74, U+6df1, U+76f4, U+7d42, U+7d9a, U+7e2e, U+8003, U+8853, U+898f, U+89e3, U+8a2d, U+8ad6, U+8fd1, U+8fd4, U+9664, U+ff08-ff09, U+ff1a;
+}
