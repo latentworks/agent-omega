@@ -1,5 +1,19 @@
 # Agent Omega — Journal
 
+## 2026-07-07 — Fixed slow "spin-up" + invisible subagent activity (3 fixes, all proven)
+
+**Discussed:** Two complaints — (1) a "quick test" took ~10 min for the small driver model to spin up the larger specialist before it even started, (2) the app only ever showed a frozen `task: agent testing` line, no view of what the subagent was doing. Checked whether the slowness was the app (it wasn't — app+harness fire in ~50ms). Root cause: the model-swap layer's idle-pin setting **pins** a loaded model but does NOT **preload** it, so after any host reboot/service-restart the model sits unloaded and the FIRST request eats the full cold-load (driver ~21s, specialist ~194s) plus the driver→specialist hand-off — that's the 10 min. Second problem: the ACP bridge only carries the PARENT/driver session's stream; child (subagent) sessions never cross it, so the UI had nothing to show.
+
+**Decided:** Ship all three approved fixes. (1) Warm each host's pinned model automatically on every model-service start. (2) Surface the subagent's live internal activity in the app. (3) Show a "waking up…" status while a model is genuinely cold. Fix 1 lives host-side (infra), Fixes 2–3 in the app. Left the final live desktop click to the user (he must restart the app to get the new code anyway).
+
+**Changed:**
+- **Fix 1 (keep models warm) — host-side infra, no repo commit.** A service drop-in on each inference host runs a small warm-up script whenever the model service (re)starts — covering both boot AND a bare service restart (a boot-only trigger would miss the latter), backgrounded so the restart returns instantly rather than blocking on the load. The script waits for the model server to bind its HTTP port, then fires a 1-token completion to trigger and block on the load of that host's pinned model.
+- **Fix 2 + 3 (subagent visibility + warming status) — in `sidecar.mjs` + `ui/app.html`** (already deployed to `bin/Release`, byte-identical). Sidecar: `childSessions` map + `slimSubPart()` + `forwardEngineEvent()` subscribe to the engine `/event` SSE and emit `{type:'subagent', phase:created|link|part|end}` frames over the existing WS broadcast. app.html: nested `.subagent` panel under the task (reasoning + tool lines + streamed answer, spinner→✓/✕), plus two-level "waking the model…" warming lines (subagent-level 15s + top-level turn-start), cancelled by first activity.
+
+**Proven:** Fix 1 — restarted both hosts live: warm ran in the background (driver 21s / specialist **194s** → http 200), and the next real request landed on the warm model in **0.3–0.6s** (vs minutes). Non-blocking confirmed (service `active` immediately, warm-up detached). Fixes 2/3 — every seam on real data: real `/event` delegation capture → shipped `forwardEngineEvent` transform (13/13) → real `app.html` DOM render (24/24) + screenshot showing the specialist's live reasoning/tools/answer where the frozen line used to be. Warming appears at 15s of silence and clears on activity (S2/S3/S4).
+
+**Open-next:** the user **restarts Agent Omega** (the running instance is pre-change) — that both delivers Fixes 2/3 and lets him watch the live panel on his next delegation. Offered a deeper full-live end-to-end (real delegation, frames over the wire) if he wants belt-and-suspenders instead of leaving the last visual confirm to him.
+
 ## 2026-07-06 — Setup system Phases 1–3 shipped; preview copy ready for e2e test
 
 **Discussed:** Finishing the built-in setup/help system end-to-end. Mid-build, Fable hit its WEEKLY rate limit — the user said use two Opus 4.8 reviewers in its place. Whether the daily driver's binary should change (no — keep it Phase-1 until an explicit prod push). How to give a true first-run test without touching the real vault.
