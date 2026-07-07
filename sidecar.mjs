@@ -502,7 +502,7 @@ class UIClient {
     // which streams through this same path) is exempt — it legitimately arrives with no active turn.
     if (!replaying && currentTurn === 0 && u && (u.sessionUpdate === 'agent_message_chunk' || u.sessionUpdate === 'agent_thought_chunk')) return
     if (u && u.sessionUpdate !== 'usage_update') turnOutput++   // text/thought/tool call/plan = real output
-    // Omega Setup: the /event SSE carries no tool/part events, so watch the ACP tool-call stream here.
+    // Omega Setup: the setup tools run in THIS (driver) session, so watch its ACP tool-call stream here.
     // Match on the tool NAME only (u.title = the tool id) — NOT the whole payload, since a skill body /
     // args could mention a tool name. Fire on the call; the action runs at turn end (the tool has settled
     // by then). A mutating setup tool -> reload; finish -> hand back. A stale flag from an aborted/errored
@@ -619,12 +619,64 @@ async function start() {
 // app renders as a sysLine (PLG-4). Generation-guarded + aborted on engine restart so an old stream
 // can't outlive its engine.
 let eventAbort = null
+// Fix 2 — surface subagent (child-session) activity. A subagent turn runs in a CHILD session inside the
+// engine; its live output publishes to the /event bus (same working directory → passes the stream's
+// directory filter) but NEVER crosses the ACP channel the sidecar bridges (ACP carries only the driver's
+// own session — which is why the UI otherwise sees just a static "task" line). So we tap /event here,
+// learn each child from its session.created.parentID, and forward the child's parts to the UI as
+// {type:'subagent'} frames. The driver's task tool part carries state.metadata.sessionId (= the child) and
+// its callID (which the engine also uses as the ACP toolCallId — see acp/event.ts), tying a panel to the
+// exact task line the UI already renders. All payload shapes below are verified from real /event captures.
+const childSessions = new Map()   // childSessionID -> { parentID, title }
+function slimSubPart(part) {
+  const o = { id: part.id, type: part.type }
+  if (part.type === 'text') o.text = String(part.text || '').slice(0, 8000)
+  else if (part.type === 'reasoning') o.text = String(part.text || '').slice(0, 4000)
+  else if (part.type === 'tool') {
+    const st = part.state || {}
+    o.tool = part.tool; o.callID = part.callID; o.status = st.status || ''
+    const inp = st.input || {}
+    // one-line hint: whatever locating field the tool carries (path / command / pattern / description)
+    o.hint = String(inp.filePath || inp.path || inp.command || inp.pattern || inp.description || st.title || '').slice(0, 160)
+  }
+  return o
+}
 function forwardEngineEvent(evt) {
   try {
     const type = evt && evt.type
+    const p = (evt && (evt.properties || evt.body)) || {}
+    // plugin toast -> sysLine notice (PLG-4)
     if (typeof type === 'string' && type.indexOf('toast') !== -1) {
-      const p = evt.properties || evt.body || {}
-      if (p && p.message) broadcast({ type: 'notice', message: String(p.message), title: p.title || '', variant: p.variant || 'info' })
+      if (p.message) broadcast({ type: 'notice', message: String(p.message), title: p.title || '', variant: p.variant || 'info' })
+      return
+    }
+    // a child (subagent) session was spawned — remember it, tell the UI to open a nested panel
+    if (type === 'session.created') {
+      const info = p.info || {}
+      if (info.parentID) {
+        childSessions.set(info.id, { parentID: info.parentID, title: info.title || '' })
+        broadcast({ type: 'subagent', phase: 'created', childId: info.id, parentId: info.parentID, title: info.title || '' })
+      }
+      return
+    }
+    if (type === 'message.part.updated') {
+      const part = p.part || {}
+      const sid = part.sessionID
+      // driver's task tool part -> tie the child to the task line (callID) + relay its status
+      if (part.type === 'tool' && part.tool === 'task') {
+        const cid = part.state && part.state.metadata && part.state.metadata.sessionId
+        if (cid) broadcast({ type: 'subagent', phase: 'link', childId: cid, callID: part.callID, status: (part.state && part.state.status) || '' })
+        return
+      }
+      // a known child's own part -> forward as behind-the-scenes activity
+      if (sid && childSessions.has(sid)) broadcast({ type: 'subagent', phase: 'part', childId: sid, part: slimSubPart(part) })
+      return
+    }
+    // child went idle -> its turn finished
+    if (type === 'session.idle') {
+      const sid = p.sessionID
+      if (sid && childSessions.has(sid)) { broadcast({ type: 'subagent', phase: 'end', childId: sid }); childSessions.delete(sid) }
+      return
     }
   } catch {}
 }

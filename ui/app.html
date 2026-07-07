@@ -109,6 +109,19 @@
             font-family:inherit; font-size:18px; line-height:1.4; white-space:pre-wrap; max-height:320px; overflow:auto; }
   .out-pre::-webkit-scrollbar{ width:8px; } .out-pre::-webkit-scrollbar-thumb{ background:#1e2d27; }
 
+  /* ===== subagent (child-session) live panel — Fix 2 (show what's happening behind the scenes) ===== */
+  .subagent{ margin:4px 0 6px 1.6em; padding:2px 0 3px .85em; border-left:2px solid #2b3a32; }
+  .sub-h{ font-size:19px; color:#9a8fe0; display:flex; align-items:baseline; }
+  .sub-h .sg{ flex:0 0 auto; margin-right:.5em; color:#9a8fe0; }
+  .sub-body{ margin-top:2px; display:flex; flex-direction:column; gap:1px; }
+  .sub-text{ font-size:19px; color:#a9b6ac; white-space:pre-wrap; }
+  .sub-think{ font-size:18px; color:#6b7a70; font-style:italic; white-space:pre-wrap; }
+  .sub-tool{ font-size:18px; color:#54655b; }
+  .sub-tool .st{ color:#5fd3dd; }
+  .sub-tool .sh{ color:#46544c; }
+  .sub-warm{ font-size:19px; color:#e0b060; display:flex; align-items:baseline; }
+  .sub-warm .spin{ margin-right:.5em; flex:0 0 auto; }
+
   /* ---- syntax token classes (CRT colors; overridden in Modern via modern-theme.css) ---- */
   .tk-comment { color:#5f7a6c; }
   .tk-string  { color:#c3e88d; }
@@ -901,9 +914,117 @@ function renderPlan(entries){
   });
 }
 
+/* =====================================================================
+   Subagent (child-session) live view — Fix 2 + Fix 3 warming
+   The sidecar taps the engine /event stream and forwards child-session
+   activity as {type:'subagent', phase, childId, ...} frames (see onWs).
+   The driver's ACP stream never carries child work, so this is the only
+   window into what a delegated subagent (e.g. the 122B) is actually doing.
+   Panels are appended to `log` as an indented nested block — NOT inside
+   the task tool wrap, because renderTool() wipes that wrap on every update.
+   ===================================================================== */
+const subPanels = {};        // childId -> panel record
+const SUB_WARM_MS = 15000;   // silence past this ⇒ show a "waking the model" note (cold-load)
+let turnWarmTimer = 0;       // top-level (driver) cold-load timer
+
+function subPanelFor(childId, title){
+  let sp = subPanels[childId];
+  if(sp) return sp;
+  const box=document.createElement('div'); box.className='subagent';
+  const head=document.createElement('div'); head.className='sub-h';
+  const g=document.createElement('span'); g.className='sg spin'; g.textContent='◐';
+  const tt=document.createElement('span'); tt.textContent=title||'subagent';
+  head.appendChild(g); head.appendChild(tt);
+  const body=document.createElement('div'); body.className='sub-body';
+  box.appendChild(head); box.appendChild(body);
+  withScroll(()=>{ noteOutput(); log.appendChild(box); });
+  sp={ box, body, glyph:g, parts:{}, warmTimer:0, warmEl:null, hadPart:false, done:false };
+  subPanels[childId]=sp;
+  return sp;
+}
+function subWarmStart(sp){
+  if(sp.warmTimer||sp.hadPart||sp.done) return;
+  sp.warmTimer=setTimeout(()=>{
+    sp.warmTimer=0;
+    if(sp.hadPart||sp.done) return;
+    withScroll(()=>{
+      if(!sp.warmEl){
+        sp.warmEl=document.createElement('div'); sp.warmEl.className='sub-warm';
+        const ws=document.createElement('span'); ws.className='spin'; ws.textContent='◐';
+        const wt=document.createElement('span'); wt.textContent='waking the big model — the first call after it’s been idle can take a few minutes…';
+        sp.warmEl.appendChild(ws); sp.warmEl.appendChild(wt);
+        sp.body.appendChild(sp.warmEl);
+      }
+    });
+  }, SUB_WARM_MS);
+}
+function subWarmClear(sp){
+  if(sp.warmTimer){ clearTimeout(sp.warmTimer); sp.warmTimer=0; }
+  if(sp.warmEl){ try{sp.warmEl.remove();}catch(e){} sp.warmEl=null; }
+}
+function renderSubPart(sp, part){
+  if(!part || !part.id) return;
+  sp.hadPart=true; subWarmClear(sp);
+  withScroll(()=>{
+    noteOutput();
+    let el=sp.parts[part.id];
+    if(part.type==='text'){
+      if(!el){ el=document.createElement('div'); el.className='sub-text'; sp.body.appendChild(el); sp.parts[part.id]=el; }
+      el.textContent=part.text||'';
+    } else if(part.type==='reasoning'){
+      if(!el){ el=document.createElement('div'); el.className='sub-think'; sp.body.appendChild(el); sp.parts[part.id]=el; }
+      el.textContent=part.text||'';
+    } else if(part.type==='tool'){
+      if(!el){ el=document.createElement('div'); el.className='sub-tool'; sp.body.appendChild(el); sp.parts[part.id]=el; }
+      const done=part.status==='completed'||part.status==='failed';
+      const mark=part.status==='failed'?'✕':(done?'✓':'·');
+      el.innerHTML='';
+      const m=document.createElement('span'); m.textContent=mark+' ';
+      const n=document.createElement('span'); n.className='st'; n.textContent=part.tool||'tool';
+      el.appendChild(m); el.appendChild(n);
+      if(part.hint){ const h=document.createElement('span'); h.className='sh'; h.textContent='  '+part.hint; el.appendChild(h); }
+    }
+  });
+}
+function subFinish(sp, failed){
+  if(!sp || sp.done) return;
+  sp.done=true; subWarmClear(sp);
+  sp.glyph.classList.remove('spin');
+  sp.glyph.textContent = failed?'✕':'✓';
+  sp.glyph.style.color = failed?'#ff6b6b':'#66dd88';
+}
+function onSubagent(m){
+  if(!m || !m.childId) return;
+  if(m.phase==='created'){
+    const t=String(m.title||'subagent').slice(0,140);
+    const sp=subPanelFor(m.childId, t);
+    subWarmStart(sp);                                  // Fix 3: if it goes quiet, the child model is cold-loading
+  } else if(m.phase==='part'){
+    const sp=subPanels[m.childId] || subPanelFor(m.childId,'subagent');
+    renderSubPart(sp, m.part);
+  } else if(m.phase==='link'){                          // task tool ↔ child status relay (secondary completion signal)
+    const sp=subPanels[m.childId];
+    if(sp && (m.status==='completed'||m.status==='failed')) subFinish(sp, m.status==='failed');
+  } else if(m.phase==='end'){                           // child session.idle — the verified end signal
+    subFinish(subPanels[m.childId], false);
+  }
+}
+
+/* top-level (driver) cold-load note — Fix 3 for the non-delegation case */
+function turnWarmClear(){ if(turnWarmTimer){ clearTimeout(turnWarmTimer); turnWarmTimer=0; } }
+function turnWarmStart(){
+  turnWarmClear();
+  turnWarmTimer=setTimeout(()=>{
+    turnWarmTimer=0;
+    if(turnProduced) return;                            // real output already arrived — not a cold start
+    sysLine('<span style="color:#e0b060;">◐ waking the model — the first reply after it’s been idle can take a minute or two…</span>');
+  }, SUB_WARM_MS);
+}
+
 /* ---- ACP sessionUpdate router ---- */
 function onUpdate(u){
   if(!u || !u.sessionUpdate) return;
+  turnWarmClear();   // Fix 3: any driver update means the model is alive — cancel the cold-load note
   // During replay each historical message arrives as chunks tagged with its
   // messageId — start a fresh answer/user block per message so history doesn't
   // merge into one blob. Live turns are untouched.
@@ -1517,6 +1638,8 @@ function resetTurn(){
   thoughtText=''; curAnswerEl=null; curAnswerText='';
   toolEls={}; toolState={}; planEl=null;
   turnProduced=false; ansDirty=false; thinkDirty=false;
+  turnWarmClear();                                                  // drop any pending cold-load note (Fix 3)
+  for(const k in subPanels){ const sp=subPanels[k]; if(sp&&sp.warmTimer) clearTimeout(sp.warmTimer); delete subPanels[k]; }   // DOM panels stay as history; forget the live map (Fix 2)
 }
 
 /* ---- ESC / new: clear the session and return home ---- */
@@ -1650,11 +1773,13 @@ function onWs(m){
       setStatus(connOpen?'ready':'offline');
       break;
     case 'update':       onUpdate(m.update); break;
+    case 'subagent':     onSubagent(m); break;   // Fix 2 — live child-session (subagent) activity
     case 'permission':   showPermission(m); break;
     case 'commands':     engineCommands=Array.isArray(m.commands)?m.commands:engineCommands; syncDiscovery(); break;
     case 'findFileResult': { const r=_apiReq.get(m.rid); if(r){ _apiReq.delete(m.rid); r(m); } break; }
-    case 'turn-start':   resetTurn(); setStatus('busy'); break;
+    case 'turn-start':   resetTurn(); turnWarmStart(); setStatus('busy'); break;   // Fix 3: arm the cold-load note
     case 'turn-end':
+      turnWarmClear();   // Fix 3: turn is over — no cold-load note
       if(!turnProduced) addFallback('turn ended with no output'+(m.stopReason?(' ('+m.stopReason+')'):''));
       settleThinking(); permPending=false;   // preserve a trailing thought (thought-only turn) instead of dropping it
       if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; }   // no leftover permission box for an ended turn
@@ -1664,8 +1789,8 @@ function onWs(m){
     case 'agent':        if(m.agent!=null){ curAgent=m.agent; updateMeta(); } break;
     case 'effort':       if(m.effort!=null){ curEffort=m.effort; sysLine('effort → <span class="cy">'+escapeHtml(m.effort)+'</span>'); } break;
     case 'notice':       { const t=(m.message||m.text||''); if(t){ const warn=(m.variant==='warning'||m.variant==='error'); sysLine('<span style="color:'+(warn?'#e0b060':'#7c8b82')+';">'+escapeHtml(t)+'</span>'); } break; }   // engine-forwarded toast (e.g. skill-router inert) rendered as a sysLine — PLG-4
-    case 'error':        addErr(m.message||'engine error'); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('error'); break;
-    case 'engine-down':  connOpen=false; addErr('engine offline: '+(m.message||'process exited')); showEngineDown(m.message); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('offline'); break;   // loud persistent banner + Restart path — WS-01
+    case 'error':        turnWarmClear(); addErr(m.message||'engine error'); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('error'); break;
+    case 'engine-down':  turnWarmClear(); connOpen=false; addErr('engine offline: '+(m.message||'process exited')); showEngineDown(m.message); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('offline'); break;   // loud persistent banner + Restart path — WS-01
   }
 }
 
