@@ -18,6 +18,10 @@ static class Program
     [DllImport("user32.dll")] static extern bool ReleaseCapture();
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr wParam, IntPtr lParam);
     const int WM_NCLBUTTONDOWN = 0xA1, HTCAPTION = 0x2;
+    // Edge/corner hit codes: the UI forwards a "resize" message when the pointer grabs a window
+    // edge (there's no visible border strip anymore — the web content runs to the edge), and we
+    // hand it to the native sizing loop just like the title-bar drag hands off HTCAPTION.
+    const int HTLEFT = 10, HTRIGHT = 11, HTTOP = 12, HTTOPLEFT = 13, HTTOPRIGHT = 14, HTBOTTOM = 15, HTBOTTOMLEFT = 16, HTBOTTOMRIGHT = 17;
 
     const string NODE = "node"; // resolved via PATH; setup verifies Node is installed
     static readonly string SIDECAR = Path.Combine(AppContext.BaseDirectory, "sidecar.mjs");
@@ -93,7 +97,7 @@ static class Program
             StartPosition = FormStartPosition.CenterScreen,
             Width = 1120, Height = 720, BackColor = bg,
             MinimumSize = new Size(760, 480),
-            Padding = new Padding(AppForm.GRIP),  // exposes a thin border for native edge-resize hit-testing (doubles as a subtle CRT bezel)
+            Padding = new Padding(0),  // web content runs edge-to-edge (no bezel strip); resize is forwarded from the UI and the corners are rounded by DWM (see AppForm)
         };
         try { var ico = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "agent-omega.ico"); if (File.Exists(ico)) _form.Icon = new Icon(ico); } catch { }
 
@@ -181,18 +185,30 @@ static class Program
         try { _web?.BeginInvoke((Action)(() => { try { _web.CoreWebView2?.PostWebMessageAsJson(_pendingEngineDown); } catch { } })); } catch { }
     }
 
+    // Tell the UI whether the window is app-maximized. A maximized window has no floating edges to
+    // grab and no rounded corners, so the UI's edge-resize band must go dormant (else it shows
+    // phantom resize cursors and swallows clicks in the outer few px). Host owns the truth.
+    static void PostWinState()
+    {
+        string js = "{\"type\":\"winstate\",\"maximized\":" + (_maximized ? "true" : "false") + "}";
+        try { _web?.BeginInvoke((Action)(() => { try { _web.CoreWebView2?.PostWebMessageAsJson(js); } catch { } })); } catch { }
+    }
+
     static void OnUiMessage(object sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         // The UI posts OBJECTS via win() (postMessage({type:...})). TryGetWebMessageAsString
         // THROWS for non-string messages — which silently killed every window control. Read
         // the JSON instead (works for both an object {type:...} and a bare quoted string).
-        string msg = null;
+        string msg = null, dir = null;
         try
         {
             using var d = System.Text.Json.JsonDocument.Parse(e.WebMessageAsJson);
             var root = d.RootElement;
             if (root.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
                 msg = root.TryGetProperty("type", out var t) ? t.GetString() : null;
+                if (root.TryGetProperty("dir", out var dv)) dir = dv.GetString();
+            }
             else if (root.ValueKind == System.Text.Json.JsonValueKind.String)
                 msg = root.GetString();
         }
@@ -205,10 +221,40 @@ static class Program
             case "maximize":
                 if (_maximized) { _form.Bounds = _restoreBounds; _maximized = false; }
                 else { _restoreBounds = _form.Bounds; _form.Bounds = Screen.FromHandle(_form.Handle).WorkingArea; _maximized = true; }
+                // A window sized to fill the screen shouldn't have rounded corners (they'd leave gaps at the screen corners).
+                (_form as AppForm)?.SetRounded(!_maximized);
+                PostWinState();
                 break;
             case "drag":
+                // Native drag-to-restore: dragging a maximized window shrinks it back to its floating
+                // size (kept under the cursor, top-aligned so the pointer stays on the title bar) and
+                // THEN follows the pointer. Without this it would slide off-screen while _maximized
+                // stayed stale-true (rounding off, edge-resize dead). See review 2026-07-07.
+                if (_maximized)
+                {
+                    var wa = _form.Bounds; var pt = Cursor.Position;
+                    int nw = _restoreBounds.Width, nh = _restoreBounds.Height;
+                    double fx = wa.Width > 0 ? (pt.X - wa.X) / (double)wa.Width : 0.5;
+                    _form.Bounds = new Rectangle(pt.X - (int)(fx * nw), wa.Y, nw, nh);
+                    _maximized = false;
+                    (_form as AppForm)?.SetRounded(true);
+                    PostWinState();
+                }
                 ReleaseCapture();
                 SendMessage(_form.Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
+                break;
+            case "resize":
+                // Forwarded edge/corner grab from the UI -> hand off to the native sizing loop.
+                if (!_maximized)
+                {
+                    int ht = dir switch
+                    {
+                        "left" => HTLEFT, "right" => HTRIGHT, "top" => HTTOP, "bottom" => HTBOTTOM,
+                        "topleft" => HTTOPLEFT, "topright" => HTTOPRIGHT,
+                        "bottomleft" => HTBOTTOMLEFT, "bottomright" => HTBOTTOMRIGHT, _ => 0
+                    };
+                    if (ht != 0) { ReleaseCapture(); SendMessage(_form.Handle, WM_NCLBUTTONDOWN, (IntPtr)ht, IntPtr.Zero); }
+                }
                 break;
         }
     }
@@ -220,26 +266,42 @@ static class Program
     }
 }
 
-// Frameless windows (FormBorderStyle.None) have no native resize. AppForm hit-tests the
-// GRIP-px border that the form's Padding exposes around the WebView2 child, so Windows
-// handles edge/corner resizing natively (no per-pixel JS plumbing).
+// Frameless, edge-to-edge, rounded window. FormBorderStyle.None gives us no native chrome; we
+// add WS_THICKFRAME back purely so the OS sizing loop works (the UI forwards edge grabs to it via
+// the "resize" message), then swallow WM_NCCALCSIZE so that frame contributes ZERO visible border
+// — the WebView2 child fills the whole window and the web content runs clean to the edge. DWM
+// rounds the outer corners so the sharp square corners are gone. No WS_MAXIMIZEBOX: OS maximize /
+// Aero-snap stays off so it can't fight the app's own WorkingArea "maximize".
 class AppForm : Form
 {
-    public const int GRIP = 6;
-    const int WM_NCHITTEST = 0x84;
-    const int HTLEFT = 10, HTRIGHT = 11, HTTOP = 12, HTTOPLEFT = 13, HTTOPRIGHT = 14, HTBOTTOM = 15, HTBOTTOMLEFT = 16, HTBOTTOMRIGHT = 17;
+    const int WM_NCCALCSIZE = 0x83;
+    const int WS_THICKFRAME = 0x00040000;
+    const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    const int DWMWCP_ROUND = 2, DWMWCP_DONOTROUND = 1;
+    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int val, int size);
+
+    protected override CreateParams CreateParams
+    {
+        get { var cp = base.CreateParams; cp.Style |= WS_THICKFRAME; return cp; }
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        SetRounded(true);
+    }
+
+    // Toggle the DWM rounded-corner preference (rounded when floating, square when filling the screen).
+    public void SetRounded(bool round)
+    {
+        try { int pref = round ? DWMWCP_ROUND : DWMWCP_DONOTROUND; DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int)); }
+        catch { }
+    }
+
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == WM_NCHITTEST && WindowState == FormWindowState.Normal)
-        {
-            int lp = m.LParam.ToInt32();
-            var p = PointToClient(new Point(unchecked((short)(lp & 0xFFFF)), unchecked((short)((lp >> 16) & 0xFFFF))));
-            int w = ClientSize.Width, h = ClientSize.Height;
-            bool l = p.X < GRIP, r = p.X >= w - GRIP, t = p.Y < GRIP, b = p.Y >= h - GRIP;
-            int ht = (t && l) ? HTTOPLEFT : (t && r) ? HTTOPRIGHT : (b && l) ? HTBOTTOMLEFT : (b && r) ? HTBOTTOMRIGHT
-                   : l ? HTLEFT : r ? HTRIGHT : t ? HTTOP : b ? HTBOTTOM : 0;
-            if (ht != 0) { m.Result = (IntPtr)ht; return; }
-        }
+        // Client area == whole window: the WS_THICKFRAME sizing frame stays functional but draws nothing.
+        if (m.Msg == WM_NCCALCSIZE && m.WParam != IntPtr.Zero) { m.Result = IntPtr.Zero; return; }
         base.WndProc(ref m);
     }
 }

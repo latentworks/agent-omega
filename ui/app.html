@@ -425,6 +425,43 @@ window.addEventListener('keydown', function(e){
 function post(o){ try{ window.chrome.webview.postMessage(o); }catch(e){} }
 function win(action){ post({type:action}); }
 
+/* ---- native edge-resize forwarding ----
+   The window is frameless and the web content runs to the very edge (no visible grab strip),
+   so we detect a grab in the outer few px and hand the direction to the host, which drives the
+   native sizing loop. Interactive controls are never hijacked; the title-bar drag still owns
+   everything below the top edge band. */
+(function(){
+  const M = 6;   // edge hit band, CSS px
+  const CUR = { left:'ew-resize', right:'ew-resize', top:'ns-resize', bottom:'ns-resize',
+                topleft:'nwse-resize', bottomright:'nwse-resize', topright:'nesw-resize', bottomleft:'nesw-resize' };
+  let lastCur = '';
+  function interactive(el){
+    return !!(el && (/^(INPUT|TEXTAREA|BUTTON|SELECT)$/.test(el.tagName) || el.isContentEditable
+                     || (el.closest && el.closest('.ctl,.m-tl,.m-cmdkpill,.m-trafficlights'))));
+  }
+  function edgeDir(x, y){
+    const w = innerWidth, h = innerHeight, l = x <= M, r = x >= w - M, t = y <= M, b = y >= h - M;
+    if(t && l) return 'topleft'; if(t && r) return 'topright'; if(b && l) return 'bottomleft'; if(b && r) return 'bottomright';
+    if(l) return 'left'; if(r) return 'right'; if(t) return 'top'; if(b) return 'bottom'; return null;
+  }
+  // The host tells us when the window is app-maximized; a maximized window has no floating edges
+  // to grab (and rounding is off), so the whole edge band must go dormant — no phantom resize
+  // cursors, no swallowed clicks. window.__aoMaximized mirrors the host's _maximized.
+  try{ window.chrome.webview.addEventListener('message', e=>{ const m=e&&e.data; if(m&&m.type==='winstate') window.__aoMaximized=!!m.maximized; }); }catch(_){}
+  addEventListener('mousemove', e=>{
+    const d = (window.__aoMaximized || window.__ftpModalOpen || interactive(e.target)) ? null : edgeDir(e.clientX, e.clientY);
+    const c = d ? CUR[d] : '';
+    if(c !== lastCur){ document.body.style.cursor = c; lastCur = c; }
+  }, true);
+  addEventListener('mousedown', e=>{
+    if(e.button !== 0 || window.__aoMaximized || window.__ftpModalOpen || interactive(e.target)) return;
+    const d = edgeDir(e.clientX, e.clientY);
+    if(!d) return;
+    e.preventDefault(); e.stopPropagation();
+    post({type:'resize', dir:d});
+  }, true);
+})();
+
 /* ---- safety + small formatters ---- */
 function escapeHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function cap(s){ s=String(s||'tool'); return s.charAt(0).toUpperCase()+s.slice(1); }
