@@ -993,7 +993,21 @@ wss.on('connection', (ws) => {
           broadcastOnboard()
           break
         }
-        case 'abort': { currentTurn = 0; try { await conn.cancel({ sessionId }) } catch (e) { log('cancel', e.message) } drainPerms(); busy = false; break }
+        case 'abort': {
+          // Unstick the UI IMMEDIATELY. The app re-enables the input box only when it receives a
+          // turn-end, and this case never sent one — so ESC stopped the engine (GPU->0) but left the
+          // app stuck on "generating". Broadcast turn-end up front, BEFORE awaiting cancel, so a slow
+          // or hung cancel can't delay the unstick (mirrors the engine-down unstick path). Note:
+          // setting currentTurn=0 also suppresses the in-flight prompt()'s own turn-end (it is guarded
+          // by myTurn===currentTurn), so this is the ONLY turn-end that fires for an aborted turn.
+          const wasBusy = busy
+          currentTurn = 0
+          drainPerms()
+          busy = false
+          if (wasBusy) broadcast({ type: 'turn-end', stopReason: 'aborted' })
+          try { await conn.cancel({ sessionId }) } catch (e) { log('cancel', e.message) }
+          break
+        }
         case 'restart': {
           // Manual engine restart — the app's engine-down "Restart engine" button (WS-01). Reset the
           // crash budget so a user-initiated restart isn't blocked by a prior give-up, cancel any
