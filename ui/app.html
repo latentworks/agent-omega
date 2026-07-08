@@ -890,7 +890,7 @@ function renderTool(s){
       const d=document.createElement('div'); d.className='tsub'; d.style.color='#7c8b82'; d.textContent='↳ denied by user'; wrap.appendChild(d);
     } else if(!todos.length && out.trim()!==''){
       const shown = (s.kind==='execute') ? stripAnsi(out) : out;
-      wrap.appendChild(collapsible('output', shown));
+      wrap.appendChild(collapsible('output', shown, {open:true}));
     }
   });
 }
