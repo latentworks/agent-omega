@@ -25,6 +25,12 @@ const DENY_PREFIXES = [
   norm(HOME + '/appdata/local/microsoft/edge/user data'), norm(HOME + '/appdata/roaming/github cli'),
   norm(HOME + '/appdata/roaming/gcloud'), norm(HOME + '/.local/share/opencode'), norm(HOME + '/.npm'),
   'c:/windows/system32/config',
+  // F5: personal-notes privacy gap — read intentionally doesn't fail closed outside the
+  // project (it can reach ONE legitimately-relevant external file), but without these it
+  // could just as easily reach the user's own notes/journal and hand them to a cloud
+  // model. Block the whole user-scoped agent config dir (covers its top-level notes file
+  // and its memory subdir) plus the two other personal-memory stores.
+  norm(HOME + '/.claude'), norm(HOME + '/.remember'), norm(HOME + '/.config/opencode/memory'),
 ]
 const DENY_DIR_SEGMENTS = new Set(['.ssh', '.aws', '.gnupg', '.agent-omega'])
 const DENY_LEAF = [

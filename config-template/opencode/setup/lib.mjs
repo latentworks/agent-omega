@@ -51,8 +51,13 @@ export async function validateKey(name, key) {
 }
 
 // recursive merge; arrays + primitives REPLACE (matches the engine's mergeDeep semantics)
+// __proto__/constructor/prototype are skipped outright — a patch built from JSON.parse can carry
+// "__proto__" as a literal own key, and recursing/assigning into it would walk onto the real
+// Object.prototype and pollute every plain object in the process.
+const UNSAFE_MERGE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 export function deepMerge(target, patch) {
   for (const k of Object.keys(patch)) {
+    if (UNSAFE_MERGE_KEYS.has(k)) continue
     const v = patch[k]
     if (v && typeof v === 'object' && !Array.isArray(v) && target[k] && typeof target[k] === 'object' && !Array.isArray(target[k])) deepMerge(target[k], v)
     else target[k] = v

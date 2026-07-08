@@ -13,6 +13,27 @@ import * as acp from '@agentclientprotocol/sdk'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import crypto from 'node:crypto'
 
+// Fix E — engine-orphan reaper mode. A hard-kill of the sidecar itself (Task Manager End Task,
+// TerminateProcess, OOM — anything that skips the SIGTERM/SIGINT/'exit' handlers near the bottom of
+// this file) leaves the engine child running: Windows does not tie child lifetime to a parent that
+// dies this way, and nothing else watches it (the sidecar's own PARENT_PID poll only covers the shell
+// that launched IT dying, not the sidecar itself being killed). spawnReaper() (below) re-invokes this
+// same file as a detached copy with these two env vars set; when that happens, this run does NOTHING
+// else — it just watches the sidecar PID and kills the engine if the sidecar dies first, then exits.
+// Atomics.wait blocks synchronously, so control never falls through to the rest of the module.
+// Re-invoking the SAME binary (rather than spawning a separate helper script via process.execPath)
+// is deliberate: it's correct under every launch mode this file ships under, including the Mac
+// bun-compiled standalone sidecar, which has no on-disk script file to hand to a generic runtime.
+if (process.env.AO_REAP_SIDECAR_PID && process.env.AO_REAP_ENGINE_PID) {
+  const reapSidecarPid = Number(process.env.AO_REAP_SIDECAR_PID)
+  const reapEnginePid = Number(process.env.AO_REAP_ENGINE_PID)
+  const reapAlive = (pid) => { try { process.kill(pid, 0); return true } catch { return false } }   // signal 0 = liveness probe, never actually signals
+  const reapGate = new Int32Array(new SharedArrayBuffer(4))
+  while (reapAlive(reapSidecarPid) && reapAlive(reapEnginePid)) Atomics.wait(reapGate, 0, 0, 2000)
+  if (reapAlive(reapEnginePid) && !reapAlive(reapSidecarPid)) { try { process.kill(reapEnginePid) } catch {} }
+  process.exit(0)
+}
+
 const isWin = process.platform === 'win32'
 const HERE = path.dirname(fileURLToPath(import.meta.url)) // Node 18+ safe (import.meta.dirname needs 20.11+)
 const ENGINE = process.env.AGENT_OMEGA_ENGINE || path.join(HERE, 'engine', isWin ? 'opencode.exe' : 'opencode')
@@ -44,8 +65,9 @@ try { fs.mkdirSync(WORKDIR, { recursive: true }) } catch (e) { if (e.code !== 'E
 try { WORKDIR = fs.realpathSync(WORKDIR) } catch {}
 
 let conn = null, sessionId = null, engineProc = null, restarting = false, lastEngineDown = null
-let models = [], agents = [], commands = [], curModel = DEFAULT_MODEL, curAgent = null
+let models = [], agents = [], commands = [], curModel = DEFAULT_MODEL, curAgent = null, pickedModel = ''   // pickedModel = the model the user explicitly chose this app session (sticky across new sessions)
 let agentConfigId = 'mode', effortConfigId = 'effort', curEffort = '', effortLevels = []   // reasoning-effort config, surfaced where the model supports it
+let pickedAgent = '', pickedEffort = ''   // same sticky-pick pattern as pickedModel — an explicit user choice survives /new; extractConfig() must never write these
 let setupPendingRestart = false, setupFinished = false   // Omega Setup: a setup_* tool call drives an auto-reload after config changes + a hand-back to normal Omega on finish
 let onboardBusy = false   // Omega first-run: guard against a double key-submit while one onboarding attempt is in flight
 let busy = false
@@ -409,6 +431,21 @@ function pickModelFor(providerId) {
   const any = models.find((m) => modelPickable(m.value))
   return any ? any.value : ''
 }
+// onboardLocal takes a model id VERBATIM from an external local server's /models response and uses
+// it as a computed config object key (provider.local.models[modelId]) — never trust that without
+// validation. Rejects empty/non-string, the classic prototype-pollution keys, path-traversal
+// primitives (".." / backslash / leading "/", in case the id is ever concatenated into a path
+// downstream), control chars, and anything absurdly long. Interior "/" IS allowed: real local
+// servers legitimately report namespaced/tagged ids — Ollama "library/qwen:7b", HuggingFace-GGUF
+// "hf.co/user/repo:Q4_K_M" — and a slash inside a string used only as an object key is harmless.
+function isSafeModelId(id) {
+  if (typeof id !== 'string' || !id) return false
+  if (id.length > 200) return false
+  if (id === '__proto__' || id === 'constructor' || id === 'prototype') return false
+  if (id.includes('..') || id.includes('\\') || id.startsWith('/')) return false
+  if (/[\x00-\x1f]/.test(id)) return false
+  return true
+}
 // run one slash-command turn (the body of the WS 'command' case) — reused for the onboarding handoff.
 async function runCommandTurn(name, args) {
   if (!conn || busy) return
@@ -532,19 +569,35 @@ function extractConfig(co) {
   if (!curModel && modelOpt && modelOpt.currentValue) curModel = modelOpt.currentValue // adopt the model the engine loaded from opencode.json
   const modeOpt = co.find(o => o.id === 'mode' || o.id === 'agent' || o.category === 'mode')
   agents = (modeOpt && modeOpt.options || []).map(o => ({ value: o.value, name: o.name }))
-  if (modeOpt) { curAgent = modeOpt.currentValue; agentConfigId = modeOpt.id || agentConfigId }
+  // Same passive-adopt guard as curModel above: only fill curAgent when it's still unset. Every
+  // call site that adopts a DIFFERENT session (newSession/restoreSession/case 'load') now resets
+  // curModel/curAgent/curEffort to empty BEFORE calling this, so this passively adopts the new
+  // session's own default — then the caller re-applies any sticky explicit pick (pickedAgent) AFTER.
+  // (Resetting first is what stops a passively-adopted value from a prior session bleeding across /new.)
+  if (modeOpt) { if (!curAgent) curAgent = modeOpt.currentValue; agentConfigId = modeOpt.id || agentConfigId }
   // reasoning-effort option — only present for models that support it (empty list => hide in UI)
   const effOpt = co.find(o => o.id === 'effort' || o.category === 'thought_level')
   effortLevels = (effOpt && effOpt.options || []).map(o => ({ value: o.value, name: o.name }))
-  if (effOpt) { curEffort = effOpt.currentValue || curEffort; effortConfigId = effOpt.id || effortConfigId }
+  if (effOpt) { if (!curEffort) curEffort = effOpt.currentValue || ''; effortConfigId = effOpt.id || effortConfigId }
   else { effortLevels = []; curEffort = '' }
 }
 
 async function newSession() {
   const s = await conn.newSession({ cwd: WORKDIR, mcpServers: [] })
   sessionId = s.sessionId
+  // Reset the live values before adopting the new session — same isolation restoreSession/case 'load'
+  // already do. Without this, a value that was only PASSIVELY adopted last session (never an explicit
+  // pick, so no pickedX to re-apply) survives the passive guard in extractConfig and bleeds into the
+  // new session's UI/engine state even when the new session's menu doesn't offer it. The explicit
+  // sticky picks (pickedModel/pickedAgent/pickedEffort) live in their own vars and are re-applied below.
+  curModel = null; curAgent = null; curEffort = ''
   extractConfig(s.configOptions)
   let forceModel = false
+  // Sticky model pick: if the user explicitly chose a model this app session, re-apply it to every
+  // new session. A fresh engine session ALWAYS starts on the opencode.json default, so without this
+  // the UI keeps showing the user's pick while the engine silently runs the default (the "picked
+  // 122B, ran 80B" mismatch). Only re-apply a pick that still exists in this session's model menu.
+  if (pickedModel && models.some(m => m.value === pickedModel)) { curModel = pickedModel; forceModel = true }
   if (!curModel) curModel = (models[0] && models[0].value) || 'anthropic/claude-opus-4-8'
   // Auto-select a usable model: if the configured default's provider has no key but the user DID
   // add a key for some other provider, switch to a model that actually works — otherwise a
@@ -558,9 +611,26 @@ async function newSession() {
       forceModel = true   // we changed it, so push it to the engine below even without an explicit launch override
     }
   }
-  // Force the model to the engine when the launcher passed one (argv[4]) OR we just auto-switched;
-  // otherwise leave the engine on the model it loaded from opencode.json.
-  if (DEFAULT_MODEL || forceModel) { try { await conn.unstable_setSessionModel({ sessionId, modelId: curModel }) } catch (e) { log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + curModel + '" — check that its server is running and the model is loaded. (' + e.message + ')' }) } }
+  // Push the model to the engine when the launcher passed one (argv[4]), we auto-switched, OR the user
+  // has a sticky pick. Use set-config-option (not unstable_setSessionModel) so the fresh effort levels/
+  // variants for the chosen model come back and stay in sync — same reason the setModel handler uses it.
+  // Effort is PER-MODEL: clear curEffort before this second re-extract so extractConfig re-adopts THIS
+  // model's own default. Without it the passive-fill guard is a no-op (curEffort still holds the first-
+  // pass opencode.json default model's effort), stranding an effort the re-applied model may not even
+  // offer in the UI while the engine runs its own default — the same hazard setModel guards at line 960.
+  if (DEFAULT_MODEL || forceModel) { try { curEffort = ''; const r = await conn.setSessionConfigOption({ sessionId, configId: 'model', value: curModel }); extractConfig(r && r.configOptions) } catch (e) { log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + curModel + '" — check that its server is running and the model is loaded. (' + e.message + ')' }) } }
+  // Sticky agent pick: same problem/fix as the model above — a fresh session always starts on the
+  // engine's default mode, so without this a user's chosen agent wouldn't survive /new. Only
+  // re-apply a pick that still exists in this session's agent/mode menu.
+  let forceAgent = false
+  if (pickedAgent && agents.some(a => a.value === pickedAgent)) { curAgent = pickedAgent; forceAgent = true }
+  if (forceAgent) { try { await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: curAgent }) } catch (e) { log('setAgent', e.message); broadcast({ type: 'error', message: 'Could not switch agent — ' + e.message }) } }
+  // Sticky effort pick: same pattern, but checked AFTER the model push above (not alongside
+  // forceModel) — effort levels are per-model, so checking against a pre-switch effortLevels list
+  // could try to reapply a pick that doesn't exist for the model this session actually lands on.
+  let forceEffort = false
+  if (pickedEffort && effortLevels.some(e => e.value === pickedEffort)) { curEffort = pickedEffort; forceEffort = true }
+  if (forceEffort) { try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: curEffort }) } catch (e) { log('setEffort', e.message); broadcast({ type: 'error', message: 'Could not set effort — ' + e.message }) } }
   return s
 }
 
@@ -596,6 +666,7 @@ async function start() {
   const engineFullEnv = { ...engineEnv, ...vaultEnv(), OPENCODE_SERVER_PASSWORD: API_PASSWORD, OPENCODE_SERVER_USERNAME: API_USER, AGENT_OMEGA_AGENTS: _agentsPath }
   const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR, '--port', String(API_PORT), '--cors', 'null'], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: engineFullEnv })
   engineProc = proc
+  spawnReaper(process.pid, proc.pid)   // Fix E: detached watchdog — kills this engine if the sidecar itself gets hard-killed
   const myGen = ++engineGen           // this spawn's generation; a later spawn bumps it and orphans these handlers
   let gone = false                    // error AND exit can both fire for one proc — collapse to a single handling
   const onGone = (reason) => { if (gone) return; gone = true; handleEngineGone(reason, myGen) }
@@ -752,6 +823,7 @@ async function restoreSession(prev, prevAgent) {
     const r = await conn.loadSession({ sessionId: prev, cwd: WORKDIR, mcpServers: [] })
     sessionId = prev
     curModel = ''
+    curAgent = null; curEffort = ''   // force a fresh adopt of THIS session's real agent/effort, same reason as curModel above
     extractConfig(r && r.configOptions)
     if (wasSetup && conn) { try { curAgent = 'setup'; await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: 'setup' }) } catch (e) { log('restore setup mode', e.message) } }
     broadcast({ type: 'replay-end', sessionId })
@@ -837,7 +909,19 @@ wss.on('connection', (ws) => {
           // (which conn.prompt only SETTLES after) from firing a stale empty-turn error, a premature
           // turn-end, or unlocking busy under the turn that replaced it.
           try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: m.text }] }); if (myTurn === currentTurn) { if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) } }
-          catch (e) { if (myTurn === currentTurn && !engineGoneOrRestarting() && !isEngineDeathError(e.message)) broadcast({ type: 'error', message: friendlyError(e.message) }) }   // engine gone/restarting -> handleEngineGone owns the one authoritative message; don't add a contradictory "restart the app" line
+          catch (e) {
+            // Never leave the UI hung on "generating" after a failed turn. Three cases:
+            //  - engine truly gone/restarting -> handleEngineGone owns the one authoritative message
+            //    (engine-down banner + its own turn-end); don't add a contradictory "restart the app" line.
+            //  - looks like an engine-death error but the engine is still up (a race, or a death-shaped
+            //    message that didn't actually kill it) -> end the turn so the input box unlocks.
+            //  - ordinary turn error -> surface it (the UI's 'error' handler also unlocks the input).
+            if (myTurn === currentTurn) {
+              if (engineGoneOrRestarting()) { /* handleEngineGone owns the message + turn-end */ }
+              else if (isEngineDeathError(e.message)) broadcast({ type: 'turn-end', stopReason: 'error' })
+              else broadcast({ type: 'error', message: friendlyError(e.message) })
+            }
+          }
           finally { if (myTurn === currentTurn) busy = false }
           if (myTurn === currentTurn) await afterSetupTurn()
           break
@@ -868,17 +952,32 @@ wss.on('connection', (ws) => {
         }
         case 'setModel': {
           if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break }
-          const prev = curModel; curModel = m.model
+          const prev = curModel; const prevEffort = curEffort; curModel = m.model
           // Switch via set-config-option, whose response carries the FRESH configOptions, rather
           // than unstable_setSessionModel (empty response): after a mid-session model change the
           // effort levels/variants differ, so re-extract and re-broadcast so the effort control
           // stays in sync instead of going stale. (configId 'model' — same parse as the model picker.)
-          try { const r = await conn.setSessionConfigOption({ sessionId, configId: 'model', value: curModel }); extractConfig(r && r.configOptions); broadcast(readyMsg()) }
-          catch (e) { curModel = prev; log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + m.model + '" — ' + e.message }); broadcast({ type: 'model', model: curModel }) }
+          // Effort is PER-MODEL: clear curEffort first so extractConfig re-adopts THIS model's default
+          // (the passive-fill guard is a no-op while curEffort still holds the old model's value — that
+          // left the UI showing an effort the new model may not even offer while the engine ran its own).
+          try {
+            curEffort = ''
+            const r = await conn.setSessionConfigOption({ sessionId, configId: 'model', value: curModel }); extractConfig(r && r.configOptions); pickedModel = curModel   // remember the pick so new sessions keep it
+            // Sticky effort across a model switch: if the user's explicit effort pick still exists for
+            // the new model, re-apply it (and push to the engine so both sides agree); otherwise the
+            // new model's own default — freshly adopted above — stands.
+            // If the effort push fails after the model push already succeeded, revert curEffort to the
+            // new model's freshly-adopted default (set by extractConfig above) so the readyMsg below
+            // reports the engine's ACTUAL effort — not a pick the engine never accepted (else UI/engine
+            // disagree on the effort axis, the same mismatch class this batch set out to kill).
+            if (pickedEffort && effortLevels.some(e => e.value === pickedEffort)) { const adoptedEffort = curEffort; curEffort = pickedEffort; try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: curEffort }) } catch (e) { curEffort = adoptedEffort; log('setEffort', e.message) } }
+            broadcast(readyMsg())
+          }
+          catch (e) { curModel = prev; curEffort = prevEffort; log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + m.model + '" — ' + e.message }); broadcast({ type: 'model', model: curModel }) }
           break
         }
-        case 'setAgent': { if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break } const prev = curAgent; curAgent = m.agent; try { await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: curAgent }) } catch (e) { curAgent = prev; log('setAgent', e.message); broadcast({ type: 'error', message: 'Could not switch agent — ' + e.message }) } broadcast({ type: 'agent', agent: curAgent }); break }
-        case 'setEffort': { if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break } if (!effortLevels.length) { broadcast({ type: 'error', message: 'This model has no effort levels.' }); break } const prev = curEffort; curEffort = m.value; try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: curEffort }) } catch (e) { curEffort = prev; log('setEffort', e.message); broadcast({ type: 'error', message: 'Could not set effort — ' + e.message }) } broadcast({ type: 'effort', effort: curEffort }); break }
+        case 'setAgent': { if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break } const prev = curAgent; curAgent = m.agent; try { await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: curAgent }); pickedAgent = curAgent } catch (e) { curAgent = prev; log('setAgent', e.message); broadcast({ type: 'error', message: 'Could not switch agent — ' + e.message }) } broadcast({ type: 'agent', agent: curAgent }); break }
+        case 'setEffort': { if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break } if (!effortLevels.length) { broadcast({ type: 'error', message: 'This model has no effort levels.' }); break } const prev = curEffort; curEffort = m.value; try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: curEffort }); pickedEffort = curEffort } catch (e) { curEffort = prev; log('setEffort', e.message); broadcast({ type: 'error', message: 'Could not set effort — ' + e.message }) } broadcast({ type: 'effort', effort: curEffort }); break }
         case 'getCouncilConfig': {
           try { send(ws, { type: 'councilConfig', config: readCouncil() }) }
           catch (e) { log('getCouncilConfig', e.message); send(ws, { type: 'councilConfig', error: e.message }) }
@@ -972,9 +1071,23 @@ wss.on('connection', (ws) => {
             try { const r = await fetch(url.replace(/\/$/, '') + '/models', { signal: AbortSignal.timeout(8000) }); const j = await r.json(); modelId = (j && j.data && j.data[0] && j.data[0].id) || '' } catch {}   // bounded: a server that handshakes but never flushes /models must not wedge the card
             const guessedModel = !modelId
             if (!modelId) modelId = 'local-model'
+            // D2: the id came straight from an external server's response — validate before it's ever
+            // used as a config object key. Reject rather than silently coerce, so a hostile/broken
+            // server can't write an unexpected key (e.g. "__proto__") into opencode.json.
+            if (!isSafeModelId(modelId)) { send(ws, { type: 'onboard-result', ok: false, error: 'The server returned an unusable model id ("' + String(modelId).slice(0, 60) + '") — nothing was saved.' }); break }
             send(ws, { type: 'onboard-status', stage: 'saving' })
             const l2 = await loadSetupLib()
-            if (l2 && l2.patchConfig) await l2.patchConfig(null, { provider: { local: { options: { baseURL: url, apiKey: 'local-noauth' }, models: { [modelId]: { name: modelId } } } }, model: 'local/' + modelId })
+            try {
+              // A missing setup lib is itself a persist FAILURE — throw so the catch below reports it.
+              // (Silently no-op'ing here would fall through to onboard-result{ok:true} + restartEngine
+              // having written nothing, a confident false success.)
+              if (!l2 || !l2.patchConfig) throw new Error('setup library unavailable')
+              await l2.patchConfig(null, { provider: { local: { options: { baseURL: url, apiKey: 'local-noauth' }, models: { [modelId]: { name: modelId } } } }, model: 'local/' + modelId })
+            } catch (e) {   // D1: a persist failure must not fall through to the generic outer WS catch — that leaves the client stuck on "reloading" with zero notification
+              log('onboard local persist', e.message)
+              send(ws, { type: 'onboard-result', ok: false, error: 'Could not save the local server config — ' + e.message })
+              break
+            }
             send(ws, { type: 'onboard-status', stage: 'reloading' })
             try { await restartEngine() } catch (e) { send(ws, { type: 'onboard-result', ok: false, error: 'The engine did not come back.' }); break }
             curModel = 'local/' + modelId
@@ -1053,6 +1166,7 @@ wss.on('connection', (ws) => {
             const r = await conn.loadSession({ sessionId: m.sessionId, cwd: WORKDIR, mcpServers: [] })
             sessionId = m.sessionId          // loadSession's response does not echo the id
             curModel = ''                    // adopt the loaded session's own model from configOptions
+            curAgent = null; curEffort = ''  // same — adopt the loaded session's own agent/effort, not whatever this window had before
             extractConfig(r && r.configOptions)
             broadcast({ type: 'replay-end', sessionId })
             broadcast(readyMsg())
@@ -1076,6 +1190,25 @@ wss.on('connection', (ws) => {
 // ourselves if the shell that launched us dies abnormally (crash / kill) without firing its
 // normal child-cleanup — otherwise the engine + the bound ports would be orphaned.
 function killEngine() { try { if (engineProc) engineProc.kill() } catch {} }
+// Fix E: spawn the detached reaper described at the top of this file. Config: env first (same
+// convention as this file's own startup args — robust for the bun-compiled standalone sidecar,
+// which has no on-disk script path to re-pass). `node sidecar.mjs` DOES have one (process.argv[1]),
+// so pass it through when it actually resolves to a real file; a compiled binary's argv[1] won't.
+function spawnReaper(sidecarPid, enginePid) {
+  try {
+    const selfArgs = fs.existsSync(process.argv[1] || '') ? [process.argv[1]] : []
+    // Strip the WS token + API password from the reaper's env too (same reason as engineEnv above):
+    // the detached reaper only needs the two AO_REAP_* PIDs and never touches these secrets, so don't
+    // propagate them into yet another long-lived process.
+    const { AO_WS_TOKEN: _rWsTok, AO_API_PASSWORD: _rApiPw, ...reaperEnv } = process.env
+    spawn(process.execPath, selfArgs, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: { ...reaperEnv, AO_REAP_SIDECAR_PID: String(sidecarPid), AO_REAP_ENGINE_PID: String(enginePid) }
+    }).unref()
+  } catch (e) { log('spawnReaper', e.message) }
+}
 process.on('exit', () => { killEngine(); removeAttachDescriptor() })
 for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => { killEngine(); removeAttachDescriptor(); process.exit(0) })
 if (PARENT_PID) {

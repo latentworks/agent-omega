@@ -103,8 +103,16 @@
   .ttodo.active{ color:#ffb454; }
   .ttodo-m{ flex:0 0 auto; white-space:pre; }
   .out{ margin-top:2px; }
-  .out-head{ font-size:19px; color:#7c8b82; cursor:default; user-select:none; }
+  .out-head{ font-size:19px; color:#7c8b82; cursor:default; user-select:none;
+             display:flex; align-items:baseline; flex-wrap:nowrap; }
   .out-head:hover{ color:#9fb0a6; }
+  .out-head[role="button"]{ cursor:pointer; }
+  .out-head.out-static:hover{ color:#7c8b82; }             /* running…/(no output) rows are inert — no click affordance */
+  .out-head[role="button"]:focus-visible{ outline:1px solid var(--ac); outline-offset:2px; }
+  .out-arrow{ display:inline-block; width:1em; flex:0 0 auto; text-align:center; }
+  .out-prev{ flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .out-size{ flex:0 0 auto; margin-left:.6em; color:#46544c; }
+  .out.out-err .out-prev{ color:#ff6b6b; }
   .out-pre{ margin:6px 0 0; padding:8px 12px; background:rgba(0,0,0,.32); border:1px solid #1b2227; color:#9fb0a6;
             font-family:inherit; font-size:18px; line-height:1.4; white-space:pre-wrap; max-height:320px; overflow:auto; }
   .out-pre::-webkit-scrollbar{ width:8px; } .out-pre::-webkit-scrollbar-thumb{ background:#1e2d27; }
@@ -717,22 +725,75 @@ function renderDiffBlock(rows, adds, dels, fileLabel){
   return wrap;
 }
 
-/* ---- collapsible tool output (textContent -> safe; optional color + open) ---- */
-function collapsible(label, text, opt){
+/* ---- always-visible activity-log row: dim one-line preview + size badge,
+   full output expandable on demand (click or Enter/Space). textContent only
+   -> safe (never innerHTML with tool/error text). ---- */
+function byteSize(s){ try{ return new TextEncoder().encode(s).length; }catch(e){ return String(s).length; } }
+function fmtSize(text){
+  const n=byteSize(text), kb=n/1024, mb=kb/1024;
+  const sizeStr = n<1024 ? (n+' B') : (kb<1024 ? (kb.toFixed(1)+' KB') : (mb.toFixed(1)+' MB'));
+  const lines = text.replace(/\n+$/,'').split('\n').length;
+  return lines>1 ? (sizeStr+' · '+lines+' lines') : sizeStr;
+}
+function previewLine(text){
+  const lines=String(text||'').split('\n');
+  let line=(lines.find(l=>l.trim()!=='')||'').trim();
+  if(line.length>100){
+    let cut=line.slice(0,100);
+    const last=cut.charCodeAt(cut.length-1);              // don't strand a lone high surrogate (renders as a broken glyph)
+    if(last>=0xD800 && last<=0xDBFF) cut=cut.slice(0,-1);
+    line=cut+'…';
+  }
+  return line;
+}
+
+/* interactive row: preview + size badge, click/keyboard toggles the full
+   .out-pre body. `opt.open` is the caller-resolved initial state (the
+   caller persists it in toolState[id].expanded so a mid-stream re-render
+   can't snap an expanded row shut); `opt.onToggle(open)` writes it back. */
+function collapsible(text, opt){
   opt=opt||{};
-  const box=document.createElement('div'); box.className='out';
+  const isErr=!!opt.error;
+  const box=document.createElement('div'); box.className='out'+(isErr?' out-err':'');
   const head=document.createElement('div'); head.className='out-head';
-  head.innerHTML='<span class="out-arrow"></span>&nbsp;<span class="out-label"></span>';
-  head.querySelector('.out-label').textContent=label;
+  const arrow=document.createElement('span'); arrow.className='out-arrow'; arrow.setAttribute('aria-hidden','true');
+  const prev=document.createElement('span'); prev.className='out-prev'; prev.textContent=previewLine(text);
+  const size=document.createElement('span'); size.className='out-size'; size.textContent=fmtSize(text);
+  head.appendChild(arrow); head.appendChild(prev); head.appendChild(size);
+
   const body=document.createElement('div');
   const pre=document.createElement('pre'); pre.className='out-pre'; pre.textContent=text;
-  if(opt.color) pre.style.color=opt.color;
+  if(isErr) pre.style.color='#ff6b6b';
   body.appendChild(pre);
-  const startOpen=!!opt.open;
-  body.style.display = startOpen ? 'block' : 'none';
-  head.querySelector('.out-arrow').textContent = startOpen ? '▾' : '▸';
-  head.onclick=()=>{ const open=body.style.display!=='none'; body.style.display=open?'none':'block'; head.querySelector('.out-arrow').textContent=open?'▸':'▾'; if(!open) toBottom(); };
+
+  let openState=!!opt.open;
+  head.setAttribute('role','button');
+  head.setAttribute('tabindex','0');
+  head.setAttribute('aria-label', isErr?'Error output':'Tool output');
+  const paintState=()=>{
+    body.style.display = openState ? 'block' : 'none';
+    arrow.textContent = openState ? '▾' : '▸';
+    head.setAttribute('aria-expanded', openState ? 'true' : 'false');
+  };
+  paintState();
+  const toggle=()=>{ openState=!openState; paintState(); if(openState) toBottom(); if(opt.onToggle) opt.onToggle(openState); };
+  head.onclick=toggle;
+  head.onkeydown=(e)=>{ if(e.key==='Enter'||e.key===' '||e.key==='Spacebar'){ e.preventDefault(); toggle(); } };
+
   box.appendChild(head); box.appendChild(body);
+  return box;
+}
+
+/* non-interactive row: "running…" (no output yet) / "(no output)" on a
+   completed call with nothing to show. Same arrow-slot width as collapsible()
+   so a later transition into a real expandable row causes no layout shift. */
+function staticPreview(text){
+  const box=document.createElement('div'); box.className='out';
+  const head=document.createElement('div'); head.className='out-head out-static';
+  const arrow=document.createElement('span'); arrow.className='out-arrow'; arrow.setAttribute('aria-hidden','true'); arrow.textContent='·';
+  const prev=document.createElement('span'); prev.className='out-prev'; prev.textContent=text;
+  head.appendChild(arrow); head.appendChild(prev);
+  box.appendChild(head);
   return box;
 }
 
@@ -810,10 +871,15 @@ function toolDiffs(content){ return (content||[]).filter(it=> it && it.type==='d
 function upsertTool(u){
   const id=u.toolCallId; if(!id) return;
   let s=toolState[id];
-  if(!s){ s={toolCallId:id, title:'', kind:'other', status:'pending', content:[], rawInput:undefined, rawOutput:undefined, startMs:Date.now(), endMs:0}; toolState[id]=s; }
+  if(!s){ s={toolCallId:id, title:'', kind:'other', status:'pending', content:[], rawInput:undefined, rawOutput:undefined, startMs:Date.now(), endMs:0, expanded:null}; toolState[id]=s; }   // expanded: null=default-for-state, true/false=user-set (durable across re-renders)
   if(u.title!=null) s.title=u.title;
   if(u.kind!=null) s.kind=u.kind;
-  if(u.status!=null){ s.status=u.status; if((u.status==='completed'||u.status==='failed') && !s.endMs) s.endMs=Date.now(); }
+  if(u.status!=null){ const prevStatus=s.status; s.status=u.status; if((u.status==='completed'||u.status==='failed') && !s.endMs) s.endMs=Date.now();
+    // On the transition INTO failed, drop any durable expand/collapse the user set
+    // while the tool was still running, so the error surfaces expanded by default
+    // (its own status default). A user collapse made AFTER the failure still sticks,
+    // because a redundant failed→failed update leaves prevStatus==='failed'.
+    if(u.status==='failed' && prevStatus!=='failed') s.expanded=null; }
   if(u.content!=null) s.content=u.content;        // ToolCall(Update).content REPLACES the collection
   if(u.rawInput!==undefined) s.rawInput=u.rawInput;
   if(u.rawOutput!==undefined) s.rawOutput=u.rawOutput;
@@ -831,7 +897,8 @@ function renderTool(s){
     const out = toolText(s.content);
     const diffs = toolDiffs(s.content);
 
-    const errText = s.status==='failed' ? (out || strOf(s.rawOutput) || 'tool failed') : '';
+    let errText = s.status==='failed' ? (out || strOf(s.rawOutput) || 'tool failed') : '';
+    if(s.status==='failed' && errText.trim()==='') errText='tool failed';   // whitespace-only error must still show a label, not a blank preview line
     const denied = s.status==='failed' && isDenied(errText);
     const failed = s.status==='failed' && !denied;
 
@@ -883,14 +950,24 @@ function renderTool(s){
       if(sub.textContent) wrap.appendChild(sub);
     }
 
-    /* ---- error (red, expanded) / denied note / normal output (collapsed) ---- */
+    /* ---- always-visible activity row: error (red, default-expanded) / denied
+       note / output preview (default-collapsed, "running…" or "(no output)"
+       when there's nothing to show yet). `s.expanded` (null until the user
+       toggles) makes the user's choice durable across the in-place re-renders
+       this function does on every ToolCallUpdate. ---- */
     if(failed){
-      wrap.appendChild(collapsible('error', errText, {color:'#ff6b6b', open:true}));
+      const openNow = s.expanded===null ? true : s.expanded;
+      wrap.appendChild(collapsible(errText, {error:true, open:openNow, onToggle:(o)=>{ s.expanded=o; }}));
     } else if(denied){
       const d=document.createElement('div'); d.className='tsub'; d.style.color='#7c8b82'; d.textContent='↳ denied by user'; wrap.appendChild(d);
-    } else if(!todos.length && out.trim()!==''){
+    } else if(!todos.length){
       const shown = (s.kind==='execute') ? stripAnsi(out) : out;
-      wrap.appendChild(collapsible('output', shown, {open:true}));
+      if(shown.trim()===''){
+        wrap.appendChild(staticPreview(running ? 'running…' : '(no output)'));
+      } else {
+        const openNow = s.expanded===null ? false : s.expanded;   // collapsed by default: one-line rows keep the wall short so the answer below stays in view
+        wrap.appendChild(collapsible(shown, {open:openNow, onToggle:(o)=>{ s.expanded=o; }}));
+      }
     }
   });
 }

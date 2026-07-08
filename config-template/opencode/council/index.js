@@ -55,6 +55,17 @@ function labelFor(spec) {
 const LOCAL_PROVIDERS = new Set(['local'])
 const CLOUD_PROVIDERS = new Set(['anthropic', 'openai', 'moonshotai', 'zai', 'deepseek', 'google'])
 
+// SESSION_MESSAGES_TIMEOUT_MS: the opencode client SDK's generated fetch wrapper doesn't
+// take an AbortSignal, so a hung server-side call has no built-in way out — race it with a
+// plain timer instead (same idea as AbortSignal.timeout elsewhere, e.g. tunnel.mjs).
+const SESSION_MESSAGES_TIMEOUT_MS = 5000
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms)
+    promise.then((v) => { clearTimeout(t); resolve(v) }, (e) => { clearTimeout(t); reject(e) })
+  })
+}
+
 // The gut-check fork contract: how the lead (or a pinned synthesizer) turns a debate
 // into EITHER a single takeaway OR an honest both-sides fork the USER decides. The
 // council is a consultant + enabler, never a gatekeeper: it never vetoes the GOAL —
@@ -244,7 +255,7 @@ const CouncilPlugin = async ({ client }) => {
           if (synth === 'driver' || synth === 'auto') {
             let leadLocal = false
             try {
-              const res = await client.session.messages({ path: { id: ctx.sessionID } })
+              const res = await withTimeout(client.session.messages({ path: { id: ctx.sessionID } }), SESSION_MESSAGES_TIMEOUT_MS)
               const msgs = (res && res.data) || []
               for (let i = msgs.length - 1; i >= 0; i--) {
                 const info = msgs[i] && msgs[i].info

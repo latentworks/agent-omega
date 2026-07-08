@@ -14,7 +14,7 @@
 import { tool } from '@opencode-ai/plugin'
 import { recall as storeRecall, factsAbout, addFact, stats } from './store.mjs'
 import { projectOf } from './capture.mjs'
-import { createEngram, DB_PATH, log, readMemoryIndex } from './engine.mjs'
+import { createEngram, DB_PATH, log, readMemoryIndex, EXTRACT_URL, withTimeout, SESSION_MESSAGES_TIMEOUT_MS } from './engine.mjs'
 
 const z = tool.schema
 
@@ -26,10 +26,28 @@ const EngramPlugin = async ({ client, directory }) => {
   const recallCache = new Map() // sessionID -> { query, block } so we don't re-query each sub-step
   const compactingNow = new Map() // sessionID -> ts; set on compaction, consumed by messages.transform so memory is never injected INTO a summary request (would create a capture feedback loop)
 
+  // Auto-memory needs a LOCAL extraction endpoint (see engine.mjs readLocalProvider). When
+  // none is configured/detected, extraction is silently inert — historically the only trace
+  // was a line in the tmpdir logfile, so a user could go a whole session thinking auto-memory
+  // was on when it never fired once. Surface it ONCE per app run via the SDK's toast channel —
+  // the same mechanism skill-router uses for its own inert state — so the gap is visible.
+  let inertNotified = false
+  async function notifyInertOnce() {
+    if (inertNotified || EXTRACT_URL) return
+    inertNotified = true
+    const msg = 'engram: automatic memory is off — no local extraction model detected (manual remember/recall still work).'
+    log(`INERT NOTICE: ${msg}`)
+    try {
+      if (client && client.tui && typeof client.tui.showToast === 'function') {
+        await client.tui.showToast({ body: { title: 'Engram', message: msg, variant: 'warning' } })
+      }
+    } catch (e) { log(`toast failed: ${e}`) }
+  }
+
   // Read the latest user message in a session (the auto-recall query).
   async function latestUserText(sessionID) {
     try {
-      const res = await client.session.messages({ path: { id: sessionID } })
+      const res = await withTimeout(client.session.messages({ path: { id: sessionID } }), SESSION_MESSAGES_TIMEOUT_MS)
       const msgs = (res && res.data) || []
       for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i]
@@ -52,6 +70,7 @@ const EngramPlugin = async ({ client, directory }) => {
         const sessionID = input && input.sessionID // destructure inside (a null arg must not throw uncaught)
         if (sessionID) compactingNow.set(sessionID, Date.now()) // stamp: messages.transform fires next on this same compaction path — it must skip so facts aren't baked into the summary
         log(`compaction on ${sessionID} — capturing what falls off`)
+        notifyInertOnce() // one-time visible notice if there's no local endpoint to extract with; never awaited (fully self-guarded)
         const r = await engram.captureAtCompaction(sessionID, directory)
         // A brief, visible "writing memory" pause — like Claude. The currently-loaded
         // model does the distillation (no swap), so this is quick; bounded so a slow or
