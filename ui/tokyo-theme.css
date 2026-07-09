@@ -483,10 +483,12 @@ body.theme-tokyo .arow span[style*="white-space:pre"] {
 /* ===================================================================
    CHAT — tool card
    =================================================================== */
+/* Activity rows are a log, not cards — compact, greyed, borderless one-liners
+   (Claude-Code style). The card chrome that used to live here was the "big box"
+   that buried the answer; the expandable code body (.out-pre) keeps its own frame. */
 body.theme-tokyo .toolwrap {
-  border: 1px solid var(--line);
-  background: var(--surface-2);
-  border-radius: 14px; padding: 11px 15px;
+  border: 0; background: none; border-radius: 0;
+  padding: 1px 0; margin: 0;
   font-family: 'Zen Kaku Gothic New', sans-serif;
 }
 body.theme-tokyo .toolline { font-size: 13px; color: var(--ink-55); align-items: center; text-shadow: none; }

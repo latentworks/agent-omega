@@ -588,11 +588,15 @@ body.theme-modern .arow span[style*="white-space:pre"] {
 /* ===================================================================
    TOOL CARD
    =================================================================== */
+/* Activity rows are a log, not cards — compact, greyed, borderless one-liners
+   (Claude-Code style). Removing the card chrome is what stops the answer from
+   being pushed off-screen; .out-pre (expanded body) keeps its own frame. */
 body.theme-modern .toolwrap {
-  border: 1px solid rgba(255,255,255,.08);
-  background: rgba(255,255,255,.022);
-  border-radius: 11px;
-  padding: 10px 14px;
+  border: 0;
+  background: none;
+  border-radius: 0;
+  padding: 1px 0;
+  margin: 0;
   font-family: 'Geist', sans-serif;
 }
 body.theme-modern .toolline {

@@ -325,6 +325,7 @@
             <span id="statusDot" style="color:#54655b;">●</span><span id="statusText">connecting</span>
           </div>
           <div style="display:flex; gap:14px; align-items:center;">
+            <span id="tpsMeter" style="color:#66dd88;"></span>
             <span id="tok" style="color:#7c8b82;"></span>
             <span id="cost" class="gr"></span>
             <span><span class="ac">ctrl+p</span> · <span class="ac">/help</span></span>
@@ -511,14 +512,31 @@ function focusActive(){ const i = chatVisible() ? (chatInput.disabled?null:chatI
 
 /* ---- status / connectivity (drives the dot + input-enabled state) ----
    kinds: 'connecting' | 'ready' | 'busy' | 'perm' | 'error' | 'offline' */
+/* The status text should name what the model is DOING right now, not just say
+   "generating". setActivity(...) is called from the answer / thinking / tool / subagent
+   render paths; setStatus keeps showing that label while busy and clears it on any resting
+   state. This is the "what is it doing at this instant" line, so the app can stand in for
+   a second-screen GPU monitor. */
+let curActivity='', liveSubs=0;
+function setActivity(text){
+  curActivity = text || '';
+  // Always repaint while busy — clearing (setActivity('')) must fall back to the generic
+  // label, not leave a now-stale activity (e.g. a finished helper's name) frozen on screen.
+  if(busy) statusText.textContent = curActivity || 'generating';
+}
+function helperLabel(title){
+  const t=String(title||'helper').replace(/\s+/g,' ').trim();
+  return 'helper: '+(t.length>44 ? t.slice(0,44)+'…' : t);
+}
 function setStatus(kind){
   if(kind==='busy'||kind==='perm') busy=true;
   else if(kind==='ready'||kind==='error'||kind==='offline'||kind==='connecting'){ busy=false; }
+  if(kind==='ready'||kind==='error'||kind==='offline'||kind==='connecting') curActivity='';   // back to rest → forget the last activity label
 
   let color='#66dd88', label='ready', inputEnabled=connOpen;
   switch(kind){
     case 'connecting': color='#54655b'; label='connecting'; inputEnabled=false; break;
-    case 'busy':       color='#ffb454'; label='generating'; inputEnabled=false; break;
+    case 'busy':       color='#ffb454'; label=curActivity||'generating'; inputEnabled=false; break;
     case 'perm':       color='#ffb454'; label='permission'; inputEnabled=false; break;
     case 'error':      color='#ff6b6b'; label='error';      inputEnabled=connOpen; break;
     case 'offline':    color='#ff6b6b'; label='engine offline'; inputEnabled=false; break;
@@ -537,6 +555,33 @@ function setUsage(used,size){
   tok.textContent = s;
 }
 function setCost(c){ costEl.textContent = (typeof c==='number' && c>0) ? '$'+c.toFixed(2) : ''; }
+
+/* ---- live output-rate meter (tokens/sec) ----
+   Surfaces the model actually producing — roughly how fast — without watching a GPU
+   monitor. We estimate from streamed characters (≈4 chars/token) over a rolling ~2s
+   window; the "~" prefix marks it as an estimate. Phase 2 swaps in the real per-box
+   number polled from the model server. noteGen() is fed by appendAnswer/appendThought. */
+let _rateTotal=0, _rateSamples=[], _lastGenMs=0;
+function noteGen(nChars){
+  if(!nChars) return;
+  _rateTotal += nChars;
+  _lastGenMs = Date.now();
+  _rateSamples.push([_lastGenMs, _rateTotal]);
+  if(_rateSamples.length>300) _rateSamples.shift();
+}
+setInterval(()=>{
+  const el=document.getElementById('tpsMeter'); if(!el) return;
+  const now=Date.now();
+  if(!_lastGenMs || now-_lastGenMs>1600){ if(el.textContent) el.textContent=''; return; }   // gone quiet → clear
+  const cutoff=now-2000;
+  while(_rateSamples.length>1 && _rateSamples[0][0]<cutoff) _rateSamples.shift();
+  if(_rateSamples.length<2){ return; }
+  const first=_rateSamples[0], last=_rateSamples[_rateSamples.length-1];
+  const dChars=last[1]-first[1], dMs=last[0]-first[0];
+  if(dMs<=0) return;
+  const rate=(dChars/4)/(dMs/1000);
+  el.textContent = rate>=1 ? ('~'+Math.round(rate)+' tok/s') : '';
+}, 350);
 
 function updateMeta(){
   const mName = (models.find(m=>m.value===curModel)||{}).name || curModel || '—';
@@ -833,11 +878,13 @@ function appendAnswer(delta){
   noteOutput();
   if(!curAnswerEl){ curAnswerEl=document.createElement('div'); curAnswerEl.className='arow'; log.appendChild(curAnswerEl); curAnswerText=''; }
   curAnswerText += delta;
+  if(liveSubs===0) setActivity('writing answer'); noteGen((delta||'').length);   // a live helper's label must win over lead text — same guard renderTool uses; noteGen still counts lead output for the t/s meter
   ansDirty=true; repaint();
 }
 function appendThought(delta){
   ensureThinking();
   thoughtText += delta;
+  if(liveSubs===0) setActivity('thinking'); noteGen((delta||'').length);   // helper label wins over lead thinking; t/s meter still counts
   thinkDirty=true; repaint();
 }
 
@@ -856,6 +903,19 @@ function appendThought(delta){
 const TOOL_GLYPH ={read:'→',edit:'←',delete:'✕',move:'⇄',search:'✱',execute:'$',think:'✷',fetch:'%',switch_mode:'◇',other:'▸'};
 const TOOL_NAME  ={read:'Read',edit:'Edit',delete:'Delete',move:'Move',search:'Search',execute:'Execute',think:'Think',fetch:'Fetch',switch_mode:'Mode',other:'Tool'};
 const PEND_VERB  ={read:'Reading…',edit:'Editing…',delete:'Deleting…',move:'Moving…',search:'Searching…',execute:'Running…',think:'Thinking…',fetch:'Fetching…',switch_mode:'Switching…',other:'Working…'};
+
+/* Human-readable "what is it doing" label for the live status line. For a shell command
+   we surface the command itself (truncated) so "running: npm test" makes it clear it's
+   running tests — the app can't otherwise know a Bash call is a test run. */
+const ACT_VERB   ={read:'reading files',edit:'editing files',delete:'deleting',move:'moving',search:'searching',think:'thinking',fetch:'fetching',switch_mode:'switching mode'};
+function activityForTool(s){
+  if(s.kind==='execute'){
+    const raw = (s.rawInput && (s.rawInput.command||s.rawInput.cmd)) || s.title || '';
+    const c = String(raw).replace(/\s+/g,' ').trim();
+    return c ? ('running: '+(c.length>52 ? c.slice(0,52)+'…' : c)) : 'running command';
+  }
+  return ACT_VERB[s.kind] || ('running '+(s.title || 'tool'));
+}
 
 function parseTodos(value){
   if(!Array.isArray(value)) return [];
@@ -876,9 +936,9 @@ function upsertTool(u){
   if(u.kind!=null) s.kind=u.kind;
   if(u.status!=null){ const prevStatus=s.status; s.status=u.status; if((u.status==='completed'||u.status==='failed') && !s.endMs) s.endMs=Date.now();
     // On the transition INTO failed, drop any durable expand/collapse the user set
-    // while the tool was still running, so the error surfaces expanded by default
-    // (its own status default). A user collapse made AFTER the failure still sticks,
-    // because a redundant failed→failed update leaves prevStatus==='failed'.
+    // while the tool was still running, so the error falls back to its status default
+    // (a compact red one-liner — click to expand). A user toggle made AFTER the failure
+    // still sticks, because a redundant failed→failed update leaves prevStatus==='failed'.
     if(u.status==='failed' && prevStatus!=='failed') s.expanded=null; }
   if(u.content!=null) s.content=u.content;        // ToolCall(Update).content REPLACES the collection
   if(u.rawInput!==undefined) s.rawInput=u.rawInput;
@@ -889,13 +949,27 @@ function renderTool(s){
   withScroll(()=>{
     noteOutput();
     let wrap=toolEls[s.toolCallId];
-    if(!wrap){ wrap=document.createElement('div'); wrap.className='toolwrap'; toolEls[s.toolCallId]=wrap; log.appendChild(wrap); }
+    if(!wrap){
+      // Seal the current answer paragraph before starting a tool row: any answer text that
+      // streams AFTER this tool must open a FRESH row BELOW the activity (chronological,
+      // Claude-Code style) instead of being retro-appended into the paragraph above all the
+      // tools — that retro-append is what made a post-tool answer look like it "vanished"
+      // (it landed off-screen, up above the activity). flushPaint() first so no pending
+      // answer text is lost when we null the accumulator.
+      flushPaint(); curAnswerEl=null;
+      wrap=document.createElement('div'); wrap.className='toolwrap'; toolEls[s.toolCallId]=wrap; log.appendChild(wrap);
+    }
     wrap.innerHTML='';
 
     const running = s.status==='pending'||s.status==='in_progress';
     const ri = (s.rawInput && typeof s.rawInput==='object') ? s.rawInput : {};
     const out = toolText(s.content);
     const diffs = toolDiffs(s.content);
+    // Drive the live status line from the tool actually running (refreshes as rawInput
+    // fills in, e.g. an execute command that arrives a beat after the pending row). While a
+    // helper (subagent) is live, let ITS label win so the status shows the helper, not the
+    // lead's parent Task row.
+    if(running && liveSubs===0) setActivity(activityForTool(s));
 
     let errText = s.status==='failed' ? (out || strOf(s.rawOutput) || 'tool failed') : '';
     if(s.status==='failed' && errText.trim()==='') errText='tool failed';   // whitespace-only error must still show a label, not a blank preview line
@@ -956,7 +1030,7 @@ function renderTool(s){
        toggles) makes the user's choice durable across the in-place re-renders
        this function does on every ToolCallUpdate. ---- */
     if(failed){
-      const openNow = s.expanded===null ? true : s.expanded;
+      const openNow = s.expanded===null ? false : s.expanded;   // collapsed red one-liner by default (loud glyph+name+"· error" still show); click to expand — keeps the log compact so the answer stays in view
       wrap.appendChild(collapsible(errText, {error:true, open:openNow, onToggle:(o)=>{ s.expanded=o; }}));
     } else if(denied){
       const d=document.createElement('div'); d.className='tsub'; d.style.color='#7c8b82'; d.textContent='↳ denied by user'; wrap.appendChild(d);
@@ -1015,7 +1089,7 @@ function subPanelFor(childId, title){
   const body=document.createElement('div'); body.className='sub-body';
   box.appendChild(head); box.appendChild(body);
   withScroll(()=>{ noteOutput(); log.appendChild(box); });
-  sp={ box, body, glyph:g, parts:{}, warmTimer:0, warmEl:null, hadPart:false, done:false };
+  sp={ box, body, glyph:g, parts:{}, warmTimer:0, warmEl:null, hadPart:false, done:false, title:(title||'subagent') };
   subPanels[childId]=sp;
   return sp;
 }
@@ -1084,6 +1158,17 @@ function onSubagent(m){
     if(sp && (m.status==='completed'||m.status==='failed')) subFinish(sp, m.status==='failed');
   } else if(m.phase==='end'){                           // child session.idle — the verified end signal
     subFinish(subPanels[m.childId], false);
+  }
+  // Reflect helper activity in the live status line so the user can tell a helper model is
+  // working (vs the lead) at a glance. Phase 2 upgrades this label to "<model> on <box>".
+  liveSubs = Object.values(subPanels).filter(p=>!p.done).length;
+  if(liveSubs>0){
+    const active = Object.values(subPanels).find(p=>!p.done);
+    if(active) setActivity(helperLabel(active.title));
+  } else if(curActivity.indexOf('helper:')===0){
+    // Last helper just finished — drop its now-stale label so the lead's own status shows
+    // through. The lead resumes within ms and its next answer/tool event sets the specifics.
+    setActivity('');
   }
 }
 
@@ -1717,6 +1802,7 @@ function resetTurn(){
   turnProduced=false; ansDirty=false; thinkDirty=false;
   turnWarmClear();                                                  // drop any pending cold-load note (Fix 3)
   for(const k in subPanels){ const sp=subPanels[k]; if(sp&&sp.warmTimer) clearTimeout(sp.warmTimer); delete subPanels[k]; }   // DOM panels stay as history; forget the live map (Fix 2)
+  liveSubs=0; curActivity='';   // liveSubs is derived from subPanels — reset it with the map, else an aborted delegation (no trailing 'end' frame) leaves liveSubs stuck >0 and the guard at renderTool permanently blocks the lead's tool-activity line for the rest of the session
 }
 
 /* ---- ESC / new: clear the session and return home ---- */
