@@ -121,15 +121,13 @@ for your say-so; reading and local edits just happen.
 
 ## Quick start
 
-Agent Omega ships on Windows and macOS. On Windows it expects .NET 8, Node.js, and
-the WebView2 runtime; on macOS it's a self-contained Swift + WKWebView build (Apple
-Silicon, macOS 13+). Full setup — dependencies, building the shell, wiring your
-models, and stocking the vault — lives in **[SETUP.md](SETUP.md)**.
+Agent Omega ships as a native desktop app on **Windows** and **macOS** from a single trunk, plus a **Linux browser mode**:
 
-The short version: build the WinForms app, make sure Node and the opencode engine
-binary are in place, add at least one model (a local one needs nothing but the model
-running; a cloud one needs its key in the vault), and launch. The window comes up,
-the sidecar starts the engine, and you're talking to it.
+- **Windows desktop shell**: WinForms + WebView2 (.NET 8, Node.js, WebView2 runtime). Setup lives in **[SETUP.md](SETUP.md)**.
+- **macOS desktop shell**: a self-contained Swift + WKWebView build (Apple Silicon, macOS 13+). Setup lives in **[SETUP.md](SETUP.md)**.
+- **Linux browser mode**: the existing HTML UI + Node sidecar + Linux opencode engine in a normal browser. Setup lives in **[SETUP-LINUX.md](SETUP-LINUX.md)**.
+
+The native Linux desktop shell is not shipped yet. The Linux target here is browser-mode portability for the existing core stack.
 
 Running a local model? The default configuration is the **evidence-backed 30–35B
 tune** — which models to use, the serving flags that matter (thinking mode is not

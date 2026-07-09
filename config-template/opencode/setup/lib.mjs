@@ -1,12 +1,23 @@
 // setup/lib.mjs — helpers for the bounded setup tools. Runs on Bun (node: builtins + global fetch OK).
 // Kept separate so setup/index.js can export ONLY its default plugin function (opencode loads every
 // export of a plugin file as a plugin — engram gotcha).
-import { readFileSync, writeFileSync, existsSync, renameSync, copyFileSync, mkdirSync, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, renameSync, copyFileSync, mkdirSync, readdirSync, chmodSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import path from 'node:path'
 import os from 'node:os'
 
 const isWin = process.platform === 'win32'
+const isLinux = !isWin && process.platform !== 'darwin'
+// Linux ships no OS keychain/DPAPI vault script, so the secrets.{sh,ps1} path fails there. Read/write
+// the same 0600 JSON file vault the sidecar uses (vault/file-vault.mjs), inlined because this shipped
+// plugin can't import the repo module. Honors AGENT_OMEGA_FILE_VAULT like the sidecar/file-vault.
+const fileVaultPath = () => process.env.AGENT_OMEGA_FILE_VAULT || path.join(os.homedir(), '.agent-omega', 'vault.json')
+function fileVaultRead() { try { const o = JSON.parse(readFileSync(fileVaultPath(), 'utf8')); return o && typeof o === 'object' && !Array.isArray(o) ? o : {} } catch (e) { if (e.code === 'ENOENT') return {}; throw e } }
+function fileVaultWrite(obj) {
+  const vp = fileVaultPath(); mkdirSync(path.dirname(vp), { recursive: true, mode: 0o700 })
+  const tmp = vp + '.tmp'; writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', { mode: 0o600 })
+  try { chmodSync(tmp, 0o600) } catch {}; renameSync(tmp, vp); try { chmodSync(vp, 0o600) } catch {}
+}
 
 export function configDir() {
   return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode')
@@ -99,6 +110,7 @@ export function migrateJsoncStub() {
 }
 
 export function vaultPath() {
+  if (isLinux) return fileVaultPath()   // Linux always uses the 0600 file vault (honors AGENT_OMEGA_FILE_VAULT); the secrets.{sh,ps1} AGENT_OMEGA_VAULT override doesn't apply here
   if (process.env.AGENT_OMEGA_VAULT) return process.env.AGENT_OMEGA_VAULT
   return path.join(os.homedir(), '.agent-omega', isWin ? 'secrets.ps1' : 'secrets.sh')
 }
@@ -111,6 +123,7 @@ function vaultCmd(action, name) {
   return ['sh', [vp, action, ...(name ? [name] : [])]]
 }
 export function vaultSet(name, value) {
+  if (isLinux) { try { const v = fileVaultRead(); v[name] = sanitizeSecret(value); fileVaultWrite(v); return Promise.resolve({ ok: true, out: '' }) } catch (e) { return Promise.resolve({ ok: false, err: e.message }) } }
   return new Promise((res) => {
     const [cmd, args] = vaultCmd('set', name)
     const child = execFile(cmd, args, { timeout: 15000 }, (err, stdout, stderr) => res({ ok: !err, out: ((stdout || '') + (stderr || '')).trim(), err: err && err.message }))
@@ -118,6 +131,13 @@ export function vaultSet(name, value) {
   })
 }
 export function vaultList() {
+  // Linux reads keys from the env FIRST (SETUP-LINUX.md), then the file vault — union both so the
+  // setup agent doesn't tell a user with `export ANTHROPIC_API_KEY=…` that their key is missing.
+  if (isLinux) { try {
+    const fromFile = Object.keys(fileVaultRead())
+    const fromEnv = Object.keys(VAULT_TO_ENV).filter((name) => process.env[VAULT_TO_ENV[name]])
+    return Promise.resolve([...new Set([...fromFile, ...fromEnv])].sort())
+  } catch { return Promise.resolve([]) } }
   return new Promise((res) => {
     const [cmd, args] = vaultCmd('list')
     execFile(cmd, args, { timeout: 15000 }, (err, stdout) => res(err ? [] : String(stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)))

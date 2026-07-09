@@ -60,5 +60,8 @@ different files). Because of that:
 > **The rule:** never edit shared code on a divergent branch and leave it there. That's how the
 > two OSes drift apart. Land shared changes on `main`; each OS's CI builds from the same commit.
 
-If you later add Linux, it's a `linux/` host dir + a `build` target — the shared 80% is untouched
-(`sidecar.mjs` already has the Linux/XDG branch).
+Linux ships as **browser mode** (no native shell): the same sidecar + `ui/app.html` opened in the
+default browser by `scripts/run-linux.mjs`. `make build` on Linux validates it (portability check +
+smoke), `make run` launches it — see `SETUP-LINUX.md`. Keys come from env vars first with a 0600
+`~/.agent-omega/vault.json` fallback (no OS vault on headless Linux). A native `linux/` host shell
+can be added later without touching the shared 80%.

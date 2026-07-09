@@ -382,8 +382,10 @@
    ===================================================================== */
 
 /* ---- config ---- */
-const WS_PORT = (new URLSearchParams(location.search)).get('ws') || '4599';
-const WS_TOKEN = (new URLSearchParams(location.search)).get('token') || '';
+const URL_PARAMS = new URLSearchParams(location.search);
+const WS_PORT = URL_PARAMS.get('ws') || '4599';
+const WS_TOKEN = URL_PARAMS.get('token') || '';
+const HOST_KIND = URL_PARAMS.get('host') || 'webview';
 
 const $ = id => document.getElementById(id);
 const home=$('home'), chat=$('chat'), convo=$('convo'), log=$('log');
@@ -443,8 +445,14 @@ window.addEventListener('keydown', function(e){
 }, true);
 
 /* ---- host bridge (window controls ONLY) ---- */
-function post(o){ try{ window.chrome.webview.postMessage(o); }catch(e){} }
-function win(action){ post({type:action}); }
+function post(o){ try{ if(HOST_KIND==='browser') return; window.chrome.webview.postMessage(o); }catch(e){} }
+function win(action){ if(HOST_KIND==='browser') return; post({type:action}); }
+if(HOST_KIND==='browser'){
+  document.addEventListener('DOMContentLoaded', ()=>{
+    document.body.classList.add('host-browser');
+    document.querySelectorAll('.m-trafficlights,.crt-tb-controls').forEach(el=>{ el.style.visibility='hidden'; });
+  });
+}
 
 /* ---- native edge-resize forwarding ----
    The window is frameless and the web content runs to the very edge (no visible grab strip),
@@ -452,6 +460,7 @@ function win(action){ post({type:action}); }
    native sizing loop. Interactive controls are never hijacked; the title-bar drag still owns
    everything below the top edge band. */
 (function(){
+  if(HOST_KIND==='browser') return;   // browser-mode (Linux) is a normal tab with no native frame to resize — don't hijack edge clicks/drags or paint phantom resize cursors (there's no host to forward to anyway)
   const M = 6;   // edge hit band, CSS px
   const CUR = { left:'ew-resize', right:'ew-resize', top:'ns-resize', bottom:'ns-resize',
                 topleft:'nwse-resize', bottomright:'nwse-resize', topright:'nesw-resize', bottomleft:'nesw-resize' };
@@ -1925,7 +1934,7 @@ function onWs(m){
   /* ---------- exit chord (ctrl+c on empty) ---------- */
   let exitArmed=false, exitTimer=null, savedPH=null;
   function armExit(ta){
-    if(exitArmed){ post({type:'close'}); return; }
+    if(exitArmed){ if(HOST_KIND==='browser') sysLine('Close the browser tab to exit Agent Omega.'); else post({type:'close'}); return; }
     exitArmed=true; savedPH=ta.getAttribute('placeholder');
     ta.setAttribute('placeholder','press Ctrl+C again to exit');
     clearTimeout(exitTimer); exitTimer=setTimeout(()=>disarmExit(ta),1800);
@@ -2027,7 +2036,7 @@ function onWs(m){
     /* ctrl+d: delete-forward (with text) / exit (empty) */
     if(ctrl && !alt && !shift && key==='d'){
       e.preventDefault();
-      if(v===''){ post({type:'close'}); return; }
+      if(v===''){ if(HOST_KIND==='browser') sysLine('Close the browser tab to exit Agent Omega.'); else post({type:'close'}); return; }
       if(hasSel) replaceRange(ta,ss,se); else if(ss<v.length) replaceRange(ta,ss,ss+1);
       return;
     }
@@ -2166,7 +2175,7 @@ function wireDiscovery(){
     'theme.switch':    ()=>setTheme(''),
     'help.show':       ()=>showHelp(),
     'opencode.status': ()=>showStatus(),
-    'app.exit':        ()=>post({type:'close'}),
+    'app.exit':        ()=> HOST_KIND==='browser' ? sysLine('Close the browser tab to exit Agent Omega.') : post({type:'close'}),
     // messages.copy keeps command-discovery's default (copies the last .arow)
     // session commands — wired to the real handlers (same paths as typing /sessions, /rename …)
     'session.list':    ()=>showSessions(),

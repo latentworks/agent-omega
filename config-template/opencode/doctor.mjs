@@ -146,9 +146,10 @@ if (cfg && typeof cfg.model === 'string' && cfg.model.includes('/')) {
     // would false-warn a mac/Windows user whose key lives in the OS vault.
     const isWin = process.platform === 'win32'
     const isLinux = !isWin && process.platform !== 'darwin'
-    let inVault = false, vaultLabel = '~/.agent-omega/vault.json'
+    const linuxVault = process.env.AGENT_OMEGA_FILE_VAULT || join(homedir(), '.agent-omega', 'vault.json')
+    let inVault = false, vaultLabel = isLinux ? linuxVault.replace(homedir(), '~') : '~/.agent-omega/vault.json'
     if (isLinux) {
-      try { const v = JSON.parse(stripBom(readFileSync(join(homedir(), '.agent-omega', 'vault.json'), 'utf8'))); inVault = Boolean(v && typeof v === 'object' && v[keyName]) } catch {}
+      try { const v = JSON.parse(stripBom(readFileSync(linuxVault, 'utf8'))); inVault = Boolean(v && typeof v === 'object' && v[keyName]) } catch {}
     } else {
       const script = join(homedir(), '.agent-omega', isWin ? 'secrets.ps1' : 'secrets.sh')
       vaultLabel = isWin ? 'the DPAPI vault' : 'the macOS Keychain'
