@@ -24,7 +24,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: "20" }
+        # Node 24: the shared brain modules use node:sqlite (engram/store.mjs), which is only
+        # available on Node 22.5+ and stable on 24. The unit-test step below imports it for real.
+        with: { node-version: "24" }
       - name: install deps
         run: |
           npm install
@@ -35,6 +37,11 @@ jobs:
           node --check setup.mjs
           node --check scripts/smoke.mjs
           for f in config-template/opencode/*/*.mjs config-template/opencode/*/*.js; do node --check "$f"; done
+      - name: run the shared-core unit tests (behavior, not just a parse check)
+        # node --check above only PARSES the modules — it does not run them. These tests
+        # actually execute the pure-logic brain (verify-guard, iterate-loop, router, extract,
+        # engram store/extract, council filetools) against real inputs and assert the output.
+        run: node --test "test/logic/**/*.test.mjs"
       - name: validate opencode.json + package.json type:module
         run: |
           node -e "JSON.parse(require('fs').readFileSync('config-template/opencode/opencode.json','utf8'))"
