@@ -42,7 +42,7 @@ const SetupPlugin = async ({ client, directory }) => {
         description: 'Add a local server or a cloud provider+model to the config. Writes opencode.json safely (keys are only stored as {env:...} refs, never inline). Applies after the automatic reload.',
         args: {
           kind: z.enum(['local', 'cloud']).describe('local server (llama.cpp/Ollama/LM Studio) or a cloud provider'),
-          provider_id: z.string().describe('short id, e.g. gmk128, anthropic, groq'),
+          provider_id: z.string().describe('short id, e.g. mybox, anthropic, groq'),
           model_id: z.string().describe('the model id the server/provider exposes'),
           model_name: z.string().optional().describe('friendly display name'),
           base_url: z.string().optional().describe('local/custom base URL, e.g. http://127.0.0.1:8080/v1'),

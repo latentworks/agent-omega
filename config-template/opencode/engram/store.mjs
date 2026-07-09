@@ -68,20 +68,36 @@ export function openStore(path = ':memory:', { fts: wantFts = true } = {}) {
   try { db.exec('PRAGMA busy_timeout = 5000;') } catch {}
   db.exec(SCHEMA)
   try { db.exec("ALTER TABLE facts ADD COLUMN source TEXT NOT NULL DEFAULT 'chat'") } catch {}  // migrate older DBs that predate the trust column
-  // FTS5 powers ranked recall, but Bun's bundled SQLite may not include it —
-  // probe it for real (create + insert + MATCH), and fall back to a LIKE scan if
-  // it's unavailable. Recall works either way. (fts:false forces the fallback.)
+  // FTS5 powers ranked recall, but Bun's bundled SQLite may not include it — probe it for
+  // real (create + insert + MATCH) using a per-connection TEMP table, then fall back to a
+  // LIKE scan if it's unavailable. Recall works either way. (fts:false forces the fallback.)
+  // The probe used to run directly against the shared facts_fts table with a hardcoded
+  // rowid=-1, which could collide across two processes probing at the same moment, or —
+  // worse — leave an orphaned row behind forever if a process died between the insert and
+  // the delete, wedging every future session on that db file onto the LIKE fallback. TEMP
+  // tables live outside the db file (per-connection, never persisted, never visible to
+  // other connections), so this probe can't collide with anyone and leaves nothing behind
+  // even on a crash.
   let fts = false
   if (wantFts) {
     try {
-      db.exec('CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(statement);')
-      db.prepare('INSERT INTO facts_fts(rowid, statement) VALUES (?, ?)').run(-1, 'engram fts capability probe')
-      const ok = db.prepare('SELECT rowid FROM facts_fts WHERE facts_fts MATCH ? LIMIT 1').get('probe')
-      db.prepare('DELETE FROM facts_fts WHERE rowid = ?').run(-1)
+      db.exec('DROP TABLE IF EXISTS temp.fts_probe;')  // idempotent: a prior probe that threw after CREATE can leave this behind on the same connection
+      db.exec('CREATE VIRTUAL TABLE temp.fts_probe USING fts5(x);')
+      db.prepare('INSERT INTO temp.fts_probe(x) VALUES (?)').run('engram fts capability probe')
+      const ok = db.prepare('SELECT rowid FROM temp.fts_probe WHERE fts_probe MATCH ? LIMIT 1').get('probe')
+      db.exec('DROP TABLE temp.fts_probe;')
       fts = !!ok
+      if (fts) db.exec('CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(statement);')
     } catch {
       fts = false
     }
+  }
+  // Self-heal: older engram builds probed capability with that hardcoded rowid=-1 insert
+  // and could orphan it into a shared db file on a crash, permanently colliding with every
+  // future probe. Sweep any leftover here so an already-poisoned db recovers on next open.
+  // Opportunistic housekeeping only — a failure here must never itself flip fts to false.
+  if (fts) {
+    try { db.exec('DELETE FROM facts_fts WHERE rowid = -1') } catch {}
   }
   ftsCapable.set(db, fts)
   return db

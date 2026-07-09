@@ -37,7 +37,10 @@ it's fetched/built at setup time. `make engine` / `.\build.ps1 engine` just chec
 ## CI: one push, two jobs
 
 `.github/workflows/build.yml` runs on every push/PR:
-- **shared** (ubuntu) — `node --check` the sidecar + every plugin, validate config.
+- **shared** (ubuntu, Node 24) — `node --check` the sidecar + every plugin, then **run the
+  shared-core unit tests** (`node --test`, or `npm test`) that actually execute the pure-logic
+  brain against real inputs, and validate config. (`node --check` only parses; the tests prove
+  behavior. Node 24 because `engram/store.mjs` uses the built-in `node:sqlite`.)
 - **macOS** — `swiftc -parse` the Swift host, lint the shell scripts, `plutil` the Info.plist.
 - **Windows** — `dotnet build` the WinForms host.
 

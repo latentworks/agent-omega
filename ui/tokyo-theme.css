@@ -27,11 +27,11 @@ body.theme-tokyo {
   --clay:   #C98D80;
 
   /* derived from the six, no new hues */
-  --ink-80: rgba(59,66,80,.84);
-  --ink-70: rgba(59,66,80,.70);
-  --ink-55: rgba(59,66,80,.55);
-  --ink-40: rgba(59,66,80,.40);
-  --ink-28: rgba(59,66,80,.28);
+  --ink-80: rgba(59,66,80,.86);
+  --ink-70: rgba(59,66,80,.72);
+  --ink-55: rgba(59,66,80,.60);
+  --ink-40: rgba(59,66,80,.50);
+  --ink-28: rgba(59,66,80,.37);
   --line:   rgba(59,66,80,.13);
   --line-2: rgba(59,66,80,.20);
   --sky:    #AEC7D6;   /* powder, deepened for small marks (dots) */
@@ -397,12 +397,13 @@ body.theme-tokyo .m-homefoot {
 body.theme-tokyo #chat {
   margin: 20px 26px;
   padding: 4px 22px 16px;
-  /* match the home "shop window" glass — clear + faint sheen */
+  /* a frosted work-panel — the street stays a soft wash behind, words read on top
+     (home stays the clear "shop window"; chat is where reading happens) */
   background:
-    linear-gradient(135deg, rgba(255,255,255,.16) 0%, rgba(255,255,255,0) 28%, rgba(255,255,255,0) 72%, rgba(255,255,255,.08) 100%),
-    rgba(250,247,241,.22);
-  backdrop-filter: blur(6px) saturate(1.12);
-  -webkit-backdrop-filter: blur(6px) saturate(1.12);
+    linear-gradient(135deg, rgba(255,255,255,.22) 0%, rgba(255,255,255,.05) 28%, rgba(255,255,255,.05) 72%, rgba(255,255,255,.13) 100%),
+    rgba(250,247,241,.72);
+  backdrop-filter: blur(11px) saturate(1.05);
+  -webkit-backdrop-filter: blur(11px) saturate(1.05);
   border: 1px solid rgba(255,255,255,.5);
   border-radius: 24px;
   box-shadow: 0 36px 92px -30px rgba(64,52,46,.46), inset 0 1px 0 rgba(255,255,255,.55), 0 0 0 1px rgba(118,138,150,.08);

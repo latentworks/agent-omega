@@ -14,20 +14,67 @@ import { selectDropped, buildEpisodeText, projectOf } from './capture.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
-// Fact distillation reuses the LOCAL provider the user already configured (baseURL + model
+// A loopback or private-LAN host: localhost/127.0.0.1/::1, or RFC-1918 (10.x, 192.168.x,
+// 172.16-172.31.x). Extraction must NEVER be pointed at anything else — conversation
+// content is sent to this endpoint, so a cloud host is disqualified even if it shows up
+// while scanning providers below.
+function isLocalHost(hostname) {
+  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '')
+  if (h === 'localhost' || h === '127.0.0.1' || h === '::1') return true
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(h)) return true
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(h)) return true
+  return false
+}
+function isLocalBaseURL(baseURL) {
+  try { return isLocalHost(new URL(baseURL).hostname) } catch { return false }
+}
+
+// Fact distillation reuses a LOCAL provider the user already configured (baseURL + model
 // from opencode.json, XDG-aware) — the same box you're talking to — so memory works out of
 // the box with no extra endpoint to set up. ENGRAM_EXTRACT_URL / ENGRAM_MODEL override.
+//
+// Detection is broadened beyond the literal `provider.local` id, because real deployments
+// often rename that provider (e.g. to a machine name):
+//   1) `provider.local` is checked FIRST — the documented setup path.
+//   2) If it has no usable baseURL, every configured provider is scanned and the first one
+//      whose baseURL resolves to a loopback/private-LAN host (isLocalHost) is used instead —
+//      preferring whichever provider backs the session's current main model (cfg.model), if
+//      that one qualifies, before falling back to the first local match found.
+// A cloud provider is never selected here. If no local endpoint exists at all, extraction
+// stays inert (EXTRACT_URL === '') rather than silently sending chat content off-box.
 function readLocalProvider() {
   try {
     const cfgPath = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode', 'opencode.json')
     const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    const mainProviderId = typeof cfg.model === 'string' ? cfg.model.split('/')[0] : ''
+    // Prefer the model the MAIN session drives with — proven to work against this exact
+    // endpoint — over the first model configured under that provider.
+    const pickModel = (providerId, models) => {
+      const mainModelId = providerId === mainProviderId && typeof cfg.model === 'string' ? cfg.model.slice(providerId.length + 1) : ''
+      const firstKey = models && typeof models === 'object' ? (Object.keys(models)[0] || '') : ''
+      return mainModelId || firstKey
+    }
+
+    // 1) First priority: the provider literally named "local" (the documented setup path).
+    //    It must STILL resolve to a loopback/private-LAN host — the id "local" is a naming
+    //    convention, not a guarantee, and a cloud baseURL here (typo, pasted example, hostile
+    //    config) would otherwise ship chat content off-box. If it isn't local, fall through to
+    //    the scan below (which also rejects it), leaving extraction inert. This is the core
+    //    invariant: locality is decided by the host, never by the provider's name.
     const loc = cfg && cfg.provider && cfg.provider.local
-    const baseURL = loc && loc.options && typeof loc.options.baseURL === 'string' ? loc.options.baseURL : ''
-    // Prefer the model the MAIN session drives with (cfg.model === "local/<id>") — proven to work
-    // against the user's server — over the first configured local model.
-    const selected = typeof cfg.model === 'string' && cfg.model.startsWith('local/') ? cfg.model.slice('local/'.length) : ''
-    const firstKey = loc && loc.models && typeof loc.models === 'object' ? (Object.keys(loc.models)[0] || '') : ''
-    return { baseURL, modelId: selected || firstKey }
+    const locBaseURL = loc && loc.options && typeof loc.options.baseURL === 'string' ? loc.options.baseURL : ''
+    if (locBaseURL && isLocalBaseURL(locBaseURL)) return { baseURL: locBaseURL, modelId: pickModel('local', loc.models) }
+
+    // 2) Fallback: scan every configured provider for a loopback/private-LAN baseURL.
+    const providers = (cfg && cfg.provider && typeof cfg.provider === 'object') ? cfg.provider : {}
+    const candidates = Object.entries(providers)
+      .map(([id, p]) => ({ id, baseURL: p && p.options && typeof p.options.baseURL === 'string' ? p.options.baseURL : '', models: p && p.models }))
+      .filter((c) => c.baseURL && isLocalBaseURL(c.baseURL))
+    if (!candidates.length) return { baseURL: '', modelId: '' }
+    const chosen = candidates.find((c) => c.id === mainProviderId) || candidates[0]
+    return { baseURL: chosen.baseURL, modelId: pickModel(chosen.id, chosen.models) }
   } catch { return { baseURL: '', modelId: '' } }
 }
 const LOCAL = readLocalProvider()
@@ -47,6 +94,19 @@ export const EXTRACT_URL = process.env.ENGRAM_EXTRACT_URL || (LOCAL.baseURL ? LO
 export const ENGRAM_MODEL = process.env.ENGRAM_MODEL || LOCAL.modelId || ''
 export const TAIL_KEEP = Number(process.env.ENGRAM_TAIL_KEEP || 4)
 const EXTRACT_TIMEOUT = Number(process.env.ENGRAM_EXTRACT_TIMEOUT || 180000)
+
+// The opencode client SDK's generated fetch wrapper doesn't take an AbortSignal, so a hung
+// server-side call has no built-in way out — race it with a plain timer instead (same idea
+// as AbortSignal.timeout elsewhere, e.g. council/tunnel.mjs and extractCall below). Exported
+// so index.js's per-turn recall hook can guard its own client.session.messages call the same
+// way, without duplicating the helper.
+export const SESSION_MESSAGES_TIMEOUT_MS = Number(process.env.ENGRAM_SESSION_MESSAGES_TIMEOUT || 5000)
+export function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms)
+    promise.then((v) => { clearTimeout(t); resolve(v) }, (e) => { clearTimeout(t); reject(e) })
+  })
+}
 
 // Logs go to a FILE, not stderr — OpenCode renders plugin stderr into the user's
 // window, and the user shouldn't see engram's internal chatter. Opt in to on-screen
@@ -92,7 +152,7 @@ export function createEngram({ client, directory, db, callLLM = extractCall } = 
 
   async function captureAtCompaction(sessionID, dir) {
     try {
-      const res = await client.session.messages({ path: { id: sessionID } })
+      const res = await withTimeout(client.session.messages({ path: { id: sessionID } }), SESSION_MESSAGES_TIMEOUT_MS)
       const msgs = (res && res.data) || []
       const { slice, end } = selectDropped(msgs, watermark.get(sessionID) || 0, TAIL_KEEP)
       if (!slice.length) return null

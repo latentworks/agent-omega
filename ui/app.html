@@ -103,11 +103,32 @@
   .ttodo.active{ color:#ffb454; }
   .ttodo-m{ flex:0 0 auto; white-space:pre; }
   .out{ margin-top:2px; }
-  .out-head{ font-size:19px; color:#7c8b82; cursor:default; user-select:none; }
+  .out-head{ font-size:19px; color:#7c8b82; cursor:default; user-select:none;
+             display:flex; align-items:baseline; flex-wrap:nowrap; }
   .out-head:hover{ color:#9fb0a6; }
+  .out-head[role="button"]{ cursor:pointer; }
+  .out-head.out-static:hover{ color:#7c8b82; }             /* running…/(no output) rows are inert — no click affordance */
+  .out-head[role="button"]:focus-visible{ outline:1px solid var(--ac); outline-offset:2px; }
+  .out-arrow{ display:inline-block; width:1em; flex:0 0 auto; text-align:center; }
+  .out-prev{ flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .out-size{ flex:0 0 auto; margin-left:.6em; color:#46544c; }
+  .out.out-err .out-prev{ color:#ff6b6b; }
   .out-pre{ margin:6px 0 0; padding:8px 12px; background:rgba(0,0,0,.32); border:1px solid #1b2227; color:#9fb0a6;
             font-family:inherit; font-size:18px; line-height:1.4; white-space:pre-wrap; max-height:320px; overflow:auto; }
   .out-pre::-webkit-scrollbar{ width:8px; } .out-pre::-webkit-scrollbar-thumb{ background:#1e2d27; }
+
+  /* ===== subagent (child-session) live panel — Fix 2 (show what's happening behind the scenes) ===== */
+  .subagent{ margin:4px 0 6px 1.6em; padding:2px 0 3px .85em; border-left:2px solid #2b3a32; }
+  .sub-h{ font-size:19px; color:#9a8fe0; display:flex; align-items:baseline; }
+  .sub-h .sg{ flex:0 0 auto; margin-right:.5em; color:#9a8fe0; }
+  .sub-body{ margin-top:2px; display:flex; flex-direction:column; gap:1px; }
+  .sub-text{ font-size:19px; color:#a9b6ac; white-space:pre-wrap; }
+  .sub-think{ font-size:18px; color:#6b7a70; font-style:italic; white-space:pre-wrap; }
+  .sub-tool{ font-size:18px; color:#54655b; }
+  .sub-tool .st{ color:#5fd3dd; }
+  .sub-tool .sh{ color:#46544c; }
+  .sub-warm{ font-size:19px; color:#e0b060; display:flex; align-items:baseline; }
+  .sub-warm .spin{ margin-right:.5em; flex:0 0 auto; }
 
   /* ---- syntax token classes (CRT colors; overridden in Modern via modern-theme.css) ---- */
   .tk-comment { color:#5f7a6c; }
@@ -433,6 +454,44 @@ if(HOST_KIND==='browser'){
   });
 }
 
+/* ---- native edge-resize forwarding ----
+   The window is frameless and the web content runs to the very edge (no visible grab strip),
+   so we detect a grab in the outer few px and hand the direction to the host, which drives the
+   native sizing loop. Interactive controls are never hijacked; the title-bar drag still owns
+   everything below the top edge band. */
+(function(){
+  if(HOST_KIND==='browser') return;   // browser-mode (Linux) is a normal tab with no native frame to resize — don't hijack edge clicks/drags or paint phantom resize cursors (there's no host to forward to anyway)
+  const M = 6;   // edge hit band, CSS px
+  const CUR = { left:'ew-resize', right:'ew-resize', top:'ns-resize', bottom:'ns-resize',
+                topleft:'nwse-resize', bottomright:'nwse-resize', topright:'nesw-resize', bottomleft:'nesw-resize' };
+  let lastCur = '';
+  function interactive(el){
+    return !!(el && (/^(INPUT|TEXTAREA|BUTTON|SELECT)$/.test(el.tagName) || el.isContentEditable
+                     || (el.closest && el.closest('.ctl,.m-tl,.m-cmdkpill,.m-trafficlights'))));
+  }
+  function edgeDir(x, y){
+    const w = innerWidth, h = innerHeight, l = x <= M, r = x >= w - M, t = y <= M, b = y >= h - M;
+    if(t && l) return 'topleft'; if(t && r) return 'topright'; if(b && l) return 'bottomleft'; if(b && r) return 'bottomright';
+    if(l) return 'left'; if(r) return 'right'; if(t) return 'top'; if(b) return 'bottom'; return null;
+  }
+  // The host tells us when the window is app-maximized; a maximized window has no floating edges
+  // to grab (and rounding is off), so the whole edge band must go dormant — no phantom resize
+  // cursors, no swallowed clicks. window.__aoMaximized mirrors the host's _maximized.
+  try{ window.chrome.webview.addEventListener('message', e=>{ const m=e&&e.data; if(m&&m.type==='winstate') window.__aoMaximized=!!m.maximized; }); }catch(_){}
+  addEventListener('mousemove', e=>{
+    const d = (window.__aoMaximized || window.__ftpModalOpen || interactive(e.target)) ? null : edgeDir(e.clientX, e.clientY);
+    const c = d ? CUR[d] : '';
+    if(c !== lastCur){ document.body.style.cursor = c; lastCur = c; }
+  }, true);
+  addEventListener('mousedown', e=>{
+    if(e.button !== 0 || window.__aoMaximized || window.__ftpModalOpen || interactive(e.target)) return;
+    const d = edgeDir(e.clientX, e.clientY);
+    if(!d) return;
+    e.preventDefault(); e.stopPropagation();
+    post({type:'resize', dir:d});
+  }, true);
+})();
+
 /* ---- safety + small formatters ---- */
 function escapeHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function cap(s){ s=String(s||'tool'); return s.charAt(0).toUpperCase()+s.slice(1); }
@@ -675,22 +734,75 @@ function renderDiffBlock(rows, adds, dels, fileLabel){
   return wrap;
 }
 
-/* ---- collapsible tool output (textContent -> safe; optional color + open) ---- */
-function collapsible(label, text, opt){
+/* ---- always-visible activity-log row: dim one-line preview + size badge,
+   full output expandable on demand (click or Enter/Space). textContent only
+   -> safe (never innerHTML with tool/error text). ---- */
+function byteSize(s){ try{ return new TextEncoder().encode(s).length; }catch(e){ return String(s).length; } }
+function fmtSize(text){
+  const n=byteSize(text), kb=n/1024, mb=kb/1024;
+  const sizeStr = n<1024 ? (n+' B') : (kb<1024 ? (kb.toFixed(1)+' KB') : (mb.toFixed(1)+' MB'));
+  const lines = text.replace(/\n+$/,'').split('\n').length;
+  return lines>1 ? (sizeStr+' · '+lines+' lines') : sizeStr;
+}
+function previewLine(text){
+  const lines=String(text||'').split('\n');
+  let line=(lines.find(l=>l.trim()!=='')||'').trim();
+  if(line.length>100){
+    let cut=line.slice(0,100);
+    const last=cut.charCodeAt(cut.length-1);              // don't strand a lone high surrogate (renders as a broken glyph)
+    if(last>=0xD800 && last<=0xDBFF) cut=cut.slice(0,-1);
+    line=cut+'…';
+  }
+  return line;
+}
+
+/* interactive row: preview + size badge, click/keyboard toggles the full
+   .out-pre body. `opt.open` is the caller-resolved initial state (the
+   caller persists it in toolState[id].expanded so a mid-stream re-render
+   can't snap an expanded row shut); `opt.onToggle(open)` writes it back. */
+function collapsible(text, opt){
   opt=opt||{};
-  const box=document.createElement('div'); box.className='out';
+  const isErr=!!opt.error;
+  const box=document.createElement('div'); box.className='out'+(isErr?' out-err':'');
   const head=document.createElement('div'); head.className='out-head';
-  head.innerHTML='<span class="out-arrow"></span>&nbsp;<span class="out-label"></span>';
-  head.querySelector('.out-label').textContent=label;
+  const arrow=document.createElement('span'); arrow.className='out-arrow'; arrow.setAttribute('aria-hidden','true');
+  const prev=document.createElement('span'); prev.className='out-prev'; prev.textContent=previewLine(text);
+  const size=document.createElement('span'); size.className='out-size'; size.textContent=fmtSize(text);
+  head.appendChild(arrow); head.appendChild(prev); head.appendChild(size);
+
   const body=document.createElement('div');
   const pre=document.createElement('pre'); pre.className='out-pre'; pre.textContent=text;
-  if(opt.color) pre.style.color=opt.color;
+  if(isErr) pre.style.color='#ff6b6b';
   body.appendChild(pre);
-  const startOpen=!!opt.open;
-  body.style.display = startOpen ? 'block' : 'none';
-  head.querySelector('.out-arrow').textContent = startOpen ? '▾' : '▸';
-  head.onclick=()=>{ const open=body.style.display!=='none'; body.style.display=open?'none':'block'; head.querySelector('.out-arrow').textContent=open?'▸':'▾'; if(!open) toBottom(); };
+
+  let openState=!!opt.open;
+  head.setAttribute('role','button');
+  head.setAttribute('tabindex','0');
+  head.setAttribute('aria-label', isErr?'Error output':'Tool output');
+  const paintState=()=>{
+    body.style.display = openState ? 'block' : 'none';
+    arrow.textContent = openState ? '▾' : '▸';
+    head.setAttribute('aria-expanded', openState ? 'true' : 'false');
+  };
+  paintState();
+  const toggle=()=>{ openState=!openState; paintState(); if(openState) toBottom(); if(opt.onToggle) opt.onToggle(openState); };
+  head.onclick=toggle;
+  head.onkeydown=(e)=>{ if(e.key==='Enter'||e.key===' '||e.key==='Spacebar'){ e.preventDefault(); toggle(); } };
+
   box.appendChild(head); box.appendChild(body);
+  return box;
+}
+
+/* non-interactive row: "running…" (no output yet) / "(no output)" on a
+   completed call with nothing to show. Same arrow-slot width as collapsible()
+   so a later transition into a real expandable row causes no layout shift. */
+function staticPreview(text){
+  const box=document.createElement('div'); box.className='out';
+  const head=document.createElement('div'); head.className='out-head out-static';
+  const arrow=document.createElement('span'); arrow.className='out-arrow'; arrow.setAttribute('aria-hidden','true'); arrow.textContent='·';
+  const prev=document.createElement('span'); prev.className='out-prev'; prev.textContent=text;
+  head.appendChild(arrow); head.appendChild(prev);
+  box.appendChild(head);
   return box;
 }
 
@@ -768,10 +880,15 @@ function toolDiffs(content){ return (content||[]).filter(it=> it && it.type==='d
 function upsertTool(u){
   const id=u.toolCallId; if(!id) return;
   let s=toolState[id];
-  if(!s){ s={toolCallId:id, title:'', kind:'other', status:'pending', content:[], rawInput:undefined, rawOutput:undefined, startMs:Date.now(), endMs:0}; toolState[id]=s; }
+  if(!s){ s={toolCallId:id, title:'', kind:'other', status:'pending', content:[], rawInput:undefined, rawOutput:undefined, startMs:Date.now(), endMs:0, expanded:null}; toolState[id]=s; }   // expanded: null=default-for-state, true/false=user-set (durable across re-renders)
   if(u.title!=null) s.title=u.title;
   if(u.kind!=null) s.kind=u.kind;
-  if(u.status!=null){ s.status=u.status; if((u.status==='completed'||u.status==='failed') && !s.endMs) s.endMs=Date.now(); }
+  if(u.status!=null){ const prevStatus=s.status; s.status=u.status; if((u.status==='completed'||u.status==='failed') && !s.endMs) s.endMs=Date.now();
+    // On the transition INTO failed, drop any durable expand/collapse the user set
+    // while the tool was still running, so the error surfaces expanded by default
+    // (its own status default). A user collapse made AFTER the failure still sticks,
+    // because a redundant failed→failed update leaves prevStatus==='failed'.
+    if(u.status==='failed' && prevStatus!=='failed') s.expanded=null; }
   if(u.content!=null) s.content=u.content;        // ToolCall(Update).content REPLACES the collection
   if(u.rawInput!==undefined) s.rawInput=u.rawInput;
   if(u.rawOutput!==undefined) s.rawOutput=u.rawOutput;
@@ -789,7 +906,8 @@ function renderTool(s){
     const out = toolText(s.content);
     const diffs = toolDiffs(s.content);
 
-    const errText = s.status==='failed' ? (out || strOf(s.rawOutput) || 'tool failed') : '';
+    let errText = s.status==='failed' ? (out || strOf(s.rawOutput) || 'tool failed') : '';
+    if(s.status==='failed' && errText.trim()==='') errText='tool failed';   // whitespace-only error must still show a label, not a blank preview line
     const denied = s.status==='failed' && isDenied(errText);
     const failed = s.status==='failed' && !denied;
 
@@ -841,14 +959,24 @@ function renderTool(s){
       if(sub.textContent) wrap.appendChild(sub);
     }
 
-    /* ---- error (red, expanded) / denied note / normal output (collapsed) ---- */
+    /* ---- always-visible activity row: error (red, default-expanded) / denied
+       note / output preview (default-collapsed, "running…" or "(no output)"
+       when there's nothing to show yet). `s.expanded` (null until the user
+       toggles) makes the user's choice durable across the in-place re-renders
+       this function does on every ToolCallUpdate. ---- */
     if(failed){
-      wrap.appendChild(collapsible('error', errText, {color:'#ff6b6b', open:true}));
+      const openNow = s.expanded===null ? true : s.expanded;
+      wrap.appendChild(collapsible(errText, {error:true, open:openNow, onToggle:(o)=>{ s.expanded=o; }}));
     } else if(denied){
       const d=document.createElement('div'); d.className='tsub'; d.style.color='#7c8b82'; d.textContent='↳ denied by user'; wrap.appendChild(d);
-    } else if(!todos.length && out.trim()!==''){
+    } else if(!todos.length){
       const shown = (s.kind==='execute') ? stripAnsi(out) : out;
-      wrap.appendChild(collapsible('output', shown));
+      if(shown.trim()===''){
+        wrap.appendChild(staticPreview(running ? 'running…' : '(no output)'));
+      } else {
+        const openNow = s.expanded===null ? false : s.expanded;   // collapsed by default: one-line rows keep the wall short so the answer below stays in view
+        wrap.appendChild(collapsible(shown, {open:openNow, onToggle:(o)=>{ s.expanded=o; }}));
+      }
     }
   });
 }
@@ -872,9 +1000,117 @@ function renderPlan(entries){
   });
 }
 
+/* =====================================================================
+   Subagent (child-session) live view — Fix 2 + Fix 3 warming
+   The sidecar taps the engine /event stream and forwards child-session
+   activity as {type:'subagent', phase, childId, ...} frames (see onWs).
+   The driver's ACP stream never carries child work, so this is the only
+   window into what a delegated subagent (e.g. the 122B) is actually doing.
+   Panels are appended to `log` as an indented nested block — NOT inside
+   the task tool wrap, because renderTool() wipes that wrap on every update.
+   ===================================================================== */
+const subPanels = {};        // childId -> panel record
+const SUB_WARM_MS = 15000;   // silence past this ⇒ show a "waking the model" note (cold-load)
+let turnWarmTimer = 0;       // top-level (driver) cold-load timer
+
+function subPanelFor(childId, title){
+  let sp = subPanels[childId];
+  if(sp) return sp;
+  const box=document.createElement('div'); box.className='subagent';
+  const head=document.createElement('div'); head.className='sub-h';
+  const g=document.createElement('span'); g.className='sg spin'; g.textContent='◐';
+  const tt=document.createElement('span'); tt.textContent=title||'subagent';
+  head.appendChild(g); head.appendChild(tt);
+  const body=document.createElement('div'); body.className='sub-body';
+  box.appendChild(head); box.appendChild(body);
+  withScroll(()=>{ noteOutput(); log.appendChild(box); });
+  sp={ box, body, glyph:g, parts:{}, warmTimer:0, warmEl:null, hadPart:false, done:false };
+  subPanels[childId]=sp;
+  return sp;
+}
+function subWarmStart(sp){
+  if(sp.warmTimer||sp.hadPart||sp.done) return;
+  sp.warmTimer=setTimeout(()=>{
+    sp.warmTimer=0;
+    if(sp.hadPart||sp.done) return;
+    withScroll(()=>{
+      if(!sp.warmEl){
+        sp.warmEl=document.createElement('div'); sp.warmEl.className='sub-warm';
+        const ws=document.createElement('span'); ws.className='spin'; ws.textContent='◐';
+        const wt=document.createElement('span'); wt.textContent='waking the big model — the first call after it’s been idle can take a few minutes…';
+        sp.warmEl.appendChild(ws); sp.warmEl.appendChild(wt);
+        sp.body.appendChild(sp.warmEl);
+      }
+    });
+  }, SUB_WARM_MS);
+}
+function subWarmClear(sp){
+  if(sp.warmTimer){ clearTimeout(sp.warmTimer); sp.warmTimer=0; }
+  if(sp.warmEl){ try{sp.warmEl.remove();}catch(e){} sp.warmEl=null; }
+}
+function renderSubPart(sp, part){
+  if(!part || !part.id) return;
+  sp.hadPart=true; subWarmClear(sp);
+  withScroll(()=>{
+    noteOutput();
+    let el=sp.parts[part.id];
+    if(part.type==='text'){
+      if(!el){ el=document.createElement('div'); el.className='sub-text'; sp.body.appendChild(el); sp.parts[part.id]=el; }
+      el.textContent=part.text||'';
+    } else if(part.type==='reasoning'){
+      if(!el){ el=document.createElement('div'); el.className='sub-think'; sp.body.appendChild(el); sp.parts[part.id]=el; }
+      el.textContent=part.text||'';
+    } else if(part.type==='tool'){
+      if(!el){ el=document.createElement('div'); el.className='sub-tool'; sp.body.appendChild(el); sp.parts[part.id]=el; }
+      const done=part.status==='completed'||part.status==='failed';
+      const mark=part.status==='failed'?'✕':(done?'✓':'·');
+      el.innerHTML='';
+      const m=document.createElement('span'); m.textContent=mark+' ';
+      const n=document.createElement('span'); n.className='st'; n.textContent=part.tool||'tool';
+      el.appendChild(m); el.appendChild(n);
+      if(part.hint){ const h=document.createElement('span'); h.className='sh'; h.textContent='  '+part.hint; el.appendChild(h); }
+    }
+  });
+}
+function subFinish(sp, failed){
+  if(!sp || sp.done) return;
+  sp.done=true; subWarmClear(sp);
+  sp.glyph.classList.remove('spin');
+  sp.glyph.textContent = failed?'✕':'✓';
+  sp.glyph.style.color = failed?'#ff6b6b':'#66dd88';
+}
+function onSubagent(m){
+  if(!m || !m.childId) return;
+  if(m.phase==='created'){
+    const t=String(m.title||'subagent').slice(0,140);
+    const sp=subPanelFor(m.childId, t);
+    subWarmStart(sp);                                  // Fix 3: if it goes quiet, the child model is cold-loading
+  } else if(m.phase==='part'){
+    const sp=subPanels[m.childId] || subPanelFor(m.childId,'subagent');
+    renderSubPart(sp, m.part);
+  } else if(m.phase==='link'){                          // task tool ↔ child status relay (secondary completion signal)
+    const sp=subPanels[m.childId];
+    if(sp && (m.status==='completed'||m.status==='failed')) subFinish(sp, m.status==='failed');
+  } else if(m.phase==='end'){                           // child session.idle — the verified end signal
+    subFinish(subPanels[m.childId], false);
+  }
+}
+
+/* top-level (driver) cold-load note — Fix 3 for the non-delegation case */
+function turnWarmClear(){ if(turnWarmTimer){ clearTimeout(turnWarmTimer); turnWarmTimer=0; } }
+function turnWarmStart(){
+  turnWarmClear();
+  turnWarmTimer=setTimeout(()=>{
+    turnWarmTimer=0;
+    if(turnProduced) return;                            // real output already arrived — not a cold start
+    sysLine('<span style="color:#e0b060;">◐ waking the model — the first reply after it’s been idle can take a minute or two…</span>');
+  }, SUB_WARM_MS);
+}
+
 /* ---- ACP sessionUpdate router ---- */
 function onUpdate(u){
   if(!u || !u.sessionUpdate) return;
+  turnWarmClear();   // Fix 3: any driver update means the model is alive — cancel the cold-load note
   // During replay each historical message arrives as chunks tagged with its
   // messageId — start a fresh answer/user block per message so history doesn't
   // merge into one blob. Live turns are untouched.
@@ -1488,6 +1724,8 @@ function resetTurn(){
   thoughtText=''; curAnswerEl=null; curAnswerText='';
   toolEls={}; toolState={}; planEl=null;
   turnProduced=false; ansDirty=false; thinkDirty=false;
+  turnWarmClear();                                                  // drop any pending cold-load note (Fix 3)
+  for(const k in subPanels){ const sp=subPanels[k]; if(sp&&sp.warmTimer) clearTimeout(sp.warmTimer); delete subPanels[k]; }   // DOM panels stay as history; forget the live map (Fix 2)
 }
 
 /* ---- ESC / new: clear the session and return home ---- */
@@ -1621,11 +1859,13 @@ function onWs(m){
       setStatus(connOpen?'ready':'offline');
       break;
     case 'update':       onUpdate(m.update); break;
+    case 'subagent':     onSubagent(m); break;   // Fix 2 — live child-session (subagent) activity
     case 'permission':   showPermission(m); break;
     case 'commands':     engineCommands=Array.isArray(m.commands)?m.commands:engineCommands; syncDiscovery(); break;
     case 'findFileResult': { const r=_apiReq.get(m.rid); if(r){ _apiReq.delete(m.rid); r(m); } break; }
-    case 'turn-start':   resetTurn(); setStatus('busy'); break;
+    case 'turn-start':   resetTurn(); turnWarmStart(); setStatus('busy'); break;   // Fix 3: arm the cold-load note
     case 'turn-end':
+      turnWarmClear();   // Fix 3: turn is over — no cold-load note
       if(!turnProduced) addFallback('turn ended with no output'+(m.stopReason?(' ('+m.stopReason+')'):''));
       settleThinking(); permPending=false;   // preserve a trailing thought (thought-only turn) instead of dropping it
       if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; }   // no leftover permission box for an ended turn
@@ -1635,8 +1875,8 @@ function onWs(m){
     case 'agent':        if(m.agent!=null){ curAgent=m.agent; updateMeta(); } break;
     case 'effort':       if(m.effort!=null){ curEffort=m.effort; sysLine('effort → <span class="cy">'+escapeHtml(m.effort)+'</span>'); } break;
     case 'notice':       { const t=(m.message||m.text||''); if(t){ const warn=(m.variant==='warning'||m.variant==='error'); sysLine('<span style="color:'+(warn?'#e0b060':'#7c8b82')+';">'+escapeHtml(t)+'</span>'); } break; }   // engine-forwarded toast (e.g. skill-router inert) rendered as a sysLine — PLG-4
-    case 'error':        addErr(m.message||'engine error'); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('error'); break;
-    case 'engine-down':  connOpen=false; addErr('engine offline: '+(m.message||'process exited')); showEngineDown(m.message); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('offline'); break;   // loud persistent banner + Restart path — WS-01
+    case 'error':        turnWarmClear(); addErr(m.message||'engine error'); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('error'); break;
+    case 'engine-down':  turnWarmClear(); connOpen=false; addErr('engine offline: '+(m.message||'process exited')); showEngineDown(m.message); permPending=false; if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; } setStatus('offline'); break;   // loud persistent banner + Restart path — WS-01
   }
 }
 

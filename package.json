@@ -5,7 +5,8 @@
   "scripts": {
     "check:linux-portability": "node scripts/linux-portability-check.mjs",
     "smoke:linux": "node scripts/smoke-linux.mjs",
-    "start:linux": "node scripts/run-linux.mjs"
+    "start:linux": "node scripts/run-linux.mjs",
+    "test": "node --test \"test/logic/**/*.test.mjs\""
   },
   "dependencies": {
     "ws": "^8.21.0",

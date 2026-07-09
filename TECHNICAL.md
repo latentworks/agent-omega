@@ -62,10 +62,14 @@ loopback WebSocket to the sidecar, which drives the engine over ACP (the Agent C
 A frameless C# WinForms application (`Program.cs`) that hosts a
 single `WebView2` control docked to fill the window.
 
-- **Frameless window.** `FormBorderStyle.None`; the custom `AppForm.WndProc` hit-tests a 6px
-  `GRIP` border (exposed via the form's `Padding`) so Windows does native edge/corner resizing
-  with no per-pixel JS. Title-bar drag/minimize/maximize/close are handled in C# via
-  `OnUiMessage`.
+- **Frameless window.** `FormBorderStyle.None` with zero `Padding` — edge-to-edge, no bezel.
+  `WS_THICKFRAME` is re-added via `CreateParams` so the OS sizing loop still exists, while
+  `AppForm.WndProc` intercepts `WM_NCCALCSIZE` and zeroes the non-client area so the native
+  frame draws nothing. Edge/corner **resize is driven from the UI**: a 6px hit-band in
+  `ui/app.html` detects the pointer near an edge and posts a `resize` message with a direction;
+  the host (`OnUiMessage`) maps it to the matching `HT*` hit-test code and hands off to the
+  native sizing loop via `WM_NCLBUTTONDOWN`. Title-bar drag/minimize/maximize/close are also
+  handled in C# via `OnUiMessage`.
 - **Boots the UI.** On `Form.Load` it creates a WebView2 environment (user-data folder under
   `%TEMP%\agent-omega-webview2`), then navigates to
   `file:///…/ui/app.html?ws=4599&token=<WS_TOKEN>`. `WS_TOKEN` is a fresh `Guid` generated

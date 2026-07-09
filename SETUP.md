@@ -30,11 +30,13 @@ The rest of this document covers the **Windows** setup.
 | **Windows 10/11** | the shell is WinForms + WebView2 | — |
 | **git** | clone the repo (or download the ZIP) | `git --version` |
 | **.NET 8 SDK** | builds the shell | `dotnet --version` ≥ 8 |
-| **Node.js 18+** (20 LTS recommended) | runs the sidecar + plugins | `node --version` |
+| **Node.js 20 LTS or newer** | runs the sidecar (which spawns the engine) | `node --version` |
 | **WebView2 Runtime** | hosts the UI (preinstalled on most Win11) | [evergreen installer](https://developer.microsoft.com/microsoft-edge/webview2/) if missing |
 | **Python 3.9+** *(optional)* | required by the separate anon-web component for web search only | `python --version` |
 
 > The plugin install may print a harmless `EBADENGINE` warning from a transitive dependency (`ini`) whose `engines` field lags current Node — safe to ignore.
+
+> **Running the test suite needs Node 24.** `npm test` exercises the engram store, which uses the built-in `node:sqlite` (only stable on Node 24). You do **not** need this just to *run* Agent Omega — at runtime that store lives inside the bundled engine, which supplies its own SQLite — only to run the tests or match CI.
 
 ## 2. Get the code
 

@@ -34,7 +34,7 @@ Before building, inventory this Mac's toolchain and report in plain English what
 - **Xcode Command Line Tools:** `xcode-select -p`, `swiftc --version` (for the Swift shell).
 - **Full Xcode:** `xcodebuild -version` (only for signing/notarization/packaging).
 - **Homebrew:** `brew --version` (your installer for the rest).
-- **Node 18+:** `node --version` (runs the sidecar + plugins — carries over from Windows).
+- **Node 20 LTS or newer:** `node --version` (runs the sidecar, which spawns the engine — carries over from Windows; the test suite additionally needs Node 24, see SETUP.md).
 - **Bun:** `bun --version` (compiles the engine fork into a macOS binary).
 - **git**, and whether an **Apple Developer ID** exists (needed to notarize a distributable `.app`).
 
