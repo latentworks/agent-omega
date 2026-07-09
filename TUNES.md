@@ -5,6 +5,15 @@ Agent Omega's default configuration (the operating instructions, skills, and beh
 back it up**. Each tune states which local models it targets, how to serve them, and the evidence
 standard it passed. Pick the tune that matches the model you run.
 
+> ## ⚠️ SCORES BELOW ARE INVALIDATED — pending re-run (confound found 2026-07-03)
+>
+> The benchmark campaign these tunes cite was later found **confounded**: opencode's own base
+> system prompt was silently injected ahead of `AGENTS.md` in every condition. So the absolute
+> scores quoted below (notably **0.844** and **0.781**) and the "zero candidate beat the default"
+> findings **must be re-run against the corrected baseline before they are trusted**. Full detail
+> and status are in **[EXPERIMENTS.md](EXPERIMENTS.md)**. The tune text is kept as-is, unedited,
+> for transparency.
+
 > The full test battery and scoring oracles are kept private on purpose: publishing them would let
 > future configs "teach to the test." What we publish is the method, the rigor, and the results —
 > the full scientific write-up (hypotheses, controls, ablations, limitations) is in
@@ -60,6 +69,7 @@ timeout. In llama-swap terms: put the agent models in a group with `swap: false`
   enhancement candidates** — human-curated and frontier-model-generated, tested across both model
   sizes on this rig — produced **zero statistically significant improvements**; several regressed.
   Attempts to strengthen the repair hooks beyond the shipped design *lowered* scores.
+  *(These figures are from the confounded campaign — pending re-run; see the notice at the top.)*
 - Conclusion: for the 30–35B class, this configuration measures at or near the ceiling of what
   prompt- and hook-level tuning can deliver. It ships as-is, as the tuned default.
 
@@ -77,6 +87,7 @@ DeepSeek tier) as the first cloud class. Outcome:
   instruction *increased* token spend more than it saved.
 - Cross-class scoreboard on identical tasks: **the tuned local 35B (0.844) outscored
   deepseek-v4-flash (0.781)** — the local tune beats the budget frontier tier outright.
+  *(Confounded campaign — pending re-run; see the notice at the top.)*
 - Conclusion: use the default tune unchanged with DeepSeek-class budget models. No
   class-specific configuration earned its way in.
 
