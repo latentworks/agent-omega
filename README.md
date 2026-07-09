@@ -138,7 +138,7 @@ optional on reasoning models), and the benchmark rigor behind it all live in
 
 Want to drive or watch a running Agent Omega from your phone or another machine over
 SSH — in a plain terminal, joining the live desktop session? That's in
-**[REMOTE.md](REMOTE.md)** (terminal attach, beta).
+**[REMOTE.md](REMOTE.md)** (terminal attach).
 
 ---
 

@@ -1,9 +1,11 @@
 {
   "name": "agent-omega",
-  "version": "2.3.0-beta.2",
+  "version": "2.5.0",
   "private": true,
   "scripts": {
-    "test": "node --test \"test/logic/**/*.test.mjs\""
+    "test": "node --test \"test/logic/**/*.test.mjs\"",
+    "version:sync": "node scripts/sync-version.mjs",
+    "version:check": "node scripts/sync-version.mjs --check"
   },
   "dependencies": {
     "ws": "^8.21.0",

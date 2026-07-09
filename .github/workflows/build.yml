@@ -27,6 +27,8 @@ jobs:
         # Node 24: the shared brain modules use node:sqlite (engram/store.mjs), which is only
         # available on Node 22.5+ and stable on 24. The unit-test step below imports it for real.
         with: { node-version: "24" }
+      - name: verify version surfaces are synchronized
+        run: npm run version:check
       - name: install deps
         run: |
           npm install

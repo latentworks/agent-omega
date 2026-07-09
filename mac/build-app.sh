@@ -32,9 +32,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$MAC/AgentOmega"  "$APP/Contents/MacOS/AgentOmega"
 cp "$MAC/Info.plist"  "$APP/Contents/Info.plist"
-# Stamp the bundle version from package.json (strip any pre-release suffix) so it can't drift from source
-VER="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$REPO/package.json" | head -1 | sed 's/-.*//')"
-[ -n "$VER" ] || { echo "could not derive version from package.json"; exit 1; }
+# Stamp the bundle version from the one authoritative VERSION file (strip any pre-release suffix).
+VER="$(tr -d '\r\n' < "$REPO/VERSION" | sed 's/[-+].*//')"
+[ -n "$VER" ] || { echo "could not read version from VERSION"; exit 1; }
 plutil -replace CFBundleShortVersionString -string "$VER" "$APP/Contents/Info.plist"
 plutil -replace CFBundleVersion            -string "$VER" "$APP/Contents/Info.plist"
 cp "$MAC/sidecar-bin" "$APP/Contents/Resources/sidecar"; chmod +x "$APP/Contents/Resources/sidecar"
