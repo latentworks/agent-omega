@@ -317,6 +317,7 @@ test('ordinary setup prompt owns its restart transition without self-awaiting', 
   const h = await harness(t)
   h.send({ type: 'setAgent', agent: 'setup' }); await h.event('setConfig', (e) => e.value === 'setup')
   h.send({ type: 'prompt', text: 'setup-restart' }); await h.event('prompt', (e) => e.text === 'setup-restart')
+  await h.wait(() => h.launchCount() === 2)
   await h.reconnectControl()
   await h.wait(() => h.messages.filter((m) => m.type === 'ready').length >= 2)
   await h.wait(() => h.messages.some((m) => m.type === 'notice' && /setup changes are live/i.test(m.message)))
