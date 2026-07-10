@@ -2,8 +2,8 @@
 
 Developer-facing architecture reference for Agent Omega (A/O), a customized coding-agent
 harness built on top of the open-source **opencode** engine and extended with a multi-model
-council, persistent memory, an on-demand skill router, verify-and-iterate loops, an anonymous
-web gateway, and an encrypted local secrets vault.
+council, persistent memory, an on-demand skill router, verify-and-iterate loops, a task-quality
+lifecycle, an anonymous web gateway, and an encrypted local secrets vault.
 
 This document describes the *real* wiring as implemented in the source. Paths use `~` for your
 home folder and are otherwise repo-relative.
@@ -46,7 +46,7 @@ Agent Omega is four cooperating processes plus a set of engine plugins:
                                           ▼
  ┌──────────────────────────────────────────────────────────────────────────────┐
  │  Plugins (config-template/opencode → ~/.config/opencode/)                     │
- │    council · engram · skill-router · iterate-loop · verify-guard              │
+ │    council · engram · skill-router · task-quality · iterate-loop · verify-guard│
  │    web.py (anonymous web gateway, SSRF-guarded)                               │
  └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -54,6 +54,14 @@ Agent Omega is four cooperating processes plus a set of engine plugins:
 Key idea: **the C# host owns only the window.** Everything the user interacts with — turns,
 streaming output, interactive permissions, model/agent switches, settings — flows over the
 loopback WebSocket to the sidecar, which drives the engine over ACP (the Agent Client Protocol).
+
+### v2.6 engine compatibility boundary
+
+The task-quality lifecycle is not a prompt-only convention. At startup, the
+sidecar verifies the engine's task-quality protocol/capabilities before accepting
+task work. A missing or older/upstream engine fails closed with an update state;
+the sidecar never substitutes an unenforced fallback. The v2.6 Windows engine
+asset and its checksum are documented in [`docs/V2.6_ENGINE_MIGRATION.md`](docs/V2.6_ENGINE_MIGRATION.md).
 
 ---
 

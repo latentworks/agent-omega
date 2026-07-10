@@ -16,6 +16,11 @@ third-party npm dependencies, each under its own OSI-approved license; their
 notices are carried by the opencode project and its `node_modules`, not restated
 here.
 
+For v2.6, the modified engine also supplies the task-quality lifecycle protocol
+and capability enforcement used by the Agent Omega plugin/sidecar boundary.
+Agent Omega checks those capabilities at startup and rejects an older or upstream
+engine rather than claiming that lifecycle enforcement is active when it is not.
+
 Agent Omega's on-demand **skills** (brainstorming, writing-plans, tdd, verify,
 debugging, code-review, run-app, orchestration) are adapted from patterns in the
 MIT-licensed "superpowers" skills collection and Anthropic's Claude Code / OpenAI

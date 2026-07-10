@@ -62,6 +62,17 @@
   .convo::-webkit-scrollbar{ width:8px; } .convo::-webkit-scrollbar-thumb{ background:#1e2d27; }
   .log{ margin-top:auto; display:flex; flex-direction:column; gap:16px; }
 
+  /* Persistent operator runner: the one compact readout that survives both
+     home and chat views. ACP reports context usage/limit, but not provider
+     account quotas, so the UI names that boundary instead of inventing one. */
+  .ao-runner{ flex:0 0 auto; display:flex; align-items:center; min-height:30px; margin-top:10px;
+              padding-top:8px; border-top:1px solid #1b2520; color:#64746a; font-size:17px; }
+  .ao-runner-track{ display:flex; align-items:center; gap:14px; min-width:0; overflow:hidden; white-space:nowrap; }
+  .ao-runner-item{ display:inline-flex; align-items:baseline; gap:6px; min-width:0; }
+  .ao-runner-label{ color:#46544c; letter-spacing:.7px; }
+  .ao-runner-value{ color:#9fb0a6; overflow:hidden; text-overflow:ellipsis; }
+  .ao-runner-sep{ color:#2d3933; }
+
   .urow{ font-size:22px; color:#ffc178; text-shadow:0 0 7px rgba(255,180,84,.30); display:flex; align-items:baseline; padding:2px 0; } /* user = amber phosphor; the model stays green */
   .utext{ white-space:pre-wrap; word-break:break-word; min-width:0; }   /* preserve newlines in the echoed user message */
   .arow{ font-size:22px; line-height:1.42; }
@@ -288,13 +299,13 @@
         <!-- CRT: version footer -->
         <div class="crt-homefoot" style="font-size:18px; color:#3f4a44; width:680px; max-width:calc(100% - 48px); display:flex; justify-content:space-between; margin-top:24px; padding-top:8px; border-top:1px solid #161c1f;">
           <span class="footPath"></span>
-          <span>agent-omega · v2.5.1</span>
+          <span>agent-omega · v2.6.0</span>
         </div>
 
         <!-- Modern: footer (hidden in CRT) -->
         <div class="m-homefoot">
           <span class="footPath"></span>
-          <span>agent-omega · v2.5.1</span>
+          <span>agent-omega · v2.6.0</span>
         </div>
         </div><!-- /.m-surface -->
       </div>
@@ -330,6 +341,18 @@
             <span id="cost" class="gr"></span>
             <span><span class="ac">ctrl+p</span> · <span class="ac">/help</span></span>
           </div>
+        </div>
+      </div>
+
+      <div id="operatorRunner" class="ao-runner" aria-label="Current model and context usage">
+        <div class="ao-runner-track">
+          <span class="ao-runner-item"><span class="ao-runner-label">MODEL</span><span id="runnerModel" class="ao-runner-value">—</span></span>
+          <span class="ao-runner-sep">·</span>
+          <span class="ao-runner-item"><span class="ao-runner-label">TOKENS</span><span id="runnerTokens" class="ao-runner-value">—</span></span>
+          <span class="ao-runner-sep">·</span>
+          <span class="ao-runner-item"><span class="ao-runner-label">CONTEXT LIMIT</span><span id="runnerContextLimit" class="ao-runner-value">—</span></span>
+          <span class="ao-runner-sep">·</span>
+          <span class="ao-runner-item"><span class="ao-runner-label">PROVIDER QUOTA</span><span id="runnerProviderQuota" class="ao-runner-value">not reported</span></span>
         </div>
       </div>
 
@@ -548,11 +571,19 @@ function setStatus(kind){
   chatInput.disabled=!inputEnabled;
   if(inputEnabled && chatVisible()) chatInput.focus();
 }
+function formatTokens(n){
+  n=Number(n)||0;
+  return n>=1000 ? (n/1000).toFixed(1)+'K' : (''+n);
+}
 function setUsage(used,size){
-  used=used||0;
-  let s = used>=1000 ? (used/1000).toFixed(1)+'K' : (''+used);
+  used=Number(used)||0;
+  size=Number(size)||0;
+  let s = formatTokens(used);
   if(size>0) s += ' ('+Math.min(100,Math.round(used/size*100))+'%)';
   tok.textContent = s;
+  const runnerTokens=$('runnerTokens'), runnerLimit=$('runnerContextLimit');
+  if(runnerTokens) runnerTokens.textContent=s;
+  if(runnerLimit) runnerLimit.textContent=size>0 ? (formatTokens(size)+' ('+Math.min(100,Math.round(used/size*100))+'% used)') : 'not reported';
 }
 function setCost(c){ costEl.textContent = (typeof c==='number' && c>0) ? '$'+c.toFixed(2) : ''; }
 
@@ -587,6 +618,7 @@ function updateMeta(){
   const mName = (models.find(m=>m.value===curModel)||{}).name || curModel || '—';
   const aName = (agents.find(a=>a.value===curAgent)||{}).name || curAgent || 'build';
   document.querySelectorAll('.metaModel').forEach(e=>e.textContent=mName);
+  const runnerModel=$('runnerModel'); if(runnerModel) runnerModel.textContent=mName;
   document.querySelectorAll('.metaAgent').forEach(e=>e.textContent=aName);
   // host suffix — derive from the model's provider prefix ("provider/model") so a cloud model
   // isn't mislabeled "local (llama-swap)" (UI-07). Unknown/prefixless keeps the local label.

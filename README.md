@@ -8,7 +8,9 @@ work.
 
 The point isn't a bigger model. The point is the **harness** around the model:
 skills it can load on demand, real tools, persistent memory, a verify-before-done
-discipline, an iterate-and-fix loop, and an optional multi-model council. The bet
+discipline, an iterate-and-fix loop, an optional multi-model council, and a
+task-quality lifecycle that requires adversarial review and an explicit user go
+before qualifying work can mutate files. The bet
 Agent Omega makes is that a smaller, local, or rate-limited model — driven well
 through that harness — can reach results people usually assume require a frontier
 model and a full token budget. Not by magic, and not every time. By working the
@@ -25,6 +27,12 @@ plumbing, the ACP protocol. Agent Omega wraps and extends it with a desktop shel
 an encrypted secrets vault, anonymous web access, a skill and memory system, model
 delegation, and the council. Credit where it's due: without opencode there is no
 Agent Omega.
+
+**v2.6 engine requirement.** This release requires the matching Agent Omega
+engine asset; an upstream or earlier engine intentionally fails closed rather
+than running the lifecycle unenforced. See the [v2.6 engine migration
+note](docs/V2.6_ENGINE_MIGRATION.md). The released v2.6 engine asset is currently
+Windows-only.
 
 The shape of the thing:
 

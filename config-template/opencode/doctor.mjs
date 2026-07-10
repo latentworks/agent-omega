@@ -9,6 +9,7 @@ import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
+import { TASK_QUALITY_PLUGIN, TASK_QUALITY_POLICY, TASK_QUALITY_FEATURES } from './task-quality/compat.mjs'
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const out = []
@@ -44,6 +45,25 @@ if (cfg) {
     })
     if (unparseable.length) fail('plugins: syntax error(s) — will crash the engine at load: ' + unparseable.join(', '))
     else pass('plugins: ' + plugins.length + ' configured, all files present and parse')
+  }
+}
+
+// ---- 2b) task-quality provisioning ----------------------------------------------
+if (cfg) {
+  const plugins = Array.isArray(cfg.plugin) ? cfg.plugin : []
+  const router = plugins.indexOf('./skill-router/index.js')
+  const taskQuality = plugins.indexOf(TASK_QUALITY_PLUGIN)
+  if (taskQuality < 0) fail('task-quality: required safety plugin is not registered; reinstall/update Agent Omega')
+  else if (router < 0 || taskQuality !== router + 1) fail('task-quality: plugin order is unsafe (must run immediately after skill-router)')
+  else if (!existsSync(join(ROOT, TASK_QUALITY_POLICY))) fail('task-quality: managed policy file is missing; reinstall/update Agent Omega')
+  else {
+    try {
+      const policy = JSON.parse(readFileSync(join(ROOT, TASK_QUALITY_POLICY), 'utf8'))
+      const required = policy && policy.engine && policy.engine.requiredFeatures
+      if (policy?.engine?.minimumTaskQualityProtocol !== 1 || !Array.isArray(required) || TASK_QUALITY_FEATURES.some((feature) => !required.includes(feature)) || policy?.enforcement?.mode !== 'fail-closed') {
+        fail('task-quality: managed policy is incompatible; reinstall/update Agent Omega')
+      } else pass('task-quality: fail-closed policy registered after skill-router')
+    } catch { fail('task-quality: managed policy does not parse') }
   }
 }
 

@@ -63,6 +63,23 @@ body.theme-modern .content {
   color: #d4d8de;
 }
 
+/* Persistent operator runner — dense, quiet instrumentation rather than a
+   second dashboard. The data contract is intentionally honest: ACP exposes
+   context usage but no provider-account quota. */
+body.theme-modern .ao-runner {
+  min-height: 38px;
+  margin-top: 12px;
+  padding: 9px 2px 0;
+  border-top-color: rgba(255,255,255,.07);
+  font-family: 'Geist Mono', 'Courier New', monospace;
+  font-size: 11px;
+  color: #747b86;
+}
+body.theme-modern .ao-runner-track { gap: 12px; }
+body.theme-modern .ao-runner-label { color: #626975; letter-spacing: .08em; }
+body.theme-modern .ao-runner-value { color: #b1b7c0; }
+body.theme-modern .ao-runner-sep { color: #343943; }
+
 /* ===================================================================
    TITLEBAR
    =================================================================== */

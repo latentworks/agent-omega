@@ -11,7 +11,7 @@ process.env.ROUTER_EXTRACT_URL = 'http://127.0.0.1:9/chat/completions' // truthy
 process.env.ROUTER_MODEL = 'test-model'
 const {
   buildPrompt, parseSkills, buildDirective, pickModel,
-  routerCall, route, lastUserMessages, EXTRACT_URL, ROUTER_MODEL,
+  routerCall, route, lastUserMessages, lastUserMessageEntries, EXTRACT_URL, ROUTER_MODEL,
 } = await import('../../config-template/opencode/skill-router/router.mjs')
 
 const VALID = { debugging: 'debug things', verify: 'verify things', tdd: 'test first' }
@@ -75,7 +75,7 @@ test('buildDirective: empty → "", one vs many skills phrase differently', () =
 })
 
 test('lastUserMessages: keeps last N user texts, skips harness re-prompts', () => {
-  const mk = (role, text) => ({ info: { role }, parts: [{ type: 'text', text }] })
+  const mk = (role, text, id = text) => ({ info: { role, id }, parts: [{ type: 'text', text }] })
   const msgs = [
     mk('user', 'first request'),
     mk('assistant', 'reply'),
@@ -86,6 +86,7 @@ test('lastUserMessages: keeps last N user texts, skips harness re-prompts', () =
   ]
   assert.deepEqual(lastUserMessages(msgs, 2), ['second request', 'third request'])
   assert.deepEqual(lastUserMessages(msgs, 10), ['first request', 'second request', 'third request'])
+  assert.deepEqual(lastUserMessageEntries(msgs, 1), [{ id: 'third request', text: 'third request' }])
 })
 
 // ---- routerCall / route with an injected fake fetch (no network) ----

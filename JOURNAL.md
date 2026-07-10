@@ -1,5 +1,13 @@
 # Agent Omega — Journal
 
+## 2026-07-10 — v2.6.0 task-quality lifecycle release preparation
+
+**Changed:** Added the task-quality lifecycle plugin and its router/sidecar/setup integration, the bottom-of-window operator runner, and startup fail-closed compatibility enforcement for the required engine protocol. Release documentation now identifies the matching Windows engine asset and checksum, explains the intentional old/upstream-engine rejection, and records the platform boundary.
+
+**Verified:** `npm test` completed with **126 passing, 0 failing** tests. `dotnet build -c Release` completed successfully with the existing `MSB3277` assembly-resolution warning. A real packaged Windows-app run completed a task through an independent local reviewer in 58 seconds without a grammar-initialization error or crash. The live runner was inspected in the Windows app and displayed model, token, context-limit, and provider-quota fields (unreported values render explicitly rather than being invented). The source and packaged engine copies had the same SHA-256: `46a6650e4239f9aa1baa231f2d361346b6894c168cf1476a089af6aa31b3550a`.
+
+**Not verified:** macOS v2.6 runtime/engine packaging and the optional paid cloud/API browser suite. v2.6 therefore releases a Windows engine asset only; macOS users must remain on a release with a matching macOS engine asset.
+
 ## 2026-07-07 — Fixed slow "spin-up" + invisible subagent activity (3 fixes, all proven)
 
 **Discussed:** Two complaints — (1) a "quick test" took ~10 min for the small driver model to spin up the larger specialist before it even started, (2) the app only ever showed a frozen `task: agent testing` line, no view of what the subagent was doing. Checked whether the slowness was the app (it wasn't — app+harness fire in ~50ms). Root cause: the model-swap layer's idle-pin setting **pins** a loaded model but does NOT **preload** it, so after any host reboot/service-restart the model sits unloaded and the FIRST request eats the full cold-load (driver ~21s, specialist ~194s) plus the driver→specialist hand-off — that's the 10 min. Second problem: the ACP bridge only carries the PARENT/driver session's stream; child (subagent) sessions never cross it, so the UI had nothing to show.

@@ -15,7 +15,8 @@ import { readFileSync, appendFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
-import { loadSkills, route, buildDirective, lastUserMessages, ROUTER_N, EXTRACT_URL } from './router.mjs'
+import { loadSkills, route, buildDirective, lastUserMessageEntries, ROUTER_N, EXTRACT_URL } from './router.mjs'
+import { buildRouteHandoff, recordRouteHandoff } from '../task-quality/handoff.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SKILL_DIR = process.env.ROUTER_SKILL_DIR || join(HERE, '..', 'skill')
@@ -70,7 +71,7 @@ const SkillRouterPlugin = async ({ client }) => {
   async function recentMessages(sessionID) {
     try {
       const res = await client.session.messages({ path: { id: sessionID } })
-      return lastUserMessages((res && res.data) || [], ROUTER_N)
+      return lastUserMessageEntries((res && res.data) || [], ROUTER_N)
     } catch (e) { log(`messages fetch error ${sessionID}: ${e}`); return [] }
   }
 
@@ -79,8 +80,9 @@ const SkillRouterPlugin = async ({ client }) => {
       try {
         const sessionID = input && input.sessionID
         if (!sessionID || !output || !Array.isArray(output.system) || !ROUTER_BODY) return
-        const messages = await recentMessages(sessionID)
-        if (!messages.length) return
+        const entries = await recentMessages(sessionID)
+        if (!entries.length) return
+        const messages = entries.map((entry) => entry.text)
         const query = messages.join(' || ')
 
         // Cache the in-flight ROUTE PROMISE per (session, query) — set synchronously BEFORE any
@@ -99,6 +101,12 @@ const SkillRouterPlugin = async ({ client }) => {
                 log(`route error ${sessionID}: ${e}`)
                 notifyInert(e) // one-time visible notice; never awaited (fully self-guarded)
                 return ''
+              }
+              const last = entries[entries.length - 1]
+              if (last?.id) {
+                const handoff = buildRouteHandoff({ sessionID, messageID: last.id, messages, skillNames: names })
+                recordRouteHandoff(handoff)
+                log(`task-quality handoff ${sessionID} qualifies=${handoff.qualifies} task=${handoff.taskKey.slice(0, 12)}`)
               }
               log(`routed ${sessionID} -> [${names.join(', ') || 'NONE'}]  «${messages[messages.length - 1].slice(0, 60)}»`)
               return buildDirective(names)

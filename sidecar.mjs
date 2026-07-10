@@ -295,6 +295,34 @@ function ensureVault() {
 }
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')   // honors XDG_CONFIG_HOME so an isolated instance reads its own config (council, onboarding marker, AGENTS.md)
 const COUNCIL_JSON = path.join(CONFIG_DIR, 'opencode', 'council', 'council.json')
+// The task-quality contract lives with the provisioned config so setup/doctor/sidecar all
+// enforce one versioned definition. Test fixtures intentionally have no HTTP engine surface;
+// only that explicit fixture mode bypasses the live capability probe.
+async function verifyTaskQualityEngine() {
+  if (TEST_ENGINE_COMMAND && process.env.AO_TEST_VERIFY_TASK_QUALITY !== '1') return { ok: true, testFixture: true }
+  let compat
+  try {
+    compat = await import(pathToFileURL(path.join(CONFIG_DIR, 'opencode', 'task-quality', 'compat.mjs')).href)
+  } catch (e) {
+    return { ok: false, message: 'Task-quality safety files are missing or unreadable (' + e.message + '). Reinstall Agent Omega.' }
+  }
+  let lastError = null
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const response = await fetch('http://127.0.0.1:' + API_PORT + '/global/health', {
+        headers: { Authorization: API_AUTH, Accept: 'application/json' },
+        signal: AbortSignal.timeout(1200),
+      })
+      if (!response.ok) lastError = new Error('health endpoint returned HTTP ' + response.status)
+      else {
+        const result = compat.assessTaskQualityHealth(await response.json())
+        return result.ok ? result : { ok: false, message: compat.incompatibleEngineMessage(result.reason) }
+      }
+    } catch (e) { lastError = e }
+    await new Promise((resolve) => setTimeout(resolve, 150))
+  }
+  return { ok: false, message: compat.incompatibleEngineMessage(lastError ? 'the engine capability check could not complete (' + lastError.message + ')' : 'the engine capability check could not complete') }
+}
 // engine-env-var  <-  vault key NAME. The vault names MUST match what the in-app Vault UI
 // (ui/crt-settings.js) and setup.mjs store under, or a key the user added never reaches the
 // engine. These are the canonical names both of those write.
@@ -761,12 +789,22 @@ async function start(lease = sessionTransition.epoch) {
   spawnReaper(process.pid, proc.pid)   // Fix E: detached watchdog — kills this engine if the sidecar itself gets hard-killed
   const myGen = ++engineGen           // this spawn's generation; a later spawn bumps it and orphans these handlers
   let gone = false                    // error AND exit can both fire for one proc — collapse to a single handling
-  const onGone = (reason) => { if (gone) return; gone = true; handleEngineGone(reason, myGen) }
+  let compatibilityRejected = false
+  const onGone = (reason) => { if (gone || compatibilityRejected) return; gone = true; handleEngineGone(reason, myGen) }
   proc.on('error', e => { log('spawn error', e.message); onGone('spawn error: ' + e.message) })
   proc.on('exit', c => { log('engine exited', c); onGone('engine exited ' + c) })
   const nextConn = new acp.ClientSideConnection((_a) => new UIClient(), acp.ndJsonStream(Writable.toWeb(proc.stdin), Readable.toWeb(proc.stdout)))
   await nextConn.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } } })
   if (!sessionLeaseCurrent(lease)) { try { proc.kill() } catch {}; return null }
+  const compatibility = await verifyTaskQualityEngine()
+  if (!compatibility.ok) {
+    compatibilityRejected = true
+    try { proc.kill() } catch {}
+    lastEngineDown = { type: 'engine-down', message: compatibility.message }
+    log('task-quality engine rejected:', compatibility.message)
+    broadcast(lastEngineDown)
+    return null
+  }
   engineProc = proc
   conn = nextConn
   await newSession(lease)

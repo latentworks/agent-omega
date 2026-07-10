@@ -26,6 +26,7 @@ __pycache__/
 
 # --- Runtime / working data ---
 workspace/
+.omega-staging-backup/
 
 # --- Secrets & local env ---
 .env

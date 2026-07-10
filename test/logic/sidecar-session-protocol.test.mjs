@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import net from 'node:net'
+import http from 'node:http'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import fs from 'node:fs'
@@ -17,6 +18,28 @@ function isolatedChildEnv(parent) {
   return Object.fromEntries(Object.entries(parent).filter(([key]) => !/^(?:AO_|AGENT_OMEGA_)/i.test(key) && !/(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)$/i.test(key)))
 }
 async function freePort() { const server = net.createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening'); const port = server.address().port; server.close(); await once(server, 'close'); return port }
+async function portIsFree(port) {
+  const server = net.createServer()
+  return await new Promise((resolve) => {
+    server.once('error', () => resolve(false))
+    server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)))
+  })
+}
+async function freePortPair() {
+  for (;;) {
+    const port = await freePort()
+    if (await portIsFree(port + 1)) return port
+  }
+}
+async function waitForPort(port, label) {
+  const deadline = Date.now() + 10000
+  while (Date.now() < deadline) {
+    const open = await new Promise((resolve) => { const socket = new net.Socket(); socket.once('error', () => { socket.destroy(); resolve(false) }); socket.connect(port, '127.0.0.1', () => { socket.destroy(); resolve(true) }) })
+    if (open) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(label + ' did not start')
+}
 async function eventually(check, diagnostics = () => '') {
   const deadline = Date.now() + 10000
   while (Date.now() < deadline) { const value = check(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 10)) }
@@ -24,7 +47,10 @@ async function eventually(check, diagnostics = () => '') {
 }
 
 async function harness(t, options = {}) {
-  const wsPort = await freePort(), controlPort = await freePort(), root = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-sidecar-protocol-'))
+  const wsPort = await freePortPair()
+  let controlPort
+  do { controlPort = await freePort() } while (controlPort === wsPort || controlPort === wsPort + 1)
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-sidecar-protocol-'))
   const workdir = path.join(root, 'work'), home = path.join(root, 'home'), config = path.join(root, 'config'), data = path.join(root, 'data')
   const env = isolatedChildEnv(process.env)
   Object.assign(env, {
@@ -34,13 +60,26 @@ async function harness(t, options = {}) {
     AGENT_OMEGA_ENGINE: options.engine || path.join(root, 'missing-engine'), AO_FAKE_ACP_CONTROL_PORT: String(controlPort),
     AO_FAKE_ACP_LAUNCH_FILE: path.join(root, 'engine-launches.log'),
   })
+  fs.mkdirSync(path.join(config, 'opencode', 'task-quality'), { recursive: true })
+  fs.copyFileSync(path.join(ROOT, 'config-template', 'opencode', 'task-quality', 'compat.mjs'), path.join(config, 'opencode', 'task-quality', 'compat.mjs'))
   // Set the controlled engine only after stripping inherited Agent Omega overrides.
   env.AGENT_OMEGA_TEST_ENGINE_COMMAND = FIXTURE
+  if (options.verifyTaskQuality) env.AO_TEST_VERIFY_TASK_QUALITY = '1'
+  let healthServer = null
+  if (options.healthMode) {
+    const payload = options.healthMode === 'valid'
+      ? { healthy: true, taskQuality: { protocol: 1, features: ['tool-admission', 'isolated-review', 'trusted-origin', 'lifecycle-cas'] } }
+      : { healthy: true, taskQuality: { protocol: 0, features: [] } }
+    healthServer = http.createServer((_, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)) })
+    healthServer.listen(wsPort + 1, '127.0.0.1')
+    await once(healthServer, 'listening')
+  }
   const proc = spawn(process.execPath, ['sidecar.mjs'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], env })
   let ws, control
   t.after(async () => {
     try { ws?.close() } catch {}; try { control?.destroy() } catch {}
     if (proc.exitCode === null) { try { proc.kill() } catch {}; await once(proc, 'exit').catch(() => {}) }
+    if (healthServer) { try { healthServer.close() } catch {} }
     fs.rmSync(root, { recursive: true, force: true })
   })
   const stderr = []; proc.stderr.on('data', (data) => stderr.push(String(data)))
@@ -49,22 +88,23 @@ async function harness(t, options = {}) {
     for (let deadline = Date.now() + 10000; ; ) {
       const listening = await new Promise((resolve) => { const retry = new net.Socket(); retry.once('error', () => { retry.destroy(); resolve(false) }); retry.connect(controlPort, '127.0.0.1', () => { retry.destroy(); resolve(true) }) })
       if (listening) break
-      if (Date.now() >= deadline) throw new Error('fake ACP control socket did not start')
+      if (Date.now() >= deadline) throw new Error('fake ACP control socket did not start; sidecar stderr=' + stderr.join(''))
       await new Promise((resolve) => setTimeout(resolve, 10))
     }
     const next = new net.Socket()
-    await new Promise((resolve, reject) => { next.once('error', reject); next.connect(controlPort, '127.0.0.1', resolve) })
+    await new Promise((resolve, reject) => { next.once('error', (error) => reject(new Error(error.message + '; sidecar stderr=' + stderr.join('')))); next.connect(controlPort, '127.0.0.1', resolve) })
     control = next
     control.on('error', () => {})
     control.setEncoding('utf8'); control.on('data', (chunk) => { controlBuffer += chunk; let at; while ((at = controlBuffer.indexOf('\n')) >= 0) { const line = controlBuffer.slice(0, at); controlBuffer = controlBuffer.slice(at + 1); try { controlEvents.push(JSON.parse(line)) } catch {} } })
   }
-  await reconnectControl()
+  if (!options.expectIncompatible) await reconnectControl()
+  else await waitForPort(wsPort, 'sidecar WebSocket')
   ws = new WebSocket('ws://127.0.0.1:' + wsPort); const messages = []
   ws.on('message', (data) => { try { messages.push(JSON.parse(data)) } catch {} })
   await once(ws, 'open')
   const diagnostics = () => ' control=' + JSON.stringify(controlEvents) + ' ws=' + JSON.stringify(messages) + ' stderr=' + stderr.join('')
   const wait = (check) => eventually(check, diagnostics)
-  await wait(() => messages.find((m) => m.type === 'ready'))
+  if (!options.expectIncompatible) await wait(() => messages.find((m) => m.type === 'ready'))
   const send = (message) => ws.send(JSON.stringify(message))
   const release = (name) => control.write(JSON.stringify({ type: 'release', name }) + '\n')
   const crash = async () => { const dying = control; dying.write(JSON.stringify({ type: 'crash' }) + '\n'); await new Promise((resolve) => dying.once('close', resolve)) }
@@ -168,6 +208,18 @@ test('a selector received after a turn starts is refused without an ACP config c
 
 test('fake ACP engine bypasses missing sidecar-engine preflight in an isolated checkout', { concurrency: false }, async (t) => {
   const h = await harness(t, { engine: path.join(os.tmpdir(), 'definitely-missing-agent-omega-engine') })
+  assert.equal(h.messages.filter((m) => m.type === 'ready').at(-1)?.sessionId, 'new-1')
+})
+
+test('sidecar blocks an old engine before it creates a task session', { concurrency: false }, async (t) => {
+  const h = await harness(t, { verifyTaskQuality: true, healthMode: 'old', expectIncompatible: true })
+  const down = await h.wait(() => h.messages.find((m) => m.type === 'engine-down'))
+  assert.match(down.message, /Task-quality safety update required/i)
+  assert.equal(h.controlEvents.some((e) => e.event === 'newSession'), false)
+})
+
+test('sidecar admits only a complete task-quality engine report before creating a session', { concurrency: false }, async (t) => {
+  const h = await harness(t, { verifyTaskQuality: true, healthMode: 'valid' })
   assert.equal(h.messages.filter((m) => m.type === 'ready').at(-1)?.sessionId, 'new-1')
 })
 

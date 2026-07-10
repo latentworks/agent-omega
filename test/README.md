@@ -19,6 +19,10 @@ default; the permission stage switches to deepseek-v4-pro, which reliably tool-c
 calls cost a few cents per run — it is NOT wired into CI for that reason. `AO_WS_PORT` overrides
 the port; `AO_MODEL` the default model.
 
+This is an optional paid/API end-to-end suite, not a release gate. The v2.6 release
+record lists the exact checks that were run and the surfaces that remain unverified:
+[`docs/releases/v2.6.0.md`](../docs/releases/v2.6.0.md).
+
 Also: `mac/AgentOmega.swift` has `AO_MENU_SELFTEST=1` — launches the real app, audits the AppKit
 main menu, and drives Cmd+C copy through the responder chain into the WKWebView (the layer
 Playwright can't reach). Prints `MENU_*` lines and exits.

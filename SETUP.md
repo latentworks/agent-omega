@@ -6,9 +6,11 @@ Agent Omega is a desktop app: a frameless **WebView shell** → a **Node sidecar
 
 Same model as Windows — **get the code and launch it from the terminal.** A locally-built app carries no quarantine flag, so macOS runs it directly; there is no "clickable installer" or code-signing requirement. The native build (`mac/AgentOmega.swift` — a Swift + WKWebView shell) targets **Apple Silicon (arm64), macOS 13+**, and is **self-contained at runtime** — no Node or Python needed (the sidecar and engine are compiled binaries; the vault uses the macOS Keychain).
 
+> **v2.6 platform scope:** the matching v2.6 engine asset is currently released for Windows only. Do not combine v2.6 source with an older macOS engine: startup will reject an incompatible engine. macOS users should remain on the last matching macOS release until a matching v2.6 macOS asset is published.
+
 **Build-time tools** (to build, not to run): Xcode Command Line Tools (`xcode-select --install`), [bun](https://bun.sh), and Node/npm.
 
-1. Get the engine so `engine/opencode` exists. **Easiest: download the prebuilt `opencode-darwin-arm64` from the [v2.2.1 release assets](https://github.com/latentworks/agent-omega/releases/tag/v2.2.1)** and verify it against the release's `SHA256SUMS`. (Building from source requires the engine fork, which is not public.) Or build the engine once so `engine/opencode` exists — `bun run packages/opencode/script/build.ts --single --skip-embed-web-ui` in the fork, then copy the result to `engine/opencode` (see [`docs/MAC_BRANCH.md`](docs/MAC_BRANCH.md) for background). A *downloaded* engine binary is quarantined — clear it with `xattr -dr com.apple.quarantine engine/opencode` (the Mac analog of Windows "Unblock"); one you build locally isn't. A downloaded binary should also be checksum-verified: compare `shasum -a 256 engine/opencode` against the SHA-256 published with the release you took it from.
+1. Use the last release that includes a matching macOS engine asset, or wait for a v2.6 macOS asset. Building from source requires the matching engine fork, which is not public. A *downloaded* engine binary is quarantined — clear it with `xattr -dr com.apple.quarantine engine/opencode` (the Mac analog of Windows "Unblock"); one you build locally isn't. Always verify a downloaded engine against the SHA-256 published with its release.
 2. **Launch:** `sh mac/run.sh` — builds the self-contained `AgentOmega.app` once and launches it. (Equivalently: `sh mac/build-app.sh` then `open mac/build/AgentOmega.app`; or `sh mac/install.sh` to also copy it to `/Applications`.)
 3. First run installs the config + Keychain vault into your home and shows how to add a model.
 4. **Add a model** (same requirement as Windows — the agent needs one): open Settings (`⌃,`, the gear icon, or `/settings`) → **Vault** → paste an API key (Anthropic / OpenAI / Google / DeepSeek / Moonshot / Z.AI), or run a local server (llama.cpp / Ollama / LM Studio) and pick the `local` model. **Local models need a large context window** — Agent Omega's system prompt is big, so start your server with plenty of context (e.g. `llama-server -c 32768 --parallel 2`; llama.cpp divides `-c` across parallel slots). A too-small context fails every turn with "context size exceeded". Verified working locally with Qwen2.5-1.5B-Instruct on an 8 GB M-series Mac.
@@ -75,10 +77,10 @@ Copy-Item -Force scripts\secrets.ps1 "$env:USERPROFILE\.agent-omega\secrets.ps1"
 
 The `opencode` engine ships as a prebuilt binary. Because Agent Omega runs a **fork** of opencode, use **this repo's** release (not upstream):
 
-- Download **`opencode.exe`** from the [v2.2.0 release](https://github.com/latentworks/agent-omega/releases/tag/v2.2.0). (The engine binary is unchanged in 2.2.1 — the v2.2.0 asset is still current.)
+- Download **`opencode.exe`** and **`SHA256SUMS-v2.6.0.txt`** from the [v2.6.0 release](https://github.com/latentworks/agent-omega/releases/tag/v2.6.0). This exact forked engine is required; upstream opencode and earlier Agent Omega engines are intentionally rejected at startup.
 - **Verify the download** before you trust it (it's an unsigned binary you're about to run with your privileges). The SHA-256 for the `opencode.exe` is:
   ```
-  2277235acbfbf6970e760b18f33e0171e006758ae755a31b3940ad784e6e01ab
+  46a6650e4239f9aa1baa231f2d361346b6894c168cf1476a089af6aa31b3550a
   ```
   Check it: `Get-FileHash .\engine\opencode.exe -Algorithm SHA256` and confirm the hash matches. If it doesn't match, do NOT run it — re-download.
 - Put it in an **`engine\` folder at the repo root** (`agent-omega\engine\opencode.exe`) — the build (step 7) copies it beside the exe automatically.
@@ -123,7 +125,7 @@ Before relying on it, confirm the wiring is sound (no app launch, no model spend
 node scripts\smoke.mjs
 ```
 
-It checks Node, the config install, the vault script, the engine binary, plugin deps, and that the shipped plugins parse and their endpoints resolve — and prints PASS/FAIL per check.
+It checks Node, the config install, the vault script, the engine binary's **presence**, plugin deps, and that the shipped plugins parse and their endpoints resolve — and prints PASS/FAIL per check. Compatibility is enforced by Agent Omega at startup; this no-launch smoke test does not prove engine compatibility.
 
 ## Optional: built-in web search
 
@@ -140,7 +142,7 @@ All optional — the defaults are derived from your `opencode.json`, so you norm
 
 ## Upgrading
 
-To move to a newer version, `git pull` and re-run `node setup.mjs`. The wizard detects an existing Agent Omega install and **updates the plugin/skill code in place while preserving your data** — it leaves your `opencode.json`, your council roster (`council/council.json`), and your memory (`memory/` and the engram database) untouched, and re-writes your model/key only if you explicitly opt in (pass `--source`, or answer *yes* to its "reconfigure your model / API key?" prompt). Then re-run the build (step 7) and grab the matching engine binary if the release changed (step 5). Never hand-delete `~/.config/opencode` to "reinstall" — that wipes your memory and configuration.
+To move to a newer version, `git pull` and re-run `node setup.mjs`. The wizard detects an existing Agent Omega install and **updates the plugin/skill code in place while preserving your data** — it leaves your `opencode.json`, your council roster (`council/council.json`), and your memory (`memory/` and the engram database) untouched, and re-writes your model/key only if you explicitly opt in (pass `--source`, or answer *yes* to its "reconfigure your model / API key?" prompt). Then re-run the build (step 7) and replace the engine with the matching release asset (step 5). Never hand-delete `~/.config/opencode` to "reinstall" — that wipes your memory and configuration.
 
 ## Uninstalling
 

@@ -156,13 +156,20 @@ export async function route({ routerBody, skills, messages }, fetchImpl = fetch)
 
 // Pull the last N user-message texts out of an OpenCode messages list.
 export function lastUserMessages(msgs, n) {
+  return lastUserMessageEntries(msgs, n).map((message) => message.text)
+}
+
+// Keep message identity alongside the text for consumers that need to bind a
+// routed task to the exact user turn. `lastUserMessages` remains the compact
+// text-only compatibility helper above.
+export function lastUserMessageEntries(msgs, n) {
   const users = []
   for (const m of msgs || []) {
     const role = m && m.info && m.info.role
     if (role === 'user') {
       const text = (m.parts || []).filter((p) => p && p.type === 'text').map((p) => p.text || '').join(' ').trim()
       // harness re-prompts (iterate-loop / verify-guard) arrive as "user" messages — never route on them
-      if (text && !/^\[(iterate-loop|verify-guard)/.test(text)) users.push(text)
+      if (text && !/^\[(iterate-loop|verify-guard)/.test(text)) users.push({ id: m.info?.id || '', text })
     }
   }
   return users.slice(-n)

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Agent Omega — install smoke test. Proves the wiring is sound WITHOUT launching the app or
-// spending any model tokens: Node version, config install, vault, engine binary, plugin deps,
+// spending any model tokens: Node version, config install, vault, engine binary presence, plugin deps,
 // that every shipped plugin actually parses, and that the router/engram endpoints resolve from
 // your opencode.json. Prints PASS/FAIL per check; exits non-zero if any hard check fails.
 //
@@ -60,11 +60,12 @@ let cfg = null
   else fail('vault script missing (no ' + vault + ' and no ' + src + ')')
 }
 
-// 4) Engine binary present
+// 4) Engine binary present. Compatibility is a startup check: this no-launch smoke test
+// intentionally proves only presence, not the v2.6 engine protocol/capabilities.
 {
   const engine = process.env.AGENT_OMEGA_ENGINE || path.join(REPO, 'engine', process.platform === 'win32' ? 'opencode.exe' : 'opencode')
   existsSync(engine)
-    ? pass('engine binary found -> ' + engine)
+    ? pass('engine binary found (presence only) -> ' + engine)
     : fail('engine binary NOT found (' + engine + ') — see SETUP.md step 5')
 }
 
@@ -76,7 +77,7 @@ let cfg = null
 
 // 6) Every shipped plugin + skill-support file PARSES (node --check)
 {
-  const dirs = ['skill-router', 'verify-guard', 'iterate-loop', 'council', 'engram']
+  const dirs = ['skill-router', 'task-quality', 'verify-guard', 'iterate-loop', 'council', 'engram']
   let checked = 0, bad = 0
   for (const d of dirs) {
     const dir = path.join(PLUGIN_ROOT, d)

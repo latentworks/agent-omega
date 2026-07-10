@@ -12,6 +12,7 @@ import path from 'node:path'
 import os from 'node:os'
 import readline from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
+import { reconcileTaskQualityConfig, TASK_QUALITY_POLICY } from './config-template/opencode/task-quality/compat.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)) // Node 18+ (import.meta.dirname needs 20.11+)
 const HOME = os.homedir()
@@ -91,19 +92,29 @@ async function main() {
       // `setup` subsystem) never loads on upgrade — its tools/commands silently vanish. Union in any
       // shipped plugin the user is missing (append in template order; their extras/order untouched).
       const shipped = Array.isArray(tc.plugin) ? tc.plugin : []
-      const have = Array.isArray(uc.plugin) ? uc.plugin : []
-      const missing = shipped.filter((p) => !have.includes(p))
-      if (missing.length) { uc.plugin = [...have, ...missing]; changed = true }
+      const reconciled = reconcileTaskQualityConfig(uc, shipped)
+      if (reconciled.changed) { uc.plugin = reconciled.config.plugin; changed = true }
       if (changed) {
         writeFileSync(up, JSON.stringify(uc, null, 2) + '\n')
-        console.log('  patched opencode.json: ensured AGENTS.md injection + shipped plugins reach this upgrade')
+        console.log('  patched opencode.json: ensured AGENTS.md injection + task-quality gate + shipped plugins reach this upgrade')
       }
-    } catch (e) { console.error('  WARN: could not reconcile opencode.json on upgrade:', e.message) }
+    } catch (e) {
+      console.error('  Could not reconcile the required task-quality safety configuration:', e.message)
+      process.exit(1)
+    }
   } else {
     console.error('\n  ' + CFG_DIR + ' already exists and is NOT an Agent Omega install')
     console.error('  (it looks like your own opencode config). Refusing to overwrite it.')
     console.error('  Options: move/rename that folder first, or run Agent Omega isolated by')
     console.error('  setting XDG_CONFIG_HOME to a fresh directory before launching + re-running setup.\n')
+    process.exit(1)
+  }
+
+  // task-quality/policy.json is a managed Omega safety contract, not personal model/council/memory
+  // state. The template copy above refreshes it on clean install and upgrade. Refuse to advertise a
+  // usable install if a partial package omitted it: accepting task work without it would be unsafe.
+  if (!existsSync(path.join(CFG_DIR, 'task-quality', 'index.js')) || !existsSync(path.join(CFG_DIR, TASK_QUALITY_POLICY))) {
+    console.error('  Task-quality safety files are missing from this install. Reinstall Agent Omega before accepting task work.')
     process.exit(1)
   }
 
@@ -125,7 +136,7 @@ async function main() {
   const engineFound = existsSync(engine)
   console.log(engineFound
     ? '  engine found -> ' + engine
-    : '  engine NOT found - ' + (isWin ? 'download opencode.exe from the release into ./engine/ (see SETUP.md step 5)' : 'build it into ./engine/opencode (see SETUP.md, macOS section)'))
+    : '  engine NOT found - ' + (isWin ? 'download the matching v2.6 opencode.exe release asset into ./engine/ (see SETUP.md step 5)' : 'use a matching macOS engine release (see SETUP.md, macOS section)'))
 
   // 4) model + key. On an UPGRADE, leave opencode.json (incl. its model) untouched unless the
   // user explicitly opts in — either an explicit --source, or a 'y' at the reconfigure prompt.
@@ -183,8 +194,8 @@ async function main() {
   }
   if (!engineFound) {
     console.log('\nConfig is ready, but setup is NOT complete: the engine binary is still missing.')
-    console.log(isWin ? 'Finish SETUP.md step 5 (download opencode.exe into ./engine/), then build + launch:'
-                      : 'Build the engine into ./engine/opencode (SETUP.md, macOS section), then build + launch:')
+    console.log(isWin ? 'Finish SETUP.md step 5 (download the matching v2.6 opencode.exe into ./engine/), then build + launch:'
+                      : 'Use a matching macOS engine release (SETUP.md, macOS section), then build + launch:')
   } else {
     console.log('\nSetup complete. Build + launch:')
   }

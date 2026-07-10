@@ -177,6 +177,33 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
             || rel.hasSuffix(".db") || rel.hasSuffix(".db-wal") || rel.hasSuffix(".db-shm") || rel.hasSuffix(".log")
     }
 
+    // Keep the user's model/provider/council/memory choices intact while inserting the one
+    // managed safety gate directly after routing. This runs only after destination selection
+    // has proved the config is Agent Omega-owned (or a brand-new isolated install).
+    func reconcileTaskQualityConfig(_ configPath: String) {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
+              var config = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            fatalAlert("Agent Omega couldn't read its existing config safely. Task-quality safety cannot be enabled; reinstall or repair opencode.json.")
+        }
+        guard let plugins = config["plugin"] as? [String] else {
+            fatalAlert("Agent Omega's existing config has an invalid plugin list. Task-quality safety cannot be enabled without changing personal config; repair opencode.json and restart.")
+        }
+        let router = "./skill-router/index.js", taskQuality = "./task-quality/index.js"
+        var next = plugins.filter { $0 != taskQuality }
+        guard let routerIndex = next.firstIndex(of: router) else {
+            fatalAlert("Agent Omega's router plugin is missing, so task-quality safety cannot be ordered correctly. Reinstall Agent Omega.")
+        }
+        next.insert(taskQuality, at: routerIndex + 1)
+        if next != plugins {
+            config["plugin"] = next
+            guard let output = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]) else {
+                fatalAlert("Agent Omega couldn't prepare its task-quality safety update. No task work was started.")
+            }
+            do { try output.write(to: URL(fileURLWithPath: configPath), options: .atomic) }
+            catch { fatalAlert("Agent Omega couldn't save its task-quality safety update: \(error.localizedDescription)") }
+        }
+    }
+
     // ---- first-run provisioning: install/UPGRADE config + vault into the user's home, idempotent ----
     func provisionFirstRun() {
         let fm = FileManager.default
@@ -222,6 +249,7 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         } else {
             fatalAlert("config-template missing from the app bundle — please reinstall")
         }
+        reconcileTaskQualityConfig(dst + "/opencode.json")
         // 2. secrets.sh -> ~/.agent-omega/secrets.sh, executable. Self-healing: also REFRESH a
         // stale copy (content differs from the shipped one) so an upgrade can't leave an old
         // vault script that silently fails the newer set-via-stdin contract.
@@ -239,7 +267,7 @@ final class Shell: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         }
         // Post-checks: a partial/failed copy above is silent, so confirm the critical outputs
         // actually landed and fail loudly (rather than boot into a broken install) if any is missing.
-        for path in [dst + "/opencode.json", dst + "/skill-router/index.js", dst + "/council/index.js", vdst] where !fm.fileExists(atPath: path) {
+        for path in [dst + "/opencode.json", dst + "/skill-router/index.js", dst + "/task-quality/index.js", dst + "/task-quality/policy.json", dst + "/task-quality/compat.mjs", dst + "/council/index.js", vdst] where !fm.fileExists(atPath: path) {
             fatalAlert("Agent Omega's install is incomplete — missing:\n\(path)\n\nPlease reinstall.")
         }
     }
