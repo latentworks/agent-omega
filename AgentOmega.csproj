@@ -7,9 +7,9 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>agent-omega</AssemblyName>
     <ApplicationIcon>agent-omega.ico</ApplicationIcon>
-    <Version>2.5.0</Version>
-    <AssemblyVersion>2.5.0.0</AssemblyVersion>
-    <FileVersion>2.5.0.0</FileVersion>
+    <Version>2.5.1</Version>
+    <AssemblyVersion>2.5.1.0</AssemblyVersion>
+    <FileVersion>2.5.1.0</FileVersion>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4022.49" />
@@ -20,6 +20,7 @@
     <None Include="agent-omega.ico" CopyToOutputDirectory="PreserveNewest" />
     <!-- the Node sidecar + its manifest ship beside the exe; setup runs `npm install` here and drops the engine in ./engine/ -->
     <None Include="sidecar.mjs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="session-transition.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="package.json" CopyToOutputDirectory="PreserveNewest" />
     <!-- the engine binary (dropped in ./engine/ per SETUP) ships beside the exe; empty glob is a no-op if not yet downloaded -->
     <None Include="engine\**\*" CopyToOutputDirectory="PreserveNewest" />

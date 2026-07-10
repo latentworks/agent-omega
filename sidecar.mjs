@@ -12,6 +12,7 @@ import { WebSocketServer } from 'ws'
 import * as acp from '@agentclientprotocol/sdk'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import crypto from 'node:crypto'
+import { createSessionTransition } from './session-transition.mjs'
 
 // Fix E — engine-orphan reaper mode. A hard-kill of the sidecar itself (Task Manager End Task,
 // TerminateProcess, OOM — anything that skips the SIGTERM/SIGINT/'exit' handlers near the bottom of
@@ -37,6 +38,9 @@ if (process.env.AO_REAP_SIDECAR_PID && process.env.AO_REAP_ENGINE_PID) {
 const isWin = process.platform === 'win32'
 const HERE = path.dirname(fileURLToPath(import.meta.url)) // Node 18+ safe (import.meta.dirname needs 20.11+)
 const ENGINE = process.env.AGENT_OMEGA_ENGINE || path.join(HERE, 'engine', isWin ? 'opencode.exe' : 'opencode')
+// Test harness only: run a controlled ACP fixture under Node. Unset in every normal
+// launch, so production engine selection and arguments remain unchanged.
+const TEST_ENGINE_COMMAND = process.env.AGENT_OMEGA_TEST_ENGINE_COMMAND || ''
 // Test mode: set AGENT_OMEGA_OPENCODE_SRC to the packages/opencode dir to run the engine
 // FROM SOURCE via bun — picks up engine edits without a binary rebuild. Unset in
 // production → the compiled exe is used.
@@ -78,15 +82,50 @@ const pendingPerms = new Map()   // toolCallId -> resolve fn
 // premature turn-end, or unlocking busy under the next turn). Each turn stamps currentTurn; a
 // continuation only acts if it is still the current turn. new/load/abort/crash reset currentTurn=0.
 let turnSeq = 0, currentTurn = 0
+const sessionTransition = createSessionTransition()
+function sessionLeaseCurrent(lease) { return sessionTransition.current(lease) }
+function beginTrackedTurn() {
+  const turnConn = conn, turnSessionId = sessionId
+  return sessionTransition.startTurn(() => turnConn && turnConn.cancel({ sessionId: turnSessionId }))
+}
+function replaceSession(work, ownerTurn = null) {
+  currentTurn = 0 // turn continuations also use this legacy guard for transcript/output state
+  drainPerms()
+  return sessionTransition.replace(async (lease) => {
+    busy = false // the tracked old turn has cancelled and settled before this queued work starts
+    return await work(lease)
+  }, ownerTurn)
+}
 // Engine-generation guard: each spawn bumps engineGen. A stale exit/error event (the error+exit
 // pair for one proc, or an old proc we intentionally replaced during a restart) is ignored unless
 // it matches the current generation — so a delayed exit can't trigger a spurious second restart.
 let engineGen = 0
 let engineReviving = false   // an auto-restart after a crash is in flight (lets error copy say "restarting" not "restart the app")
 let crashRestartCount = 0, lastCrashAt = 0, crashRestartTimer = null
+let autoRecoveryInFlight = null // one crash resurrection; user new/load queue behind it rather than invalidating its spawn
 let lastSessionBeforeCrash = null   // the session the user was on when the engine last died — restored by a MANUAL restart after the crash budget is spent (sessionId is already null by then)
 let restartInFlight = null           // coalesces overlapping restartEngine() triggers (WS 'restart' racing a vault auto-restart) so we spawn ONE engine, never two + an orphan
-let replaying = false                // true only while a loadSession's history is replaying through sessionUpdate — exempts those chunks from the tail-chunk bleed guard
+let sessionIntentSeq = 0             // latest explicit New/Load wins, including while resurrection is still in flight
+let selectorTail = Promise.resolve() // model/agent/effort mutations execute in WS arrival order
+function queueSelector(work) {
+  const run = selectorTail.then(work)
+  selectorTail = run.then(() => {}, () => {})
+  return run
+}
+async function waitForSelectorMutations() {
+  // Snapshot the tail: selectors received before this prompt/command must settle;
+  // selectors received afterward belong to a later user intent.
+  await selectorTail
+}
+let replay = null                    // { lease, sessionId }; only its owning replacement may close its replay bracket
+function replayOwns(session) { return !!(replay && sessionLeaseCurrent(replay.lease) && replay.sessionId === session) }
+function beginReplay(lease, id) { replay = { lease, sessionId: id }; broadcast({ type: 'replay-start', sessionId: id }) }
+function endReplay(lease, error) {
+  if (!replay || replay.lease !== lease) return
+  const id = replay.sessionId
+  replay = null
+  broadcast(error ? { type: 'replay-end', sessionId: id, error } : { type: 'replay-end', sessionId: id })
+}
 // How many times to auto-restart a crashing engine within the window before giving up (0 disables
 // auto-restart: the sidecar just reports engine-down and waits for a manual app restart).
 const MAX_CRASH_RESTARTS = Number(process.env.AO_MAX_CRASH_RESTARTS) >= 0 ? Math.floor(Number(process.env.AO_MAX_CRASH_RESTARTS)) : 5
@@ -221,8 +260,11 @@ function engineGoneOrRestarting() {
 // still stays silent (handleEngineGone fires a beat later and owns the message). This is the LOCAL ACP
 // channel dying, distinct from a provider HTTP error (fetch failed / ECONNREFUSED / 401), which stays
 // loud and actionable.
-function isEngineDeathError(msg) {
-  return /ACP connection|connection closed|EPIPE|stream (closed|ended)|premature close/i.test(String(msg || ''))
+function isEngineDeathError(error) {
+  const details = error && typeof error === 'object'
+    ? [error.message, error.data && error.data.details, error.cause && error.cause.message].join(' ')
+    : String(error || '')
+  return /ACP connection|connection closed|EPIPE|stream (closed|ended)|premature close/i.test(details)
 }
 
 // Vault -> engine env: read cloud API keys from the DPAPI vault (secrets.ps1) and
@@ -447,15 +489,45 @@ function isSafeModelId(id) {
   return true
 }
 // run one slash-command turn (the body of the WS 'command' case) — reused for the onboarding handoff.
-async function runCommandTurn(name, args) {
-  if (!conn || busy) return
+async function runCommandTurn(name, args, enterSetup = false) {
+  const requestLease = sessionTransition.epoch
+  await waitForSelectorMutations()
+  if (!sessionLeaseCurrent(requestLease)) return
+  if (!conn || busy || sessionTransition.replacing) return
+  const tracked = beginTrackedTurn()
+  if (!tracked) return
   setupPendingRestart = false; setupFinished = false
   const myTurn = ++turnSeq; currentTurn = myTurn
   busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
-  try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + name + (args ? ' ' + args : '') }] }); if (myTurn === currentTurn) { if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) } }
-  catch (e) { if (myTurn === currentTurn && !engineGoneOrRestarting() && !isEngineDeathError(e.message)) broadcast({ type: 'error', message: friendlyError(e.message) }) }
-  finally { if (myTurn === currentTurn) busy = false }
-  if (myTurn === currentTurn) await afterSetupTurn()
+  try {
+    if (enterSetup) {
+      await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: 'setup' })
+      if (!sessionLeaseCurrent(tracked.lease)) return
+      curAgent = 'setup'; broadcast({ type: 'agent', agent: 'setup' })
+    }
+    const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: '/' + name + (args ? ' ' + args : '') }] })
+    if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) {
+      if (turnOutput === 0) {
+        const message = await emptyTurnError()
+        if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) broadcast({ type: 'error', message })
+      }
+      if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) broadcast({ type: 'turn-end', stopReason: r.stopReason })
+    }
+  }
+  catch (e) {
+    // ACP can reject one event turn before Node reports a child exit. Let the
+    // crash path own its single engine-down terminal event when that happens.
+    if (isEngineDeathError(e)) await new Promise((resolve) => setTimeout(resolve, 25))
+    if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease) && !engineGoneOrRestarting()) {
+      if (isEngineDeathError(e)) broadcast({ type: 'turn-end', stopReason: 'error' })
+      else broadcast({ type: 'error', message: friendlyError(e.message) })
+    }
+  }
+  finally {
+    if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) busy = false
+    try { if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) await afterSetupTurn(tracked.lease, tracked) }
+    finally { tracked.finish() }
+  }
 }
 
 // ---- Settings layer: council.json (read/merge/write) + vault (via secrets.ps1) ----
@@ -518,6 +590,10 @@ function vaultListNames() {
 
 class UIClient {
   async requestPermission(p) {
+    // ACP includes the source session on every callback. A replaced/replaying
+    // session may still emit buffered permission requests; cancel them without
+    // installing a resolver or exposing stale UI.
+    if (sessionTransition.replacing || p.sessionId !== sessionId) return { outcome: { outcome: 'cancelled' } }
     const tcid = (p.toolCall && (p.toolCall.toolCallId || p.toolCall.id)) || ('perm_' + pendingPerms.size)
     const options = (p.options || []).map(o => ({ optionId: o.optionId, name: o.name, kind: o.kind }))
     broadcast({ type: 'permission', toolCallId: tcid, title: (p.toolCall && p.toolCall.title) || '', kind: (p.toolCall && p.toolCall.kind) || '', rawInput: (p.toolCall && p.toolCall.rawInput) || null, locations: (p.toolCall && p.toolCall.locations) || [], options })
@@ -527,6 +603,10 @@ class UIClient {
   }
   async sessionUpdate(pp) {
     const u = pp.update
+    // Keep current-session output, plus the explicit load replay only. Nothing
+    // from an old session may mutate menus, setup flags, turn accounting, or UI.
+    if (pp.sessionId !== sessionId && !replayOwns(pp.sessionId)) return
+    if (sessionTransition.replacing && !replayOwns(pp.sessionId)) return
     if (u && u.sessionUpdate === 'available_commands_update') {
       // hide opencode's built-in /customize-opencode — Omega's own /customize replaces it (showing both confuses users)
       commands = (u.availableCommands || u.commands || []).filter((c) => { const n = (c && (c.name || c.id)) || c; return String(n).toLowerCase() !== 'customize-opencode' })
@@ -537,7 +617,7 @@ class UIClient {
     // can still have a few buffered assistant chunks in flight for that dead turn. Drop them so a
     // cancelled turn's text can't render AFTER the fresh 'ready'/next turn. Replayed history (loadSession,
     // which streams through this same path) is exempt — it legitimately arrives with no active turn.
-    if (!replaying && currentTurn === 0 && u && (u.sessionUpdate === 'agent_message_chunk' || u.sessionUpdate === 'agent_thought_chunk')) return
+    if (!replayOwns(pp.sessionId) && currentTurn === 0 && u && (u.sessionUpdate === 'agent_message_chunk' || u.sessionUpdate === 'agent_thought_chunk')) return
     if (u && u.sessionUpdate !== 'usage_update') turnOutput++   // text/thought/tool call/plan = real output
     // Omega Setup: the setup tools run in THIS (driver) session, so watch its ACP tool-call stream here.
     // Match on the tool NAME only (u.title = the tool id) — NOT the whole payload, since a skill body /
@@ -582,8 +662,9 @@ function extractConfig(co) {
   else { effortLevels = []; curEffort = '' }
 }
 
-async function newSession() {
+async function newSession(lease = sessionTransition.epoch) {
   const s = await conn.newSession({ cwd: WORKDIR, mcpServers: [] })
+  if (!sessionLeaseCurrent(lease)) return null
   sessionId = s.sessionId
   // Reset the live values before adopting the new session — same isolation restoreSession/case 'load'
   // already do. Without this, a value that was only PASSIVELY adopted last session (never an explicit
@@ -592,22 +673,23 @@ async function newSession() {
   // sticky picks (pickedModel/pickedAgent/pickedEffort) live in their own vars and are re-applied below.
   curModel = null; curAgent = null; curEffort = ''
   extractConfig(s.configOptions)
-  let forceModel = false
+  const adopted = { model: curModel, agent: curAgent, effort: curEffort }
+  let targetModel = curModel, forceModel = false
   // Sticky model pick: if the user explicitly chose a model this app session, re-apply it to every
   // new session. A fresh engine session ALWAYS starts on the opencode.json default, so without this
   // the UI keeps showing the user's pick while the engine silently runs the default (the "picked
   // 122B, ran 80B" mismatch). Only re-apply a pick that still exists in this session's model menu.
-  if (pickedModel && models.some(m => m.value === pickedModel)) { curModel = pickedModel; forceModel = true }
-  if (!curModel) curModel = (models[0] && models[0].value) || 'anthropic/claude-opus-4-8'
+  if (pickedModel && models.some(m => m.value === pickedModel)) { targetModel = pickedModel; forceModel = true }
+  if (!targetModel) targetModel = (models[0] && models[0].value) || 'anthropic/claude-opus-4-8'
   // Auto-select a usable model: if the configured default's provider has no key but the user DID
   // add a key for some other provider, switch to a model that actually works — otherwise a
   // Gemini-only user who kept the shipped anthropic default would fail every turn with a
   // "add the anthropic key" message for a key they don't have (and adding one never switched).
-  if (!modelUsable(curModel) && models.length) {
+  if (!modelUsable(targetModel) && models.length) {
     const alt = models.find(m => modelPickable(m.value))
-    if (alt && alt.value !== curModel) {
-      log('auto-select model:', curModel, '(no key) ->', alt.value)
-      curModel = alt.value
+    if (alt && alt.value !== targetModel) {
+      log('auto-select model:', targetModel, '(no key) ->', alt.value)
+      targetModel = alt.value
       forceModel = true   // we changed it, so push it to the engine below even without an explicit launch override
     }
   }
@@ -618,30 +700,41 @@ async function newSession() {
   // model's own default. Without it the passive-fill guard is a no-op (curEffort still holds the first-
   // pass opencode.json default model's effort), stranding an effort the re-applied model may not even
   // offer in the UI while the engine runs its own default — the same hazard setModel guards at line 960.
-  if (DEFAULT_MODEL || forceModel) { try { curEffort = ''; const r = await conn.setSessionConfigOption({ sessionId, configId: 'model', value: curModel }); extractConfig(r && r.configOptions) } catch (e) { log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + curModel + '" — check that its server is running and the model is loaded. (' + e.message + ')' }) } }
+  if (DEFAULT_MODEL || forceModel) {
+    try {
+      const r = await conn.setSessionConfigOption({ sessionId, configId: 'model', value: targetModel })
+      if (!sessionLeaseCurrent(lease)) return null
+      curModel = null; curAgent = null; curEffort = ''
+      extractConfig(r && r.configOptions)
+    } catch (e) {
+      if (!sessionLeaseCurrent(lease)) return null
+      curModel = adopted.model; curAgent = adopted.agent; curEffort = adopted.effort
+      log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + targetModel + '" — check that its server is running and the model is loaded. (' + e.message + ')' })
+    }
+  }
   // Sticky agent pick: same problem/fix as the model above — a fresh session always starts on the
   // engine's default mode, so without this a user's chosen agent wouldn't survive /new. Only
   // re-apply a pick that still exists in this session's agent/mode menu.
-  let forceAgent = false
-  if (pickedAgent && agents.some(a => a.value === pickedAgent)) { curAgent = pickedAgent; forceAgent = true }
-  if (forceAgent) { try { await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: curAgent }) } catch (e) { log('setAgent', e.message); broadcast({ type: 'error', message: 'Could not switch agent — ' + e.message }) } }
+  const targetAgent = pickedAgent && agents.some(a => a.value === pickedAgent) ? pickedAgent : ''
+  if (targetAgent) { try { await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: targetAgent }); if (!sessionLeaseCurrent(lease)) return null; curAgent = targetAgent } catch (e) { if (!sessionLeaseCurrent(lease)) return null; log('setAgent', e.message); broadcast({ type: 'error', message: 'Could not switch agent — ' + e.message }) } }
   // Sticky effort pick: same pattern, but checked AFTER the model push above (not alongside
   // forceModel) — effort levels are per-model, so checking against a pre-switch effortLevels list
   // could try to reapply a pick that doesn't exist for the model this session actually lands on.
-  let forceEffort = false
-  if (pickedEffort && effortLevels.some(e => e.value === pickedEffort)) { curEffort = pickedEffort; forceEffort = true }
-  if (forceEffort) { try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: curEffort }) } catch (e) { log('setEffort', e.message); broadcast({ type: 'error', message: 'Could not set effort — ' + e.message }) } }
+  const targetEffort = pickedEffort && effortLevels.some(e => e.value === pickedEffort) ? pickedEffort : ''
+  if (targetEffort) { try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: targetEffort }); if (!sessionLeaseCurrent(lease)) return null; curEffort = targetEffort } catch (e) { if (!sessionLeaseCurrent(lease)) return null; log('setEffort', e.message); broadcast({ type: 'error', message: 'Could not set effort — ' + e.message }) } }
   return s
 }
 
-async function start() {
-  if (!OPENCODE_SRC && !fs.existsSync(ENGINE)) {   // engine preflight — clear message instead of a raw ENOENT
+async function start(lease = sessionTransition.epoch) {
+  if (!OPENCODE_SRC && !TEST_ENGINE_COMMAND && !fs.existsSync(ENGINE)) {   // engine preflight — clear message instead of a raw ENOENT
     const getEngine = isWin ? 'download opencode.exe into an engine/ folder (see SETUP.md)' : 'build the engine into engine/opencode (see SETUP.md, macOS section)'
     lastEngineDown = { type: 'engine-down', message: 'Engine not found at ' + ENGINE + ' — ' + getEngine + ', or set AGENT_OMEGA_ENGINE.' }
     log('engine missing:', ENGINE); broadcast(lastEngineDown); return
   }
   const [cmd, baseArgs] = OPENCODE_SRC
     ? [BUN, ['run', '--cwd', OPENCODE_SRC, '--conditions=browser', 'src/index.ts']]
+    : TEST_ENGINE_COMMAND
+      ? [process.execPath, [TEST_ENGINE_COMMAND]]
     : [ENGINE, []]
   log('engine:', cmd, baseArgs.join(' '))
   // Strip the WS token AND the API password from the env the engine (and thus the model's shell)
@@ -665,22 +758,27 @@ async function start() {
   const _agentsPath = path.join(_cfgDir, 'opencode', 'AGENTS.md').replace(/\\/g, '/')
   const engineFullEnv = { ...engineEnv, ...vaultEnv(), OPENCODE_SERVER_PASSWORD: API_PASSWORD, OPENCODE_SERVER_USERNAME: API_USER, AGENT_OMEGA_AGENTS: _agentsPath }
   const proc = spawn(cmd, [...baseArgs, 'acp', '--cwd', WORKDIR, '--port', String(API_PORT), '--cors', 'null'], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: engineFullEnv })
-  engineProc = proc
   spawnReaper(process.pid, proc.pid)   // Fix E: detached watchdog — kills this engine if the sidecar itself gets hard-killed
   const myGen = ++engineGen           // this spawn's generation; a later spawn bumps it and orphans these handlers
   let gone = false                    // error AND exit can both fire for one proc — collapse to a single handling
   const onGone = (reason) => { if (gone) return; gone = true; handleEngineGone(reason, myGen) }
   proc.on('error', e => { log('spawn error', e.message); onGone('spawn error: ' + e.message) })
   proc.on('exit', c => { log('engine exited', c); onGone('engine exited ' + c) })
-  conn = new acp.ClientSideConnection((_a) => new UIClient(), acp.ndJsonStream(Writable.toWeb(proc.stdin), Readable.toWeb(proc.stdout)))
-  await conn.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } } })
-  await newSession()
+  const nextConn = new acp.ClientSideConnection((_a) => new UIClient(), acp.ndJsonStream(Writable.toWeb(proc.stdin), Readable.toWeb(proc.stdout)))
+  await nextConn.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } } })
+  if (!sessionLeaseCurrent(lease)) { try { proc.kill() } catch {}; return null }
+  engineProc = proc
+  conn = nextConn
+  await newSession(lease)
+  if (!sessionLeaseCurrent(lease)) return null
   log('ready: session', sessionId, '| models', models.length, '| agents', agents.length)
   lastEngineDown = null
   engineReviving = false   // the engine is back up; error copy stops advertising an in-flight restart
+  if (!sessionLeaseCurrent(lease)) return null
   broadcast(readyMsg())
   broadcastOnboard()   // after every (re)start, with fresh keyedEnv: tell the UI whether first-run onboarding is needed
   subscribeEngineEvents(myGen)   // start/refresh the toast->notice forwarder for this engine generation (PLG-4)
+  return sessionId
 }
 
 // A plugin's client.tui.showToast (e.g. skill-router's one-time "classifier inert" notice) is
@@ -784,57 +882,93 @@ async function subscribeEngineEvents(gen) {
 function handleEngineGone(reason, gen) {
   if (restarting) return               // an intentional restart is draining this exit; it will re-broadcast state
   if (gen !== engineGen) return        // a stale event from a superseded generation
-  engineReviving = true                // mark revival at the very START so any in-flight turn's friendlyError says "restarting", not "restart the app" (the exhausted-budget branch below flips it back off)
-  const wasBusy = busy
   const prev = sessionId               // the session the user was on — restore it after the engine comes back
-  lastSessionBeforeCrash = prev        // stash it: after the crash budget is spent sessionId is null, so a MANUAL restart falls back to this to avoid dumping the user into a blank session
-  conn = null; sessionId = null; busy = false; currentTurn = 0   // clear so WS 'connect'/'new'/'load'/prompt stop masking the dead engine
-  drainPerms()
-  const now = Date.now()
-  if (now - lastCrashAt > CRASH_WINDOW_MS) crashRestartCount = 0   // a long-stable engine that finally dies starts the counter fresh
-  lastCrashAt = now
-  if (crashRestartCount >= MAX_CRASH_RESTARTS) {
-    engineReviving = false
-    lastEngineDown = { type: 'engine-down', message: 'The engine keeps crashing (' + reason + ') and could not be restarted after ' + MAX_CRASH_RESTARTS + ' attempts — please restart Agent Omega.' }
-    log('engine gone, giving up after', MAX_CRASH_RESTARTS, 'restarts'); broadcast(lastEngineDown)
-    if (wasBusy) broadcast({ type: 'turn-end', stopReason: 'engine-down' })
-    return
-  }
-  crashRestartCount++
-  engineReviving = true
-  lastEngineDown = { type: 'engine-down', message: 'The engine stopped unexpectedly (' + reason + ') — restarting automatically…' }
-  log('engine gone:', reason, '-> auto-restart', crashRestartCount + '/' + MAX_CRASH_RESTARTS)
-  broadcast(lastEngineDown)
-  if (wasBusy) broadcast({ type: 'turn-end', stopReason: 'engine-down' })   // unstick the UI's generating state
-  const delay = Math.min(400 * 2 ** (crashRestartCount - 1), 8000)
-  if (crashRestartTimer) clearTimeout(crashRestartTimer)
   const prevAgentGone = curAgent   // survive a crash mid-setup: re-apply setup mode after auto-recovery
-  crashRestartTimer = setTimeout(() => { crashRestartTimer = null; autoRecover(prev, prevAgentGone).catch(e => log('auto-recover failed', e.message)) }, delay)
+  const wasBusy = busy                 // replaceSession clears this before its queued recovery body runs
+  engineReviving = true                // make an immediately arriving new/load queue behind this resurrection
+  // Install the recovery before another WS message can act. New/Load received
+  // afterward waits on this promise and then applies only the latest intent.
+  const recovery = autoRecover(reason, gen, prev, prevAgentGone, wasBusy)
+  autoRecoveryInFlight = recovery
+  // A newer crash may install recovery #2 before recovery #1 settles. Only the
+  // promise that still owns the slot may clear it (or engineReviving).
+  void recovery.then(
+    () => {
+      if (autoRecoveryInFlight === recovery) autoRecoveryInFlight = null
+    },
+    (e) => {
+      log('auto-recover failed', e.message)
+      if (autoRecoveryInFlight === recovery) {
+        autoRecoveryInFlight = null
+        if (!restartInFlight) engineReviving = false
+      }
+    },
+  )
 }
 
 // Reload the session the user was on (if any) after the engine comes back, so a crash mid-work
 // doesn't dump them into a blank session — mirrors restartEngine's restore path.
-async function restoreSession(prev, prevAgent) {
-  if (!prev || !conn || sessionId === prev) return
-  broadcast({ type: 'replay-start', sessionId: prev })
-  replaying = true   // history streams through sessionUpdate with no active turn — exempt it from the tail-chunk guard
+async function restoreSession(prev, prevAgent, lease) {
+  if (!prev || !conn || sessionId === prev || !sessionLeaseCurrent(lease)) return
+  beginReplay(lease, prev)
   try {
     const wasSetup = (prevAgent === 'setup')   // snapshot from BEFORE start()/extractConfig reset curAgent — re-apply setup so a mid-setup reload stays in setup mode
     const r = await conn.loadSession({ sessionId: prev, cwd: WORKDIR, mcpServers: [] })
+    if (!sessionLeaseCurrent(lease)) return
     sessionId = prev
     curModel = ''
     curAgent = null; curEffort = ''   // force a fresh adopt of THIS session's real agent/effort, same reason as curModel above
     extractConfig(r && r.configOptions)
-    if (wasSetup && conn) { try { curAgent = 'setup'; await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: 'setup' }) } catch (e) { log('restore setup mode', e.message) } }
-    broadcast({ type: 'replay-end', sessionId })
+    if (wasSetup && conn) { try { await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: 'setup' }); if (!sessionLeaseCurrent(lease)) return; curAgent = 'setup' } catch (e) { if (!sessionLeaseCurrent(lease)) return; log('restore setup mode', e.message) } }
+    if (!sessionLeaseCurrent(lease)) return
+    endReplay(lease)
     broadcast(readyMsg())
-  } catch (e) { log('restore-session', e.message); broadcast({ type: 'replay-end', sessionId: prev }) }
-  finally { replaying = false }
+  } catch (e) { log('restore-session', e.message); endReplay(lease) }
+  finally { endReplay(lease) }
 }
 
-async function autoRecover(prev, prevAgent) {
-  await start()          // fresh engine + new session; broadcasts ready (and clears engineReviving on success)
-  await restoreSession(prev, prevAgent)
+function crashRestartDelay(ms) {
+  let resolve, done = false
+  const finish = () => { if (!done) { done = true; resolve() } }
+  const timer = setTimeout(finish, ms)
+  return {
+    promise: new Promise((r) => { resolve = r }),
+    cancel() { clearTimeout(timer); finish() },
+  }
+}
+
+async function autoRecover(reason, gen, prev, prevAgent, wasBusy) {
+  return await replaceSession(async (lease) => {
+    if (gen !== engineGen) return
+    lastSessionBeforeCrash = prev
+    conn = null; sessionId = null; busy = false; currentTurn = 0
+    drainPerms()
+    const now = Date.now()
+    if (now - lastCrashAt > CRASH_WINDOW_MS) crashRestartCount = 0
+    lastCrashAt = now
+    if (crashRestartCount >= MAX_CRASH_RESTARTS) {
+      engineReviving = false
+      lastEngineDown = { type: 'engine-down', message: 'The engine keeps crashing (' + reason + ') and could not be restarted after ' + MAX_CRASH_RESTARTS + ' attempts — please restart Agent Omega.' }
+      log('engine gone, giving up after', MAX_CRASH_RESTARTS); broadcast(lastEngineDown)
+      if (wasBusy) broadcast({ type: 'turn-end', stopReason: 'engine-down' })
+      return
+    }
+    crashRestartCount++
+    lastEngineDown = { type: 'engine-down', message: 'The engine stopped unexpectedly (' + reason + ') — restarting automatically…' }
+    log('engine gone:', reason, '-> auto-restart', crashRestartCount + '/' + MAX_CRASH_RESTARTS)
+    broadcast(lastEngineDown)
+    if (wasBusy) broadcast({ type: 'turn-end', stopReason: 'engine-down' })
+    const delay = Math.min(400 * 2 ** (crashRestartCount - 1), 8000)
+    const wait = crashRestartDelay(delay)
+    crashRestartTimer = wait
+    await wait.promise
+    if (crashRestartTimer === wait) crashRestartTimer = null
+    if (!sessionLeaseCurrent(lease)) return
+    const started = await start(lease)
+    if (!sessionLeaseCurrent(lease)) return
+    if (!started) { engineReviving = false; return }
+    await restoreSession(prev, prevAgent, lease)
+  })
 }
 function readyMsg() { return { type: 'ready', sessionId, model: curModel, agent: curAgent, models, agents, commands, effort: curEffort, effortLevels, apiPort: API_PORT, apiAuth: API_AUTH, workdir: WORKDIR } }
 // The engine is not currently connected (crashed and mid-restart, or never came up). Return the
@@ -843,41 +977,81 @@ function readyMsg() { return { type: 'ready', sessionId, model: curModel, agent:
 function engineDownNow() { return lastEngineDown || { type: 'engine-down', message: 'The engine is not running — ' + (engineReviving ? 'it is restarting, retry in a moment.' : 'restart Agent Omega.') } }
 
 // Re-spawn the engine so a just-changed vault key takes effect (the engine reads keys once, at spawn).
-async function restartEngine() {
+async function restartEngine(ownerTurn = null) {
   // Re-entrancy guard: a WS 'restart' can race a vaultSet/vaultRemove auto-restart. Without this both
   // would kill+respawn, spawning two engines and orphaning one. Coalesce — a second trigger joins the
   // in-flight restart instead of starting its own (the single respawn's vaultEnv() already sees every
   // key written before it, so nothing is lost).
   if (restartInFlight) return restartInFlight
-  restartInFlight = (async () => {
+  const prev = sessionId || lastSessionBeforeCrash   // snapshot before invalidation; a later user replacement cannot overwrite it
+  const prevAgent = curAgent
+  const restart = replaceSession(async (lease) => {
     restarting = true
-    const prev = sessionId || lastSessionBeforeCrash   // fall back to the pre-crash session so a manual restart after the crash budget is spent still restores it (sessionId is null by then)
-    const prevAgent = curAgent   // snapshot before start()->extractConfig resets it, so restoreSession can re-apply setup mode
-    drainPerms(); busy = false
-    try { if (engineProc) engineProc.kill() } catch {}
-    conn = null; sessionId = null
-    await new Promise((r) => setTimeout(r, 350))
-    restarting = false
-    await start()   // fresh vaultEnv() -> the new/removed key is now reflected
-    await restoreSession(prev, prevAgent)
-  })()
-  try { return await restartInFlight } finally { restartInFlight = null }
+    try {
+      drainPerms(); busy = false
+      try { if (engineProc) engineProc.kill() } catch {}
+      conn = null; sessionId = null
+      await new Promise((r) => setTimeout(r, 350))
+      if (!sessionLeaseCurrent(lease)) return null
+      // The intentional old-engine exit has now drained. A failure from the new
+      // spawn is a real crash and must be eligible for handleEngineGone.
+      restarting = false
+      const started = await start(lease)   // fresh vaultEnv() -> the new/removed key is now reflected
+      if (!started || !sessionLeaseCurrent(lease)) return null
+      await restoreSession(prev, prevAgent, lease)
+      if (!sessionLeaseCurrent(lease) || !conn) return null
+      return { lease }
+    } finally {
+      // Stale leases and thrown initialize/restore paths must never strand the
+      // sidecar in a permanent "intentional restart" state.
+      restarting = false
+      if (!conn && !autoRecoveryInFlight) engineReviving = false
+    }
+  }, ownerTurn)
+  restartInFlight = restart
+  try { return await restart } finally { if (restartInFlight === restart) restartInFlight = null }
 }
 
 // After a setup-mode turn settles: hand back to normal Omega if the agent called finish, then reload the
 // engine if a setup tool changed config/keys/skills (the engine only reads those at spawn). busy is false
 // here (called post-turn), so restartEngine never kills a live turn.
-async function afterSetupTurn() {
+async function afterSetupTurn(lease, tracked) {
+  if (!sessionLeaseCurrent(lease)) return
   if (setupFinished) {
     setupFinished = false
     const vals = (agents || []).map((a) => a && (a.value || a.name || a)).filter(Boolean)
     const back = vals.includes('build') ? 'build' : (vals.find((v) => v !== 'setup') || 'build')
-    try { curAgent = back; if (conn) await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: back }); broadcast({ type: 'agent', agent: back }) } catch (e) { log('setup finish flip', e.message) }
+    try {
+      if (conn) await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: back })
+      if (!sessionLeaseCurrent(lease)) return
+      curAgent = back; broadcast({ type: 'agent', agent: back })
+    } catch (e) { if (sessionLeaseCurrent(lease)) log('setup finish flip', e.message) }
   }
-  if (setupPendingRestart) {
+  if (setupPendingRestart && sessionLeaseCurrent(lease)) {
     setupPendingRestart = false
-    try { await restartEngine(); broadcast({ type: 'notice', message: 'Reloaded — your setup changes are live.', variant: 'info' }) } catch (e) { log('setup reload', e.message) }
+    try {
+      const restarted = await restartEngine(tracked)
+      if (restarted && sessionLeaseCurrent(restarted.lease)) broadcast({ type: 'notice', message: 'Reloaded — your setup changes are live.', variant: 'info' })
+    } catch (e) { log('setup reload', e.message) }
   }
+}
+
+// A user session choice received while either automatic recovery or an explicit
+// restart is reviving the engine must queue behind it: invalidating the sole spawn
+// would leave no connection. Re-check after each wait because one resurrection can
+// hand ownership to another. The sequence makes competing New/Load deterministic.
+async function replaceAfterRecovery(intent, work) {
+  while (true) {
+    const resurrection = restartInFlight || autoRecoveryInFlight
+    if (!resurrection) break
+    try { await resurrection } catch {}
+    if (intent !== sessionIntentSeq) return null
+  }
+  if (intent !== sessionIntentSeq) return null
+  return await replaceSession(async (lease) => {
+    if (intent !== sessionIntentSeq) return null
+    return await work(lease)
+  })
 }
 
 wss.on('connection', (ws) => {
@@ -896,9 +1070,15 @@ wss.on('connection', (ws) => {
     try {
       switch (m.type) {
         case 'prompt': {
+          const requestLease = sessionTransition.epoch
+          await waitForSelectorMutations()
+          if (!sessionLeaseCurrent(requestLease)) { broadcast({ type: 'error', message: 'The session changed before that message could start — please send it again.' }); break }
           if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break }
+          if (sessionTransition.replacing) { broadcast({ type: 'error', message: 'The session is switching — try again in a moment.' }); break }
           if (busy || !m.text) return
           if (!conn) { broadcast(engineDownNow()); break }   // don't run against a dead engine — say it's down
+          const tracked = beginTrackedTurn()
+          if (!tracked) { broadcast({ type: 'error', message: 'The session is switching — try again in a moment.' }); break }
           setupPendingRestart = false; setupFinished = false   // drop any stale setup flags from an aborted/crashed prior turn before this one runs
           const myTurn = ++turnSeq; currentTurn = myTurn
           busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
@@ -908,7 +1088,16 @@ wss.on('connection', (ws) => {
           // The myTurn===currentTurn guards keep a turn that was superseded by new/load/abort/crash
           // (which conn.prompt only SETTLES after) from firing a stale empty-turn error, a premature
           // turn-end, or unlocking busy under the turn that replaced it.
-          try { const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: m.text }] }); if (myTurn === currentTurn) { if (turnOutput === 0) broadcast({ type: 'error', message: await emptyTurnError() }); broadcast({ type: 'turn-end', stopReason: r.stopReason }) } }
+          try {
+            const r = await conn.prompt({ sessionId, prompt: [{ type: 'text', text: m.text }] })
+            if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) {
+              if (turnOutput === 0) {
+                const message = await emptyTurnError()
+                if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) broadcast({ type: 'error', message })
+              }
+              if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) broadcast({ type: 'turn-end', stopReason: r.stopReason })
+            }
+          }
           catch (e) {
             // Never leave the UI hung on "generating" after a failed turn. Three cases:
             //  - engine truly gone/restarting -> handleEngineGone owns the one authoritative message
@@ -916,18 +1105,25 @@ wss.on('connection', (ws) => {
             //  - looks like an engine-death error but the engine is still up (a race, or a death-shaped
             //    message that didn't actually kill it) -> end the turn so the input box unlocks.
             //  - ordinary turn error -> surface it (the UI's 'error' handler also unlocks the input).
-            if (myTurn === currentTurn) {
+            // ACP can reject one event turn before Node reports a child exit;
+            // wait so the crash path emits the sole engine-down terminal frame.
+            if (isEngineDeathError(e)) await new Promise((resolve) => setTimeout(resolve, 25))
+            if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) {
               if (engineGoneOrRestarting()) { /* handleEngineGone owns the message + turn-end */ }
-              else if (isEngineDeathError(e.message)) broadcast({ type: 'turn-end', stopReason: 'error' })
+              else if (isEngineDeathError(e)) broadcast({ type: 'turn-end', stopReason: 'error' })
               else broadcast({ type: 'error', message: friendlyError(e.message) })
             }
           }
-          finally { if (myTurn === currentTurn) busy = false }
-          if (myTurn === currentTurn) await afterSetupTurn()
+          finally {
+            if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) busy = false
+            try { if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) await afterSetupTurn(tracked.lease, tracked) }
+            finally { tracked.finish() }
+          }
           break
         }
         case 'command': {
           if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break }
+          if (sessionTransition.replacing) { broadcast({ type: 'error', message: 'The session is switching — try again in a moment.' }); break }
           if (busy || !m.name) return
           if (!conn) { broadcast(engineDownNow()); break }
           // An unknown /command resolves as a zero-output turn, which emptyTurnError would misattribute
@@ -939,11 +1135,7 @@ wss.on('connection', (ws) => {
           }
           // Omega Setup: /customize and /init switch the session to the setup agent AND make it stick
           // (a bare cmd.agent frontmatter only covers this one command turn — the next plain message reverts).
-          if ((m.name === 'customize' || m.name === 'init') && curAgent !== 'setup') {
-            try { curAgent = 'setup'; await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: 'setup' }); broadcast({ type: 'agent', agent: 'setup' }) }
-            catch (e) { log('setup enter', e.message) }
-          }
-          await runCommandTurn(m.name, m.args)
+          await runCommandTurn(m.name, m.args, (m.name === 'customize' || m.name === 'init') && curAgent !== 'setup')
           break
         }
         case 'permissionReply': {
@@ -952,7 +1144,9 @@ wss.on('connection', (ws) => {
         }
         case 'setModel': {
           if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break }
-          const prev = curModel; const prevEffort = curEffort; curModel = m.model
+          if (sessionTransition.replacing) { broadcast({ type: 'error', message: 'The session is switching — try again in a moment.' }); break }
+          if (busy) { broadcast({ type: 'error', message: 'Wait for the current response to finish before changing the model.' }); break }
+          const requestedLease = sessionTransition.epoch, target = m.model
           // Switch via set-config-option, whose response carries the FRESH configOptions, rather
           // than unstable_setSessionModel (empty response): after a mid-session model change the
           // effort levels/variants differ, so re-extract and re-broadcast so the effort control
@@ -960,24 +1154,51 @@ wss.on('connection', (ws) => {
           // Effort is PER-MODEL: clear curEffort first so extractConfig re-adopts THIS model's default
           // (the passive-fill guard is a no-op while curEffort still holds the old model's value — that
           // left the UI showing an effort the new model may not even offer while the engine ran its own).
-          try {
-            curEffort = ''
-            const r = await conn.setSessionConfigOption({ sessionId, configId: 'model', value: curModel }); extractConfig(r && r.configOptions); pickedModel = curModel   // remember the pick so new sessions keep it
-            // Sticky effort across a model switch: if the user's explicit effort pick still exists for
-            // the new model, re-apply it (and push to the engine so both sides agree); otherwise the
-            // new model's own default — freshly adopted above — stands.
-            // If the effort push fails after the model push already succeeded, revert curEffort to the
-            // new model's freshly-adopted default (set by extractConfig above) so the readyMsg below
-            // reports the engine's ACTUAL effort — not a pick the engine never accepted (else UI/engine
-            // disagree on the effort axis, the same mismatch class this batch set out to kill).
-            if (pickedEffort && effortLevels.some(e => e.value === pickedEffort)) { const adoptedEffort = curEffort; curEffort = pickedEffort; try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: curEffort }) } catch (e) { curEffort = adoptedEffort; log('setEffort', e.message) } }
-            broadcast(readyMsg())
-          }
-          catch (e) { curModel = prev; curEffort = prevEffort; log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + m.model + '" — ' + e.message }); broadcast({ type: 'model', model: curModel }) }
+          await queueSelector(async () => {
+            if (!sessionLeaseCurrent(requestedLease) || sessionTransition.replacing || !conn) return
+            try {
+              const r = await conn.setSessionConfigOption({ sessionId, configId: 'model', value: target }); if (!sessionLeaseCurrent(requestedLease)) return
+              curModel = target; curEffort = ''; extractConfig(r && r.configOptions); pickedModel = curModel   // remember only a confirmed current pick
+              // Sticky effort across a model switch: if the user's explicit effort pick still exists for
+              // the new model, re-apply it (and push to the engine so both sides agree); otherwise the
+              // new model's own default — freshly adopted above — stands.
+              // If the effort push fails after the model push already succeeded, revert curEffort to the
+              // new model's freshly-adopted default (set by extractConfig above) so the readyMsg below
+              // reports the engine's ACTUAL effort — not a pick the engine never accepted (else UI/engine
+              // disagree on the effort axis, the same mismatch class this batch set out to kill).
+              if (pickedEffort && effortLevels.some(e => e.value === pickedEffort)) { const selectedEffort = pickedEffort; try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: selectedEffort }); if (!sessionLeaseCurrent(requestedLease)) return; curEffort = selectedEffort } catch (e) { if (!sessionLeaseCurrent(requestedLease)) return; log('setEffort', e.message) } }
+              if (!sessionLeaseCurrent(requestedLease)) return
+              broadcast(readyMsg())
+            }
+            catch (e) { if (!sessionLeaseCurrent(requestedLease)) return; log('setModel', e.message); broadcast({ type: 'error', message: 'Could not select model "' + target + '" — ' + e.message }) }
+          })
           break
         }
-        case 'setAgent': { if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break } const prev = curAgent; curAgent = m.agent; try { await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: curAgent }); pickedAgent = curAgent } catch (e) { curAgent = prev; log('setAgent', e.message); broadcast({ type: 'error', message: 'Could not switch agent — ' + e.message }) } broadcast({ type: 'agent', agent: curAgent }); break }
-        case 'setEffort': { if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); if (typeof busy !== 'undefined') busy = false; break } if (!effortLevels.length) { broadcast({ type: 'error', message: 'This model has no effort levels.' }); break } const prev = curEffort; curEffort = m.value; try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: curEffort }); pickedEffort = curEffort } catch (e) { curEffort = prev; log('setEffort', e.message); broadcast({ type: 'error', message: 'Could not set effort — ' + e.message }) } broadcast({ type: 'effort', effort: curEffort }); break }
+        case 'setAgent': {
+          if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); break }
+          if (sessionTransition.replacing) { broadcast({ type: 'error', message: 'The session is switching — try again in a moment.' }); break }
+          if (busy) { broadcast({ type: 'error', message: 'Wait for the current response to finish before changing the agent.' }); break }
+          const requestedLease = sessionTransition.epoch, target = m.agent
+          await queueSelector(async () => {
+            if (!sessionLeaseCurrent(requestedLease) || sessionTransition.replacing || !conn) return
+            try { await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: target }); if (!sessionLeaseCurrent(requestedLease)) return; curAgent = target; pickedAgent = target; broadcast({ type: 'agent', agent: curAgent }) }
+            catch (e) { if (!sessionLeaseCurrent(requestedLease)) return; log('setAgent', e.message); broadcast({ type: 'error', message: 'Could not switch agent — ' + e.message }) }
+          })
+          break
+        }
+        case 'setEffort': {
+          if (!conn) { broadcast({ type: 'error', message: 'The engine is reloading — try again in a moment.' }); break }
+          if (sessionTransition.replacing) { broadcast({ type: 'error', message: 'The session is switching — try again in a moment.' }); break }
+          if (busy) { broadcast({ type: 'error', message: 'Wait for the current response to finish before changing the effort.' }); break }
+          if (!effortLevels.length) { broadcast({ type: 'error', message: 'This model has no effort levels.' }); break }
+          const requestedLease = sessionTransition.epoch, target = m.value
+          await queueSelector(async () => {
+            if (!sessionLeaseCurrent(requestedLease) || sessionTransition.replacing || !conn) return
+            try { await conn.setSessionConfigOption({ sessionId, configId: effortConfigId, value: target }); if (!sessionLeaseCurrent(requestedLease)) return; curEffort = target; pickedEffort = target; broadcast({ type: 'effort', effort: curEffort }) }
+            catch (e) { if (!sessionLeaseCurrent(requestedLease)) return; log('setEffort', e.message); broadcast({ type: 'error', message: 'Could not set effort — ' + e.message }) }
+          })
+          break
+        }
         case 'getCouncilConfig': {
           try { send(ws, { type: 'councilConfig', config: readCouncil() }) }
           catch (e) { log('getCouncilConfig', e.message); send(ws, { type: 'councilConfig', error: e.message }) }
@@ -1118,23 +1339,35 @@ wss.on('connection', (ws) => {
           drainPerms()
           busy = false
           if (wasBusy) broadcast({ type: 'turn-end', stopReason: 'aborted' })
-          try { await conn.cancel({ sessionId }) } catch (e) { log('cancel', e.message) }
+          // The tracked turn remains owned until its prompt continuation and setup
+          // barrier settle. A subsequent prompt is refused; replacement awaits it.
+          const active = sessionTransition.activeTurn
+          try { if (active) await active.cancel(); else await conn.cancel({ sessionId }) } catch (e) { log('cancel', e.message) }
           break
         }
         case 'restart': {
           // Manual engine restart — the app's engine-down "Restart engine" button (WS-01). Reset the
           // crash budget so a user-initiated restart isn't blocked by a prior give-up, cancel any
           // pending auto-restart, then relaunch via the shared restartEngine() path.
-          if (crashRestartTimer) { clearTimeout(crashRestartTimer); crashRestartTimer = null }
+          if (crashRestartTimer) { crashRestartTimer.cancel(); crashRestartTimer = null }
           crashRestartCount = 0
           restartEngine().catch((e) => { log('manual restart', e.message); broadcast(engineDownNow()) })
           break
         }
         case 'new': {
-          if (busy) { currentTurn = 0; try { await conn.cancel({ sessionId }) } catch {} drainPerms(); busy = false }   // don't orphan an in-flight turn
-          if (!conn) { broadcast(engineDownNow()); break }   // engine is down — don't fake a fresh 'ready' on a dead session (WS-01)
-          try { await newSession(); broadcast(readyMsg()) }
-          catch (e) { log('new', e.message); broadcast(engineDownNow()) }   // newSession failed (engine likely just died): report it, don't mask with a stale ready
+          const intent = ++sessionIntentSeq
+          try { await replaceAfterRecovery(intent, async (lease) => {
+            if (!conn) { if (sessionLeaseCurrent(lease)) broadcast(engineDownNow()); return }
+            await newSession(lease)
+            if (sessionLeaseCurrent(lease)) broadcast(readyMsg())
+          }) }
+          catch (e) {
+            log('new', e.message)
+            if (!sessionTransition.replacing) {
+              if (engineGoneOrRestarting() || !conn) broadcast(engineDownNow())
+              else broadcast({ type: 'error', message: 'Could not create a new session — ' + friendlyError(e.message) })
+            }
+          }
           break
         }
         case 'findFile': {   // '@' file autocomplete: bounded walk of the session workdir (the ACP build has no HTTP serve)
@@ -1158,27 +1391,28 @@ wss.on('connection', (ws) => {
           // Switch to an existing session. The engine replays its full history as
           // ordinary update frames between replay-start / replay-end brackets.
           if (typeof m.sessionId !== 'string' || !m.sessionId.trim()) break
-          if (busy) { currentTurn = 0; try { await conn.cancel({ sessionId }) } catch {} drainPerms(); busy = false }
-          if (!conn) { broadcast(engineDownNow()); break }   // engine is down — don't open a replay bracket that can't close
-          broadcast({ type: 'replay-start', sessionId: m.sessionId })
-          replaying = true   // exempt the replayed history from the tail-chunk guard (it streams with no active turn)
-          try {
-            const r = await conn.loadSession({ sessionId: m.sessionId, cwd: WORKDIR, mcpServers: [] })
-            sessionId = m.sessionId          // loadSession's response does not echo the id
-            curModel = ''                    // adopt the loaded session's own model from configOptions
-            curAgent = null; curEffort = ''  // same — adopt the loaded session's own agent/effort, not whatever this window had before
-            extractConfig(r && r.configOptions)
-            broadcast({ type: 'replay-end', sessionId })
-            broadcast(readyMsg())
-          } catch (e) {
+          const intent = ++sessionIntentSeq
+          try { await replaceAfterRecovery(intent, async (lease) => {
+            if (!conn) { if (sessionLeaseCurrent(lease)) broadcast(engineDownNow()); return }
+            beginReplay(lease, m.sessionId)
+            try {
+              const r = await conn.loadSession({ sessionId: m.sessionId, cwd: WORKDIR, mcpServers: [] })
+              if (!sessionLeaseCurrent(lease)) return
+              sessionId = m.sessionId          // loadSession's response does not echo the id
+              curModel = ''                    // adopt the loaded session's own model from configOptions
+              curAgent = null; curEffort = ''  // same — adopt the loaded session's own agent/effort, not whatever this window had before
+              extractConfig(r && r.configOptions)
+              broadcast(readyMsg())
+            } catch (e) {
+              // Keep a failed replay visibly paired before this serialized work
+              // yields to any replacement queued behind it.
+              const notFound = /Internal error: OpenCode service|session not found|no such session|unknown session|not found/i.test(e.message || '')
+              endReplay(lease, notFound ? 'Session not found — it may have been deleted or belongs to a different workspace.' : friendlyError(e.message))
+              throw e
+            } finally { endReplay(lease) }
+          }) } catch (e) {
             log('load', e.message)
-            // A missing/foreign session surfaces the engine's opaque "Internal error: OpenCode service
-            // failure" — name it here (not in friendlyError, where the same string could mean other
-            // things on a prompt path) so the user gets an actionable message (WS-06).
-            const notFound = /Internal error: OpenCode service|session not found|no such session|unknown session|not found/i.test(e.message || '')
-            const msg = notFound ? 'Session not found — it may have been deleted or belongs to a different workspace.' : friendlyError(e.message)
-            broadcast({ type: 'replay-end', sessionId: m.sessionId, error: msg })
-          } finally { replaying = false }
+          }
           break
         }
       }
