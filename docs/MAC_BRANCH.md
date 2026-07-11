@@ -1,8 +1,13 @@
 # Agent Omega — macOS Install Branch Plan
 
+> **Historical plan, implemented on `main`.** The current Apple Silicon shell,
+> Keychain vault, and packaging path live under `mac/`; see `SETUP.md` and
+> `mac/build-app.sh`. The production engine source and native macOS assets are
+> public at [`latentworks/opencode-omega`](https://github.com/latentworks/opencode-omega).
+
 Investigation + concrete port plan for a dedicated **macOS** build of Agent Omega
-(Apple Silicon `darwin-arm64` **and** Intel `darwin-x64`). Agent Omega is currently
-**Windows-only**: a C# WinForms + WebView2 shell, a Node ACP sidecar, a Bun-compiled
+(Apple Silicon `darwin-arm64` **and** Intel `darwin-x64`). At the time of this
+investigation Agent Omega was Windows-only: a C# WinForms + WebView2 shell, a Node ACP sidecar, a Bun-compiled
 `opencode` engine, a DPAPI/PowerShell secrets vault, and a set of Node/Python engine
 plugins.
 
@@ -16,7 +21,7 @@ backend, and the compiled engine binary** — plus a layer of shell-flavor promp
 ## 0. TL;DR
 
 - **What carries over unchanged:** the whole `ui/` folder (single-file `app.html` + its
-  `.js`/`.css`), all five engine plugins, `web.py`, `council.json`/`opencode.json`, and
+  `.js`/`.css`), all six engine plugins, `web.py`, `council.json`/`opencode.json`, and
   ~95% of `sidecar.mjs`.
 - **What must be replaced:** (1) the **shell** — C# WinForms/WebView2 has no macOS
   runtime; (2) the **vault** — DPAPI/`secrets.ps1` → macOS Keychain; (3) the **engine
@@ -330,7 +335,7 @@ zero rendering risk.
   backend selector).
 - The **entire `ui/`** (app.html + all js/css). The host-bridge difference is handled by an
   *injected shim*, not a fork of the UI.
-- **All five engine plugins** + `council.json` + `opencode.json` + `web.py` + skills/commands/
+- **All six engine plugins** + `council.json` + `opencode.json` + `web.py` + skills/commands/
   themes (pure Node/Bun/Python, already runtime-adaptive and env-driven).
 - The **engine source** (the fork). Only the *compiled binary* differs per arch.
 

@@ -1,5 +1,33 @@
 # Agent Omega — Journal
 
+## 2026-07-11 — v2.6.2 public engine source and native release
+
+**Changed:** Published the complete MIT-licensed production engine fork at
+`latentworks/opencode-omega`, retained upstream history, pinned the upstream
+v1.17.9 base and mutable build inputs, embedded source identity in engine
+health, and published native engine assets for Windows x64, Linux x64/arm64,
+and macOS Intel/Apple Silicon. Updated Agent Omega's version, setup, migration,
+architecture, build, notice, macOS, test, and release documentation to bind the
+app to engine tag `omega-v2.6.2` and its exact provenance.
+
+**Verified:** Engine typechecks passed for every changed package; the focused
+lifecycle/API suite passed 67/67. A clean local Windows build launched and
+reported task-quality protocol 1, all four required features, source commit and
+build ID; a second build on the same source/runner was byte-identical. GitHub's
+source gate and all five native lanes executed their matching binary, checked
+the embedded identity and capability contract, rebuilt it, and compared the
+result byte-for-byte. The native run is public at
+https://github.com/latentworks/opencode-omega/actions/runs/29162529010. Agent
+Omega's own suite passed 161/161, version sync and setup smoke passed, and the
+Windows Release build packaged the exact released engine hash; the existing
+`MSB3277` warning remains non-blocking.
+
+**Not verified:** The Linux artifacts are engine-only because Agent Omega has no
+Linux desktop shell. The macOS Intel engine is native-verified, but the desktop
+shell/package remains Apple Silicon-only. Signing and notarization are not part
+of this unsigned engine release. The optional paid cloud/browser suite remains
+outside the release gate.
+
 ## 2026-07-11 — v2.6.1 task-quality lifecycle hardening
 
 **Changed:** Added the task-quality lifecycle plugin and its router/sidecar/setup integration, the bottom-of-window operator runner, and startup fail-closed compatibility enforcement for the required engine protocol. Release documentation now identifies the matching Windows engine asset and checksum, explains the intentional old/upstream-engine rejection, and records the platform boundary.

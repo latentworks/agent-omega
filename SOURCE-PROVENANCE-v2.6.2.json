@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "agentOmegaVersion": "2.6.2",
+  "engineRepository": "https://github.com/latentworks/opencode-omega",
+  "engineVersion": "2.6.2-omega.1",
+  "engineTag": "omega-v2.6.2",
+  "sourceCommit": "f32f5c9c5e143651594e901f0501eac5acde1a6d",
+  "sourceDigest": "aea92940cb6a82f3b83b49f6f74e7dd66e55855ddfe3d22f452e7a51cd29d5f1",
+  "buildId": "f32f5c9c5e14-aea92940cb6a",
+  "upstreamBase": "5c23e88419c4743b9be42cea132f2fb1e6cb63ff",
+  "bunVersion": "1.3.14",
+  "bunLockSha256": "1e46bf3acfaf2b1314e1df76ae80539b68691b23c0e948c4d912bf9650cc5cf",
+  "modelsSnapshotSha256": "d00f7569cfe9619e64ed2de4be1a98c77428c07d0bc88c35fb9c9ae199bb668d",
+  "byteReproducibleSameRunner": true,
+  "nativeVerificationRun": "https://github.com/latentworks/opencode-omega/actions/runs/29162529010",
+  "assetSha256": {
+    "opencode-windows-x64.exe": "fd1afe651fb75d072887c046d570c831621602979c576ed1575da47ef6b07bec",
+    "opencode-linux-x64": "f18a8e2572dc81c722185d141dee98bd5c0b6fc1813141d5370bbc86f8370420",
+    "opencode-linux-arm64": "f3cc3bdb2eda562d961cfdfe2ae06cbb2c5a1aa0988c62b90b3000e2eef28a6c",
+    "opencode-darwin-x64": "0527646aa48cf1aa44751f9ab3c803fc675e3ce093ab485dd61c31721cfc72ab",
+    "opencode-darwin-arm64": "422c47268364ab935992d27ae567da4c626d55015ff5fd75fb8eefd5178e6806"
+  }
+}

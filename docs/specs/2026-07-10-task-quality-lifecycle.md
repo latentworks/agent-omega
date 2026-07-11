@@ -1,6 +1,6 @@
 # Agent Omega v2.6 — Task-Quality Lifecycle
 
-**Status:** implemented and approved for v2.6.0 release preparation on 2026-07-10. Publication requires the matching Windows engine asset, checksum, privacy scrub, and CI verification.
+**Status:** implemented for v2.6.0 on 2026-07-10. The original Windows engine-asset, checksum, privacy, and CI publication gates were satisfied; v2.6.2 also publishes the source-complete engine fork and verified native engine assets for all supported release targets.
 
 ## Problem and outcome
 

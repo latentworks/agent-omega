@@ -1,5 +1,11 @@
 # Agent Omega — Windows-Dependency Inventory for a macOS Port
 
+> **Historical inventory:** this document captured the work required before the
+> native Apple Silicon shell was implemented. The current macOS build uses
+> `mac/build-app.sh`; see `SETUP.md` for supported setup and release instructions.
+> The Windows C# shell remains Windows-specific, while macOS uses its native
+> Swift/WKWebView host.
+
 Scope: every Windows-specific dependency in the tree at `the agent-omega repo root`,
 excluding `node_modules/` and `.git/`. Each item cites `file:line` and the Mac
 equivalent / change needed. Counts and the blocker shortlist are at the end.
@@ -15,9 +21,10 @@ Legend for how "hard" an item is:
 
 The host process (`Program.cs`) and its project file are an entirely Windows-only
 WinForms + WebView2 application. On macOS none of WinForms, WebView2, or the Win32
-P/Invoke calls exist. The whole shell has to be re-hosted on a mac-capable web
-container (WKWebView via Avalonia / Photino / .NET MAUI, or drop C# and use Tauri /
-Electron). Individual lines below, but treat this section as one rewrite.
+P/Invoke calls exist. At the time of this inventory, the whole shell had to be
+re-hosted on a mac-capable web container. That work is now implemented as the
+native Swift/WKWebView shell under `mac/`. Individual lines below describe the
+historical porting requirements.
 
 | # | file:line | Item | Mac equivalent / change needed |
 |---|---|---|---|

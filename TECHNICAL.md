@@ -60,8 +60,9 @@ loopback WebSocket to the sidecar, which drives the engine over ACP (the Agent C
 The task-quality lifecycle is not a prompt-only convention. At startup, the
 sidecar verifies the engine's task-quality protocol/capabilities before accepting
 task work. A missing or older/upstream engine fails closed with an update state;
-the sidecar never substitutes an unenforced fallback. The v2.6 Windows engine
-asset and its checksum are documented in [`docs/V2.6_ENGINE_MIGRATION.md`](docs/V2.6_ENGINE_MIGRATION.md).
+the sidecar never substitutes an unenforced fallback. The source-complete public
+fork, native platform assets, build identity, and checksums are documented in
+[`docs/V2.6_ENGINE_MIGRATION.md`](docs/V2.6_ENGINE_MIGRATION.md).
 
 ---
 

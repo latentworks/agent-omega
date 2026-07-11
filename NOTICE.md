@@ -4,7 +4,8 @@ Agent Omega is built on and redistributes a **modified fork** of the open-source
 **opencode** engine, which is licensed under the MIT License.
 
 Full credit for the underlying agent engine goes to the opencode project and its
-contributors (https://github.com/sst/opencode). Agent Omega wraps opencode with a
+contributors (https://github.com/anomalyco/opencode). The complete modified engine
+source is published at https://github.com/latentworks/opencode-omega. Agent Omega wraps opencode with a
 C# .NET desktop shell, a Node.js sidecar, and a Python web bridge; the core
 agent runtime is opencode.
 

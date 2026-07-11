@@ -1,4 +1,8 @@
 <!--
+STATUS: The native Apple Silicon shell, Keychain vault, and packaging path now
+exist on `main`. This file is retained as the original porting playbook; use
+`SETUP.md` and `mac/build-app.sh` for current builds.
+
 HOW TO USE THIS FILE
 ====================
 This is the kickoff prompt for building the macOS branch of Agent Omega in a
@@ -18,7 +22,7 @@ fresh Claude Code (or similar) session ON THE MAC.
 
 # MISSION: Build the macOS branch of Agent Omega (autonomous, self-verifying)
 
-You are an autonomous build agent on a Mac. Build a **native macOS version of Agent Omega** — a desktop coding-agent app that is currently Windows-only — to feature parity with the Windows build. Work **mostly autonomously**: make reasonable calls and keep moving. But follow the gated build workflow, **prove behavior (never plumbing)**, and **adversarially self-verify every piece with subagents**. Stop only for the human decisions and one-way actions flagged below.
+You are an autonomous build agent on a Mac. Validate and extend the existing **native macOS version of Agent Omega** to feature parity with the Windows build. Work **mostly autonomously**: make reasonable calls and keep moving. But follow the gated build workflow, **prove behavior (never plumbing)**, and **adversarially self-verify every piece with subagents**. Stop only for the human decisions and one-way actions flagged below.
 
 ## 0. Orient yourself — before anything else
 1. **Confirm you're inside the repo.** You should see `README.md`, `TECHNICAL.md`, `Program.cs`, `sidecar.mjs`, `ui/`, `config-template/`, and `docs/`. If not, get the repo first — it lives at `~/agent-omega` (or `C:/Users/<winuser>/agent-omega`) on the Windows box; pull it over SSH (`rsync`/`scp`) or clone it.
@@ -41,12 +45,12 @@ Before building, inventory this Mac's toolchain and report in plain English what
 Install the safe, reversible pieces yourself (Command Line Tools via `xcode-select --install`; Node/Bun/git via Homebrew). **PAUSE and ask** before anything heavy or account-bound: full Xcode from the App Store, or anything using the user's Apple Developer account / notarization credentials.
 
 ## 2. What carries over vs what you rebuild
-**Reuse UNCHANGED (~75% of the app — do NOT rewrite):** the Node sidecar (`sidecar.mjs`), the entire web UI (`ui/`), the five plugins (`config-template/opencode/{council,engram,skill-router,iterate-loop,verify-guard}`), `web.py`, and the config. They're already env-driven and home-relative.
+**Reuse UNCHANGED (~75% of the app — do NOT rewrite):** the Node sidecar (`sidecar.mjs`), the entire web UI (`ui/`), the six plugins (`config-template/opencode/{council,engram,skill-router,task-quality,iterate-loop,verify-guard}`), `web.py`, and the config. They're already env-driven and home-relative.
 
 **The three hard swaps (the real work):**
 1. **The shell.** `Program.cs` (C# WinForms + WebView2) has no macOS runtime. Rebuild natively — **recommended: Swift + WKWebView** (smallest bundle, cleanest notarization, ~20-line host-bridge shim). **First do a WebKit smoke test:** load `ui/app.html` in a bare WKWebView and confirm the CRT theme (scanlines, glow, the Ω globe) renders faithfully. If WebKit mangles it, switch to **Electron** (guaranteed Chromium parity) before investing in Swift.
 2. **The vault.** Windows DPAPI + PowerShell `secrets.ps1` → **macOS Keychain** via the `security` CLI. Preserve the exact get/list/set/remove contract the sidecar expects and the never-log / never-hang guarantees. Single-encrypted-blob model to dodge Keychain's per-item enumerate friction.
-3. **The engine.** The Windows `opencode.exe` won't run, and you CANNOT use upstream opencode's Mac release — Agent Omega ships a **fork**. Build your own: `bun build --compile --target=bun-darwin-arm64` (or `-x64`) against the fork's `packages/opencode`. Bundle it **signed inside the `.app`** so Gatekeeper doesn't quarantine it. (The fork source is on the Windows box under `opencode-fork/` — pull it over too if it isn't already alongside this repo.)
+3. **The engine.** The Windows `opencode.exe` won't run, and you CANNOT use upstream opencode's Mac release — Agent Omega ships a **fork**. Download the matching native asset or build it from the public [`latentworks/opencode-omega`](https://github.com/latentworks/opencode-omega) tag, then bundle it **signed inside the `.app`** so Gatekeeper doesn't quarantine it.
 
 Also rewrite any prompt/skill/reference doc that prefers **PowerShell** to **zsh/bash** for the Mac (inventory doc, category E) — that's runtime correctness, not just docs.
 

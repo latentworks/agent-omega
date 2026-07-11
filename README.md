@@ -20,7 +20,7 @@ way a careful engineer works: try, check the real output, fix, and try again.
 
 ## What it is (honestly)
 
-Agent Omega is **built on [opencode](https://github.com/sst/opencode)**, the
+Agent Omega is **built on [opencode](https://github.com/anomalyco/opencode)**, the
 open-source coding-agent engine. It is a fork, extended — not a from-scratch
 engine. opencode does the hard part: the agent loop, tool calls, provider
 plumbing, the ACP protocol. Agent Omega wraps and extends it with a desktop shell,
@@ -32,7 +32,9 @@ Agent Omega.
 engine asset; an upstream or earlier engine intentionally fails closed rather
 than running the lifecycle unenforced. See the [v2.6 engine migration
 note](docs/V2.6_ENGINE_MIGRATION.md). The released v2.6 engine asset is currently
-Windows-only.
+available for Windows x64, Linux x64/arm64, and macOS Intel/Apple Silicon; the
+complete fork source is public at
+[`latentworks/opencode-omega`](https://github.com/latentworks/opencode-omega).
 
 The shape of the thing:
 
@@ -49,7 +51,7 @@ the tool discipline of OpenAI's **Codex** and the working style of Anthropic's
 **Claude Code** — plus the owner's own workflows for verification, delegation, and
 memory. These are ideas **blended and integrated**, not invented here. The value
 Agent Omega claims is in the integration: getting these patterns to work together
-in one hot-swappable, local-first tool.
+in one hot-swappable, model-independent tool.
 
 ---
 
@@ -170,8 +172,10 @@ Watch this repo for updates. When something here is real and measured, it gets d
 
 ## Credits
 
-- **[opencode](https://github.com/sst/opencode)** — the open-source engine Agent
+- **[opencode](https://github.com/anomalyco/opencode)** — the open-source engine Agent
   Omega is built on. The foundation this whole thing stands on.
+- **[opencode-omega](https://github.com/latentworks/opencode-omega)** — the public,
+  source-complete engine fork and reproducible native release assets used by Agent Omega.
 - **OpenAI Codex** and **Anthropic Claude Code** — the coding-agent patterns Agent
   Omega learned from and integrated. Ideas borrowed and blended, not invented here.
 - The desktop shell, secrets vault, web gateway, skill and memory system, council

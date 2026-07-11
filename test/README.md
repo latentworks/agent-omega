@@ -21,7 +21,7 @@ the port; `AO_MODEL` the default model.
 
 This is an optional paid/API end-to-end suite, not a release gate. The v2.6 release
 record lists the exact checks that were run and the surfaces that remain unverified:
-[`docs/releases/v2.6.1.md`](../docs/releases/v2.6.1.md).
+[`docs/releases/v2.6.2.md`](../docs/releases/v2.6.2.md).
 
 ## v2.6 lifecycle and router logic checks
 
@@ -44,7 +44,7 @@ classification to the active local model, require an explicit local fallback for
 cloud-led turns, scope failure cooldowns to the classifier endpoint/model/provider
 instead of globally poisoning other routes, and exclude internal subagent messages.
 
-## v2.6 final Windows live evidence
+## v2.6.1 final Windows live evidence
 
 The final packaged engine exercised in the Windows app was
 `0.0.0-omega-task-quality-202607111649`, SHA-256
