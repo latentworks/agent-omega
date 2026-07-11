@@ -7,6 +7,7 @@ export const PHASE = Object.freeze({
   PLANNING: 'planning',
   AWAITING_APPROVAL: 'awaiting-approval',
   APPROVED: 'approved',
+  AWAITING_ARTIFACT_REVIEW: 'awaiting-artifact-review',
   DECLINED: 'declined',
   ARTIFACT_REVIEWED: 'artifact-reviewed',
   ARTIFACT_REVIEW_FAILED: 'artifact-review-failed',
@@ -36,9 +37,12 @@ export function createLifecycle(handoff, { generation = 1, now = Date.now() } = 
     planReview: null,
     repairedPlan: null,
     approval: null,
+    artifactReviewMessageID: null,
+    revocationPending: null,
     pendingExecutions: Object.freeze([]),
     receipts: Object.freeze([]),
     artifactReview: null,
+    artifactReviewFailure: null,
     reviewedArtifact: null,
     createdAt: nowValue(now),
     updatedAt: nowValue(now),
@@ -49,7 +53,24 @@ export function createLifecycle(handoff, { generation = 1, now = Date.now() } = 
 // task gets a new monotonic generation so an older approval cannot bleed over.
 export function reconstructLifecycle(existing, handoff, { now = Date.now() } = {}) {
   const previousGeneration = Number.isSafeInteger(existing?.generation) ? existing.generation : 0
-  if (existing?.taskKey === handoff?.taskKey && existing?.version === 1) return existing
+  // A routed follow-up must not erase an unresolved durable precommit. The
+  // exact completion or permission rejection is the only event allowed to
+  // settle it, after which the pending scope transition closes authorization.
+  if (existing?.version === 1 && hasUnsettledExecution(existing)) return existing
+  // The persisted external turn closes mutation before routing runs. Preserve
+  // the old task only for that exact message so its artifact review can use the
+  // approval and receipts it is meant to audit; later routed turns are new work.
+  if (
+    existing?.version === 1 &&
+    existing.phase === PHASE.AWAITING_ARTIFACT_REVIEW &&
+    existing.artifactReviewMessageID &&
+    existing.artifactReviewMessageID === handoff?.messageID
+  ) return existing
+  if (
+    existing?.taskKey === handoff?.taskKey &&
+    existing?.taskMessageID === handoff?.messageID &&
+    existing?.version === 1
+  ) return existing
   return createLifecycle(handoff, { generation: previousGeneration + 1, now })
 }
 
@@ -84,6 +105,9 @@ function normalizeCriteria(value) {
 
 export function recordRepairedPlan(lifecycle, plan, { review, acceptanceCriteria, reviewedDigest, now = Date.now() } = {}) {
   if (!lifecycle || lifecycle.version !== 1) throw new Error('valid lifecycle is required')
+  if (lifecycle.phase !== PHASE.PLANNING || hasUnsettledExecution(lifecycle) || lifecycle.revocationPending) {
+    throw new Error('the current task is not eligible for a repaired-plan checkpoint')
+  }
   const planReview = acceptedPlanReview(review)
   if (!planReview) throw new Error('a completed isolated plan review with a pass verdict is required before recording the repaired plan')
   if (typeof reviewedDigest !== 'string' || !reviewedDigest) throw new Error('an engine-calculated reviewed-plan digest is required before recording the repaired plan')
@@ -96,17 +120,23 @@ export function recordRepairedPlan(lifecycle, plan, { review, acceptanceCriteria
     phase: PHASE.AWAITING_APPROVAL,
     planReview,
     acceptanceCriteria: normalizeCriteria(acceptanceCriteria),
-    repairedPlan,
-    approval: null,
-    updatedAt: nowValue(now),
+      repairedPlan,
+      approval: null,
+      artifactReviewMessageID: null,
+      revocationPending: null,
+      updatedAt: nowValue(now),
   })
 }
 
 export function parseExplicitDecision(text) {
-  const value = String(text || '').trim().toLowerCase()
+  // Approval is a standalone authorization, not a prefix a scope-changing
+  // request can borrow while the router is degraded. Keep the accepted forms
+  // deliberately small and require every non-whitespace token to be part of
+  // the decision itself.
+  const value = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ').replace(/[.!]+$/, '').trim()
   if (!value || value.includes('?')) return null
-  if (/\b(?:no|don't|do not|not yet|hold|stop|wait|decline|reject)\b/.test(value)) return 'no-go'
-  if (/\b(?:go(?:\s+(?:ahead|for it|for gold))?|approve(?:d)?|proceed|ship it)\b/.test(value)) return 'go'
+  if (/^(?:no|don't|do not|not yet|hold|stop|wait|decline|reject)$/.test(value)) return 'no-go'
+  if (/^(?:go|go ahead|go for it|go for gold|approve|approved|proceed|ship it)$/.test(value)) return 'go'
   return null
 }
 
@@ -139,10 +169,80 @@ export function recordUserDecision(lifecycle, { origin, messageID, text, expecte
   }
 }
 
+// A new substantive external-user turn is a new scope boundary even when the
+// router returns NONE or is unavailable. Close the old authorization before
+// any tool from that turn can borrow it. Standalone go/no decisions remain
+// eligible for recordUserDecision instead.
+export function revokeApprovalForSubstantiveTurn(lifecycle, { origin, messageID, text, now = Date.now() } = {}) {
+  if (!lifecycle || lifecycle.version !== 1) return { ok: false, reason: 'missing-lifecycle' }
+  if (origin !== 'external-user') return { ok: false, reason: 'revocation-requires-external-user-message' }
+  if (parseExplicitDecision(text)) return { ok: false, reason: 'standalone-user-decision' }
+  if (!hasCurrentApproval(lifecycle)) return { ok: false, reason: 'no-current-approval' }
+  if (typeof messageID !== 'string' || !messageID) return { ok: false, reason: 'missing-message-identity' }
+  // Once execution has settled, close mutation without destroying the exact
+  // approval and receipts needed for a same-task artifact-review follow-up.
+  // An unsettled execution retains its approval identity only for settlement.
+  // The durable latch immediately disables new mutation, survives routing, and
+  // prevents the old approval from becoming live again when settlement lands.
+  if (hasUnsettledExecution(lifecycle)) {
+    return {
+      ok: true,
+      lifecycle: Object.freeze({
+        ...lifecycle,
+        revocationPending: Object.freeze({ messageID, requestedAt: nowValue(now) }),
+        updatedAt: nowValue(now),
+      }),
+    }
+  }
+  if (Array.isArray(lifecycle.receipts) && lifecycle.receipts.length > 0) {
+    return {
+      ok: true,
+      lifecycle: Object.freeze({
+        ...lifecycle,
+        phase: PHASE.AWAITING_ARTIFACT_REVIEW,
+        artifactReviewMessageID: messageID,
+        revocationPending: null,
+        updatedAt: nowValue(now),
+      }),
+    }
+  }
+  const generation = lifecycle.generation + 1
+  return {
+    ok: true,
+    lifecycle: Object.freeze({
+      ...lifecycle,
+      phase: PHASE.PLANNING,
+      generation,
+      planReview: null,
+      repairedPlan: null,
+      acceptanceCriteria: Object.freeze([]),
+      approval: null,
+      artifactReviewMessageID: null,
+      revocationPending: null,
+      receipts: Object.freeze([]),
+      artifactReview: null,
+      artifactReviewFailure: null,
+      reviewedArtifact: null,
+      updatedAt: nowValue(now),
+    }),
+  }
+}
+
+export function hasArtifactReviewAuthorization(lifecycle) {
+  return Boolean(
+    lifecycle?.version === 1 &&
+      (lifecycle.phase === PHASE.APPROVED || lifecycle.phase === PHASE.AWAITING_ARTIFACT_REVIEW) &&
+      lifecycle.repairedPlan?.generation === lifecycle.generation &&
+      lifecycle.approval?.generation === lifecycle.generation &&
+      lifecycle.approval?.planDigest === lifecycle.repairedPlan?.digest,
+  )
+}
+
 export function hasCurrentApproval(lifecycle) {
   return Boolean(
     lifecycle?.version === 1 &&
       lifecycle.phase === PHASE.APPROVED &&
+      !lifecycle.revocationPending &&
       lifecycle.repairedPlan?.generation === lifecycle.generation &&
       lifecycle.approval?.generation === lifecycle.generation &&
       lifecycle.approval?.planDigest === lifecycle.repairedPlan?.digest,
@@ -153,7 +253,45 @@ export function hasUnsettledExecution(lifecycle) {
   return Array.isArray(lifecycle?.pendingExecutions) && lifecycle.pendingExecutions.length > 0
 }
 
-const PENDING_EXECUTION_LIMIT = 24
+function hasSettlementAuthorization(lifecycle) {
+  return Boolean(
+    lifecycle?.version === 1 &&
+      lifecycle.phase === PHASE.APPROVED &&
+      lifecycle.repairedPlan?.generation === lifecycle.generation &&
+      lifecycle.approval?.generation === lifecycle.generation &&
+      lifecycle.approval?.planDigest === lifecycle.repairedPlan?.digest,
+  )
+}
+
+function finishPendingScopeTransition(lifecycle, { now = Date.now() } = {}) {
+  if (!lifecycle?.revocationPending || hasUnsettledExecution(lifecycle)) return lifecycle
+  if (Array.isArray(lifecycle.receipts) && lifecycle.receipts.length > 0) {
+    return Object.freeze({
+      ...lifecycle,
+      phase: PHASE.AWAITING_ARTIFACT_REVIEW,
+      artifactReviewMessageID: lifecycle.revocationPending.messageID,
+      revocationPending: null,
+      updatedAt: nowValue(now),
+    })
+  }
+  return Object.freeze({
+    ...lifecycle,
+    phase: PHASE.PLANNING,
+    generation: lifecycle.generation + 1,
+    planReview: null,
+    repairedPlan: null,
+    acceptanceCriteria: Object.freeze([]),
+    approval: null,
+    artifactReviewMessageID: null,
+    revocationPending: null,
+    artifactReview: null,
+    artifactReviewFailure: null,
+    reviewedArtifact: null,
+    updatedAt: nowValue(now),
+  })
+}
+
+export const PENDING_EXECUTION_LIMIT = 24
 
 function normalizePendingExecution(execution) {
   if (!execution || typeof execution !== 'object') throw new TypeError('a durable execution precommit is required')
@@ -190,7 +328,8 @@ export function recordExecutionPermissionRejected(lifecycle, { callID, tool, now
   const match = pending.find((item) => item?.callID === callID)
   if (!match) return lifecycle
   if (match.tool !== tool) throw new Error('permission rejection does not match the durable execution precommit')
-  return Object.freeze({ ...lifecycle, pendingExecutions: Object.freeze(pending.filter((item) => item?.callID !== callID)), updatedAt: nowValue(now) })
+  const settled = Object.freeze({ ...lifecycle, pendingExecutions: Object.freeze(pending.filter((item) => item?.callID !== callID)), updatedAt: nowValue(now) })
+  return finishPendingScopeTransition(settled, { now })
 }
 
 const RECEIPT_LIMIT = 24
@@ -201,23 +340,29 @@ function normalizeReceipt(receipt) {
   const callID = String(receipt.callID || '')
   const tool = String(receipt.tool || '')
   const kind = receipt.kind === 'verification' ? 'verification' : receipt.kind === 'tool' ? 'tool' : ''
+  const agent = receipt.agent === undefined ? '' : String(receipt.agent)
+  const childBuiltinReads = receipt.childBuiltinReads
   const outputDigest = String(receipt.outputDigest || '')
   const outputBytes = receipt.outputBytes
   const capturedAt = receipt.capturedAt
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(callID)) throw new TypeError('receipt call identity is invalid')
   if (!/^[A-Za-z0-9_.:-]{1,120}$/.test(tool)) throw new TypeError('receipt tool identity is invalid')
   if (!kind || !DIGEST.test(outputDigest)) throw new TypeError('receipt must contain a canonical output digest')
+  if (agent && !/^[A-Za-z0-9_.:-]{1,120}$/.test(agent)) throw new TypeError('receipt agent identity is invalid')
+  if (childBuiltinReads !== undefined && (!Number.isSafeInteger(childBuiltinReads) || childBuiltinReads < 1 || childBuiltinReads > 10_000)) throw new TypeError('receipt child builtin read count is invalid')
   if (!Number.isSafeInteger(outputBytes) || outputBytes < 0 || outputBytes > 1_000_000) throw new TypeError('receipt output size is invalid')
   if (!Number.isSafeInteger(capturedAt) || capturedAt <= 0) throw new TypeError('receipt timestamp is invalid')
-  return Object.freeze({ callID, tool, kind, outputDigest, outputBytes, capturedAt })
+  return Object.freeze({ callID, tool, kind, ...(agent ? { agent } : {}), ...(childBuiltinReads !== undefined ? { childBuiltinReads } : {}), outputDigest, outputBytes, capturedAt })
 }
 
-// Receipts never contain arguments, paths, output, metadata, attachments, or
-// model text. They are bounded provenance for a later clean-room artifact
-// review. Replaying the same completed tool call is idempotent; a different
+// Receipts never contain arguments, paths, output, arbitrary metadata,
+// attachments, or model text. A task receipt may retain only the engine-
+// resolved final agent identity after transforms and the engine-attested count
+// of completed builtin child reads. They are bounded provenance
+// for a later clean-room artifact review. Replaying the same completed tool call is idempotent; a different
 // payload for the same call ID fails closed instead of silently overwriting it.
 export function recordReceipt(lifecycle, receipt, { now = Date.now() } = {}) {
-  if (!hasCurrentApproval(lifecycle)) throw new Error('a current explicit approval is required before recording execution receipts')
+  if (!hasSettlementAuthorization(lifecycle)) throw new Error('the receipt is not authorized for settlement by the approved task generation')
   const nextReceipt = normalizeReceipt(receipt)
   const existing = Array.isArray(lifecycle.receipts) ? lifecycle.receipts : []
   const prior = existing.find((item) => item?.callID === nextReceipt.callID)
@@ -225,13 +370,16 @@ export function recordReceipt(lifecycle, receipt, { now = Date.now() } = {}) {
     if (JSON.stringify(prior) !== JSON.stringify(nextReceipt)) throw new Error('a receipt already exists for this call identity with different evidence')
     const pending = Array.isArray(lifecycle.pendingExecutions) ? lifecycle.pendingExecutions : []
     const remaining = pending.filter((item) => item?.callID !== nextReceipt.callID)
-    return remaining.length === pending.length ? lifecycle : Object.freeze({ ...lifecycle, pendingExecutions: Object.freeze(remaining), updatedAt: nowValue(now) })
+    if (remaining.length === pending.length) return lifecycle
+    const settled = Object.freeze({ ...lifecycle, pendingExecutions: Object.freeze(remaining), updatedAt: nowValue(now) })
+    return finishPendingScopeTransition(settled, { now })
   }
   const pending = Array.isArray(lifecycle.pendingExecutions) ? lifecycle.pendingExecutions : []
   const execution = pending.find((item) => item?.callID === nextReceipt.callID)
   if (!execution || execution.tool !== nextReceipt.tool) throw new Error('receipt has no matching durable execution precommit')
   const receipts = Object.freeze([...existing, nextReceipt].slice(-RECEIPT_LIMIT))
-  return Object.freeze({ ...lifecycle, receipts, pendingExecutions: Object.freeze(pending.filter((item) => item?.callID !== nextReceipt.callID)), updatedAt: nowValue(now) })
+  const settled = Object.freeze({ ...lifecycle, receipts, pendingExecutions: Object.freeze(pending.filter((item) => item?.callID !== nextReceipt.callID)), updatedAt: nowValue(now) })
+  return finishPendingScopeTransition(settled, { now })
 }
 
 function completedArtifactReview(review) {
@@ -254,7 +402,7 @@ function completedArtifactReview(review) {
 }
 
 export function recordArtifactReview(lifecycle, artifact, { review, reviewedDigest, now = Date.now() } = {}) {
-  if (!hasCurrentApproval(lifecycle)) throw new Error('a current explicit approval is required before artifact review')
+  if (!hasArtifactReviewAuthorization(lifecycle)) throw new Error('a current explicit approval is required before artifact review')
   if (hasUnsettledExecution(lifecycle)) throw new Error('unresolved execution evidence blocks artifact review')
   if (!Array.isArray(lifecycle.receipts) || lifecycle.receipts.length < 1) throw new Error('at least one sanitized execution or verification receipt is required before artifact review')
   if (typeof artifact !== 'string' || !artifact.trim()) throw new TypeError('artifact text is required')
@@ -271,7 +419,36 @@ export function recordArtifactReview(lifecycle, artifact, { review, reviewedDige
     generation,
     phase: artifactReview.verdict === 'pass' ? PHASE.ARTIFACT_REVIEWED : PHASE.ARTIFACT_REVIEW_FAILED,
     artifactReview,
+    artifactReviewFailure: null,
     reviewedArtifact,
+    updatedAt: nowValue(now),
+  })
+}
+
+// An engine review that cannot produce a completed, bound result must not
+// leave an approved generation looking eligible for a completion claim. This
+// records only the local artifact identity and failure reason; it never
+// fabricates a reviewer verdict or route.
+export function recordArtifactReviewDenied(lifecycle, artifact, { reason, now = Date.now() } = {}) {
+  if (!hasArtifactReviewAuthorization(lifecycle)) throw new Error('a current explicit approval is required before artifact review')
+  if (hasUnsettledExecution(lifecycle)) throw new Error('unresolved execution evidence blocks artifact review')
+  if (!Array.isArray(lifecycle.receipts) || lifecycle.receipts.length < 1) throw new Error('at least one sanitized execution or verification receipt is required before artifact review')
+  if (typeof artifact !== 'string' || !artifact.trim()) throw new TypeError('artifact text is required')
+  const detail = String(reason || '').replace(/\s+/g, ' ').trim()
+  if (!detail) throw new TypeError('artifact review denial reason is required')
+  const generation = lifecycle.generation + 1
+  return Object.freeze({
+    ...lifecycle,
+    generation,
+    phase: PHASE.ARTIFACT_REVIEW_FAILED,
+    artifactReview: null,
+    artifactReviewFailure: Object.freeze({
+      digest: digestPlan(artifact),
+      reason: detail.slice(0, 6000),
+      generation,
+      recordedAt: nowValue(now),
+    }),
+    reviewedArtifact: null,
     updatedAt: nowValue(now),
   })
 }

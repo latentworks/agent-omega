@@ -1,63 +1,106 @@
 // task-quality: the durable Slice 1 plan/approval gate. Existing skills still
 // own planning and review procedure; this plugin owns only lifecycle state and
 // engine admission. There is intentionally no session.idle hook here.
-import { readFileSync, appendFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { tmpdir } from 'node:os'
-import { tool } from '@opencode-ai/plugin'
-import { createLifecycleAdapter, normalizeSnapshot } from './adapter.mjs'
-import { configuredReviewerCandidates } from './reviewer.mjs'
-import { getRouteHandoff, digestText } from './handoff.mjs'
-import { admitTaskQualityTool, CONTROL_TOOL, ARTIFACT_CONTROL_TOOL } from './admission.mjs'
-import { createLifecycle, digestPlan, hasCurrentApproval, hasUnsettledExecution, reconstructLifecycle, recordArtifactReview, recordExecutionPermissionRejected, recordExecutionStarted, recordReceipt, recordRepairedPlan, recordUserDecision } from './lifecycle.mjs'
+import { readFileSync, appendFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { tool } from "@opencode-ai/plugin";
+import { createLifecycleAdapter, normalizeSnapshot } from "./adapter.mjs";
+import { configuredReviewerCandidates } from "./reviewer.mjs";
+import { getRouteHandoff, digestText } from "./handoff.mjs";
+import {
+  admitTaskQualityTool,
+  CONTROL_TOOL,
+  ARTIFACT_CONTROL_TOOL,
+} from "./admission.mjs";
+import {
+  createLifecycle,
+  digestPlan,
+  hasCurrentApproval,
+  hasArtifactReviewAuthorization,
+  hasUnsettledExecution,
+  reconstructLifecycle,
+  recordArtifactReview,
+  recordArtifactReviewDenied,
+  recordExecutionPermissionRejected,
+  recordExecutionStarted,
+  recordReceipt,
+  recordRepairedPlan,
+  recordUserDecision,
+  revokeApprovalForSubstantiveTurn,
+  PENDING_EXECUTION_LIMIT,
+} from "./lifecycle.mjs";
 
-const z = tool.schema
-const HERE = dirname(fileURLToPath(import.meta.url))
+const z = tool.schema;
+const HERE = dirname(fileURLToPath(import.meta.url));
 const POLICY = (() => {
-  try { return JSON.parse(readFileSync(join(HERE, 'policy.json'), 'utf8')) } catch { return null }
-})()
-const LOG = process.env.TASK_QUALITY_LOG || join(tmpdir(), 'task-quality.log')
-const MAX_SUBMISSION_CHARS = 24000
-const MAX_ACCEPTANCE_CRITERIA = 32
-const MAX_CRITERION_CHARS = 2000
-function log(message) { try { appendFileSync(LOG, `[${new Date().toISOString()}] ${message}\n`) } catch {} }
+  try {
+    return JSON.parse(readFileSync(join(HERE, "policy.json"), "utf8"));
+  } catch {
+    return null;
+  }
+})();
+const LOG = process.env.TASK_QUALITY_LOG || join(tmpdir(), "task-quality.log");
+const MAX_SUBMISSION_CHARS = 24000;
+const MAX_ACCEPTANCE_CRITERIA = 32;
+const MAX_CRITERION_CHARS = 2000;
+const APPROVAL_REVOCATION_CAS_ATTEMPTS = PENDING_EXECUTION_LIMIT + 2;
+function log(message) {
+  try {
+    appendFileSync(LOG, `[${new Date().toISOString()}] ${message}\n`);
+  } catch {}
+}
 
 function textParts(output) {
-  return (output?.parts || []).filter((part) => part?.type === 'text').map((part) => part.text || '').join(' ').trim()
+  return (output?.parts || [])
+    .filter((part) => part?.type === "text")
+    .map((part) => part.text || "")
+    .join(" ")
+    .trim();
 }
 
 function boundedText(value, label) {
-  if (typeof value !== 'string') throw new TypeError(`${label} must be text`)
-  const text = value.trim()
-  if (!text) throw new TypeError(`${label} is required`)
-  if (text.length > MAX_SUBMISSION_CHARS) throw new RangeError(`${label} must be at most ${MAX_SUBMISSION_CHARS} characters`)
-  return text
+  if (typeof value !== "string") throw new TypeError(`${label} must be text`);
+  const text = value.trim();
+  if (!text) throw new TypeError(`${label} is required`);
+  if (text.length > MAX_SUBMISSION_CHARS)
+    throw new RangeError(
+      `${label} must be at most ${MAX_SUBMISSION_CHARS} characters`,
+    );
+  return text;
 }
 
 function boundedCriteria(value) {
-  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_ACCEPTANCE_CRITERIA) throw new TypeError('at least one acceptance criterion is required')
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length > MAX_ACCEPTANCE_CRITERIA
+  )
+    throw new TypeError("at least one acceptance criterion is required");
   return value.map((item) => {
-    if (typeof item !== 'string') throw new TypeError('acceptance criteria must be text')
-    const criterion = item.trim()
-    if (!criterion || criterion.length > MAX_CRITERION_CHARS) throw new TypeError('acceptance criteria must be non-empty concise text')
-    return criterion
-  })
+    if (typeof item !== "string")
+      throw new TypeError("acceptance criteria must be text");
+    const criterion = item.trim();
+    if (!criterion || criterion.length > MAX_CRITERION_CHARS)
+      throw new TypeError("acceptance criteria must be non-empty concise text");
+    return criterion;
+  });
 }
 
 function policyIsValid() {
-  return POLICY?.schemaVersion === 1 && POLICY?.enforcement?.mode === 'fail-closed'
+  return (
+    POLICY?.schemaVersion === 1 && POLICY?.enforcement?.mode === "fail-closed"
+  );
 }
 
 async function loadOrCreate(adapter, sessionID, handoff) {
   // A conflicting update is never merged locally. Re-read and retry the small
   // deterministic transition; after two conflicts, leave mutation blocked.
   for (let attempt = 0; attempt < 2; attempt++) {
-    const snapshot = normalizeSnapshot(await adapter.get(sessionID))
-    const lifecycle = snapshot.data?.taskKey === handoff.taskKey
-      ? snapshot.data
-      : reconstructLifecycle(snapshot.data, handoff)
-    if (lifecycle === snapshot.data) return { snapshot, lifecycle }
+    const snapshot = normalizeSnapshot(await adapter.get(sessionID));
+    const lifecycle = reconstructLifecycle(snapshot.data, handoff);
+    if (lifecycle === snapshot.data) return { snapshot, lifecycle };
     try {
       await adapter.update({
         sessionID,
@@ -65,21 +108,93 @@ async function loadOrCreate(adapter, sessionID, handoff) {
         expectedGeneration: snapshot.generation,
         generation: lifecycle.generation,
         data: lifecycle,
-      })
+      });
     } catch (error) {
-      if (attempt === 1) throw error
-      continue
+      if (attempt === 1) throw error;
+      continue;
     }
   }
-  throw new Error('task-quality lifecycle could not be initialized')
+  throw new Error("task-quality lifecycle could not be initialized");
 }
 
-async function recordPlan(adapter, sessionID, plan, acceptanceCriteria, review) {
-  const handoff = getRouteHandoff(sessionID)
-  if (!handoff?.qualifies) throw new Error('No qualifying skill-router handoff exists for this task. Do not implement; establish the task plan first.')
+async function lifecycleOwner(adapter, engineBridge, sessionID) {
+  // A direct TaskTool execution owns a child session. Its mutating tools are
+  // still part of the parent task that passed review and received external
+  // approval, but generic Session.parentID is public caller input and cannot
+  // prove TaskTool provenance. Resolve only the short-lived engine-issued
+  // direct-task grant exposed through the loader-attested private bridge.
+  const own = normalizeSnapshot(await adapter.get(sessionID));
+  if (own.data) return { sessionID, snapshot: own };
+  const parentID =
+    typeof engineBridge?.directTaskParent === "function"
+      ? engineBridge.directTaskParent(sessionID)
+      : undefined;
+  if (typeof parentID !== "string" || !parentID || parentID === sessionID)
+    return { sessionID, snapshot: own };
+  return {
+    sessionID: parentID,
+    snapshot: normalizeSnapshot(await adapter.get(parentID)),
+  };
+}
+
+async function settlementOwner(adapter, engineBridge, input) {
+  const own = normalizeSnapshot(await adapter.get(input.sessionID));
+  if (own.data) return { sessionID: input.sessionID, snapshot: own };
+  const parentID =
+    typeof engineBridge?.takeDirectTaskExecution === "function"
+      ? engineBridge.takeDirectTaskExecution(input.sessionID, input.callID)
+      : undefined;
+  if (typeof parentID !== "string" || !parentID || parentID === input.sessionID)
+    return { sessionID: input.sessionID, snapshot: own };
+  return {
+    sessionID: parentID,
+    snapshot: normalizeSnapshot(await adapter.get(parentID)),
+  };
+}
+
+function taskIdentity(lifecycle) {
+  return {
+    taskKey: lifecycle?.taskKey,
+    taskMessageID: lifecycle?.taskMessageID,
+    generation: lifecycle?.generation,
+  };
+}
+
+function sameTaskIdentity(lifecycle, expected, snapshotGeneration) {
+  return (
+    !!lifecycle &&
+    lifecycle.taskKey === expected.taskKey &&
+    lifecycle.taskMessageID === expected.taskMessageID &&
+    lifecycle.generation === expected.generation &&
+    snapshotGeneration === expected.generation
+  );
+}
+
+async function recordPlan(
+  adapter,
+  sessionID,
+  expected,
+  plan,
+  acceptanceCriteria,
+  review,
+) {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const current = await loadOrCreate(adapter, sessionID, handoff)
-    const next = recordRepairedPlan(current.lifecycle, plan, { review, acceptanceCriteria, reviewedDigest: review?.submission?.digest })
+    const snapshot = normalizeSnapshot(await adapter.get(sessionID));
+    if (!snapshot.data)
+      throw new Error(
+        "No durable qualifying task lifecycle exists. Do not implement; establish the task plan first.",
+      );
+    if (!sameTaskIdentity(snapshot.data, expected, snapshot.generation)) {
+      throw new Error(
+        "The routed task changed while the plan review was running. Start a fresh checkpoint for the current task.",
+      );
+    }
+    const current = { snapshot, lifecycle: snapshot.data };
+    const next = recordRepairedPlan(current.lifecycle, plan, {
+      review,
+      acceptanceCriteria,
+      reviewedDigest: review?.submission?.digest,
+    });
     try {
       const saved = await adapter.update({
         sessionID,
@@ -87,35 +202,75 @@ async function recordPlan(adapter, sessionID, plan, acceptanceCriteria, review) 
         expectedGeneration: current.snapshot.generation,
         generation: next.generation,
         data: next,
-      })
-      return normalizeSnapshot(saved).data || next
+      });
+      return normalizeSnapshot(saved).data || next;
     } catch (error) {
-      if (attempt === 1) throw error
+      if (attempt === 1) throw error;
     }
   }
-  throw new Error('Task quality could not record the repaired plan due to a concurrent lifecycle update.')
+  throw new Error(
+    "Task quality could not record the repaired plan due to a concurrent lifecycle update.",
+  );
+}
+
+async function routeHandoff(sessionID, engineBridge) {
+  // Production uses the engine-attested bridge. The Map fallback keeps direct
+  // plugin tests and legacy inert installs deterministic; it is never an
+  // authorization source when the bridge is present.
+  if (typeof engineBridge?.awaitRouteDecision === "function")
+    return await engineBridge.awaitRouteDecision(sessionID);
+  return getRouteHandoff(sessionID);
 }
 
 async function recordApproval(adapter, input, output) {
   // `origin` is supplied by the engine from the persisted message, never from
   // client text. Missing/legacy origin remains blocked by recordUserDecision.
-  const snapshot = normalizeSnapshot(await adapter.get(input.sessionID))
-  if (!snapshot.data) return
-  const decision = recordUserDecision(snapshot.data, {
-    origin: input.origin,
-    messageID: input.messageID,
-    text: textParts(output),
-    expectedGeneration: snapshot.generation,
-  })
-  if (!decision.ok) return
-  await adapter.update({
-    sessionID: input.sessionID,
-    expectedRevision: snapshot.revision,
-    expectedGeneration: snapshot.generation,
-    generation: decision.lifecycle.generation,
-    data: decision.lifecycle,
-  })
-  log(`recorded ${decision.lifecycle.phase} for ${input.sessionID} generation=${decision.lifecycle.generation}`)
+  const text = textParts(output);
+  // Every bounded pending execution can settle concurrently with this
+  // persisted user turn. Re-read through the entire pending bound, plus a
+  // small margin, so those finite receipt writers cannot leave stale approval
+  // live when routing later returns NONE or fails.
+  for (let attempt = 0; attempt < APPROVAL_REVOCATION_CAS_ATTEMPTS; attempt++) {
+    const snapshot = normalizeSnapshot(await adapter.get(input.sessionID));
+    if (!snapshot.data) return;
+    const revoked = revokeApprovalForSubstantiveTurn(snapshot.data, {
+      origin: input.origin,
+      messageID: input.messageID,
+      text,
+    });
+    const decision = revoked.ok
+      ? null
+      : recordUserDecision(snapshot.data, {
+          origin: input.origin,
+          messageID: input.messageID,
+          text,
+          expectedGeneration: snapshot.generation,
+        });
+    const next = revoked.ok ? revoked.lifecycle : decision?.ok ? decision.lifecycle : null;
+    if (!next) return;
+    try {
+      await adapter.update({
+        sessionID: input.sessionID,
+        expectedRevision: snapshot.revision,
+        expectedGeneration: snapshot.generation,
+        generation: next.generation,
+        data: next,
+      });
+      if (revoked.ok) {
+        log(
+          `revoked stale approval for substantive external turn ${input.sessionID} generation=${next.generation}`,
+        );
+      } else {
+        log(
+          `recorded ${next.phase} for ${input.sessionID} generation=${next.generation}`,
+        );
+      }
+      return;
+    } catch (error) {
+      const isConflict = error?.status === 409 || /CAS conflict/i.test(String(error?.message || ""));
+      if (!isConflict || attempt === APPROVAL_REVOCATION_CAS_ATTEMPTS - 1) throw error;
+    }
+  }
 }
 
 function receiptFromToolResult(input, output) {
@@ -123,96 +278,163 @@ function receiptFromToolResult(input, output) {
   // its own CAS write. Never retain tool args, raw output, file paths,
   // metadata, attachments, or model text: a later reviewer receives bounded
   // provenance only, not a second hidden builder transcript.
-  if (!input?.sessionID || !input?.callID || !input?.tool || input.tool === CONTROL_TOOL || input.tool === ARTIFACT_CONTROL_TOOL) return null
-  const value = typeof output?.output === 'string' ? output.output : ''
-  const outputBytes = Buffer.byteLength(value, 'utf8')
-  if (outputBytes > 1_000_000) return null
-  const verification = /(?:test|verify|check|lint|build|audit)/i.test(input.tool)
+  if (
+    !input?.sessionID ||
+    !input?.callID ||
+    !input?.tool ||
+    input.tool === CONTROL_TOOL ||
+    input.tool === ARTIFACT_CONTROL_TOOL
+  )
+    return null;
+  const value = typeof output?.output === "string" ? output.output : "";
+  const outputBytes = Buffer.byteLength(value, "utf8");
+  if (outputBytes > 1_000_000) return null;
+  const verification = /(?:test|verify|check|lint|build|audit)/i.test(
+    input.tool,
+  );
   return {
     callID: String(input.callID),
     tool: String(input.tool),
-    kind: verification ? 'verification' : 'tool',
+    kind: verification ? "verification" : "tool",
+    ...(input.tool === "task" && typeof input.attestedAgent === "string"
+      ? { agent: input.attestedAgent }
+      : {}),
+    ...(input.tool === "task" && Number.isSafeInteger(input.attestedChildBuiltinReads)
+      ? { childBuiltinReads: input.attestedChildBuiltinReads }
+      : {}),
     outputDigest: digestText(value),
     outputBytes,
     // Engine-persisted completion time makes a replay idempotent instead of
     // inventing a fresh timestamp for the same call.
-    capturedAt: Number.isSafeInteger(input?.completedAt) ? input.completedAt : 0,
-  }
+    capturedAt: Number.isSafeInteger(input?.completedAt)
+      ? input.completedAt
+      : 0,
+  };
 }
 
-async function captureReceipt(adapter, input, output) {
-  const receipt = receiptFromToolResult(input, output)
-  if (!receipt) return
+async function captureReceipt(
+  adapter,
+  input,
+  output,
+  ownerSessionID = input?.sessionID,
+) {
+  const receipt = receiptFromToolResult(input, output);
+  if (!receipt) return;
   // A conflict is not merged in memory. Re-read once; exact duplicate delivery
   // is idempotent, while a changed result for one engine call ID remains blocked.
   for (let attempt = 0; attempt < 2; attempt++) {
-    const snapshot = normalizeSnapshot(await adapter.get(input.sessionID))
-    if (!snapshot.data) return
-    let lifecycle
-    try { lifecycle = recordReceipt(snapshot.data, receipt) } catch (error) {
-      log(`receipt ignored: ${error?.message || error}`)
-      return
+    const snapshot = normalizeSnapshot(await adapter.get(ownerSessionID));
+    if (!snapshot.data) return;
+    let lifecycle;
+    try {
+      lifecycle = recordReceipt(snapshot.data, receipt);
+    } catch (error) {
+      log(`receipt ignored: ${error?.message || error}`);
+      return;
     }
-    if (lifecycle === snapshot.data) return
+    if (lifecycle === snapshot.data) return;
     try {
       await adapter.update({
-        sessionID: input.sessionID,
+        sessionID: ownerSessionID,
         expectedRevision: snapshot.revision,
         expectedGeneration: snapshot.generation,
         generation: lifecycle.generation,
         data: lifecycle,
-      })
-      return
+      });
+      return;
     } catch (error) {
-      if (attempt === 1) log(`receipt capture conflict: ${error?.message || error}`)
+      if (attempt === 1)
+        log(`receipt capture conflict: ${error?.message || error}`);
     }
   }
 }
 
-async function markExecutionStarted(adapter, input) {
-  if (!input?.sessionID || !input?.callID || !input?.tool || input.capability !== 'mutate' || input.tool === CONTROL_TOOL || input.tool === ARTIFACT_CONTROL_TOOL) return
+async function markExecutionStarted(
+  adapter,
+  input,
+  ownerSessionID = input?.sessionID,
+) {
+  if (
+    !input?.sessionID ||
+    !input?.callID ||
+    !input?.tool ||
+    input.capability !== "mutate" ||
+    input.tool === CONTROL_TOOL ||
+    input.tool === ARTIFACT_CONTROL_TOOL
+  )
+    return;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const snapshot = normalizeSnapshot(await adapter.get(input.sessionID))
+    const snapshot = normalizeSnapshot(await adapter.get(ownerSessionID));
     // This write is a prerequisite, not best-effort telemetry. If durable
     // state cannot be read or advanced, the engine must not start a workspace
     // mutation it could not later reconcile after a crash.
-    if (!snapshot.data) throw new Error('no durable task-quality lifecycle exists for mutation precommit')
+    if (!snapshot.data)
+      throw new Error(
+        "no durable task-quality lifecycle exists for mutation precommit",
+      );
     const next = recordExecutionStarted(snapshot.data, {
       callID: String(input.callID),
       tool: String(input.tool),
-      startedAt: Number.isSafeInteger(input?.startedAt) ? input.startedAt : Date.now(),
-    })
-    if (next === snapshot.data) return
+      startedAt: Number.isSafeInteger(input?.startedAt)
+        ? input.startedAt
+        : Date.now(),
+    });
+    if (next === snapshot.data) return;
     try {
-      await adapter.update({ sessionID: input.sessionID, expectedRevision: snapshot.revision, expectedGeneration: snapshot.generation, generation: next.generation, data: next })
-      return
+      await adapter.update({
+        sessionID: ownerSessionID,
+        expectedRevision: snapshot.revision,
+        expectedGeneration: snapshot.generation,
+        generation: next.generation,
+        data: next,
+      });
+      return;
     } catch (error) {
-      if (attempt === 1) throw error
+      if (attempt === 1) throw error;
     }
   }
 }
 
-async function settlePermissionRejectedExecution(adapter, input) {
-  if (!input?.sessionID || !input?.callID || !input?.tool) return
+async function settlePermissionRejectedExecution(
+  adapter,
+  input,
+  ownerSessionID = input?.sessionID,
+) {
+  if (!input?.sessionID || !input?.callID || !input?.tool) return;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const snapshot = normalizeSnapshot(await adapter.get(input.sessionID))
-    if (!snapshot.data) return
-    const next = recordExecutionPermissionRejected(snapshot.data, { callID: String(input.callID), tool: String(input.tool) })
-    if (next === snapshot.data) return
+    const snapshot = normalizeSnapshot(await adapter.get(ownerSessionID));
+    if (!snapshot.data) return;
+    const next = recordExecutionPermissionRejected(snapshot.data, {
+      callID: String(input.callID),
+      tool: String(input.tool),
+    });
+    if (next === snapshot.data) return;
     try {
-      await adapter.update({ sessionID: input.sessionID, expectedRevision: snapshot.revision, expectedGeneration: snapshot.generation, generation: next.generation, data: next })
-      return
+      await adapter.update({
+        sessionID: ownerSessionID,
+        expectedRevision: snapshot.revision,
+        expectedGeneration: snapshot.generation,
+        generation: next.generation,
+        data: next,
+      });
+      return;
     } catch (error) {
-      if (attempt === 1) throw error
+      if (attempt === 1) throw error;
     }
   }
 }
 
 async function recordArtifact(adapter, sessionID, artifact, review) {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const snapshot = normalizeSnapshot(await adapter.get(sessionID))
-    if (!snapshot.data) throw new Error('no durable task-quality lifecycle exists for artifact review')
-    const next = recordArtifactReview(snapshot.data, artifact, { review, reviewedDigest: review?.submission?.digest })
+    const snapshot = normalizeSnapshot(await adapter.get(sessionID));
+    if (!snapshot.data)
+      throw new Error(
+        "no durable task-quality lifecycle exists for artifact review",
+      );
+    const next = recordArtifactReview(snapshot.data, artifact, {
+      review,
+      reviewedDigest: review?.submission?.digest,
+    });
     try {
       const saved = await adapter.update({
         sessionID,
@@ -220,179 +442,476 @@ async function recordArtifact(adapter, sessionID, artifact, review) {
         expectedGeneration: snapshot.generation,
         generation: next.generation,
         data: next,
-      })
-      return normalizeSnapshot(saved).data || next
+      });
+      return normalizeSnapshot(saved).data || next;
     } catch (error) {
-      if (attempt === 1) throw error
+      if (attempt === 1) throw error;
     }
   }
-  throw new Error('Task quality could not record artifact review due to a concurrent lifecycle update.')
+  throw new Error(
+    "Task quality could not record artifact review due to a concurrent lifecycle update.",
+  );
 }
 
-export const TaskQualityPlugin = async ({ client, experimental_task_quality }) => {
+async function recordArtifactDenial(adapter, sessionID, artifact, reason) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const snapshot = normalizeSnapshot(await adapter.get(sessionID));
+    if (!snapshot.data) throw new Error("no durable task-quality lifecycle exists for artifact review");
+    const next = recordArtifactReviewDenied(snapshot.data, artifact, { reason });
+    try {
+      const saved = await adapter.update({
+        sessionID,
+        expectedRevision: snapshot.revision,
+        expectedGeneration: snapshot.generation,
+        generation: next.generation,
+        data: next,
+      });
+      return normalizeSnapshot(saved).data || next;
+    } catch (error) {
+      if (attempt === 1) throw error;
+    }
+  }
+  throw new Error("Task quality could not durably record artifact-review denial due to a concurrent lifecycle update.");
+}
+
+export const TaskQualityPlugin = async ({
+  client,
+  experimental_task_quality,
+}) => {
   const adapter = createLifecycleAdapter(
     client,
     experimental_task_quality,
     configuredReviewerCandidates(POLICY).map(({ agent }) => ({ agent })),
-  )
-  const active = Boolean(adapter && adapter.canReview && policyIsValid())
-  if (!active) log('INERT: missing task-quality engine client surface/reviewer or invalid policy; admission will fail closed')
+  );
+  const active = Boolean(adapter && adapter.canReview && policyIsValid());
+  // The engine invokes experimental.text.complete after a text part is
+  // streamed but before that part is durably finalized. This response-local
+  // latch covers the exact response that receives a denied checkpoint even
+  // if denial persistence loses a CAS race and a subsequent read is stale.
+  const completionDenied = new Set();
+  // A failed plan checkpoint has no durable lifecycle phase to inspect. Keep
+  // a response-local denial so the model cannot turn the failed tool result
+  // into a false "checkpoint recorded" claim. A later external user turn
+  // clears it and can retry routing/checkpointing normally.
+  const planCheckpointDenied = new Set();
+  log(
+    `engine lifecycle bridge=${Boolean(experimental_task_quality)} router-decision bridge=${typeof experimental_task_quality?.awaitRouteDecision === "function"} active=${active}`,
+  );
+  if (!active)
+    log(
+      "INERT: missing task-quality engine client surface/reviewer or invalid policy; admission will fail closed",
+    );
 
   return {
-    'experimental.chat.system.transform': async (input, output) => {
+    "experimental.chat.system.transform": async (input, output) => {
       try {
-        if (!active || !input?.sessionID || !Array.isArray(output?.system)) return
-        const handoff = getRouteHandoff(input.sessionID)
-        if (!handoff?.qualifies) return
-        await loadOrCreate(adapter, input.sessionID, handoff)
-        output.system.push([
-          '## Task-quality lifecycle — required gate',
-          'This is a qualifying routed task. Preserve the existing planning/review skills, repair the plan, then call task_quality_checkpoint with that repaired plan.',
-          'Show the repaired plan to the user and wait for a later, explicit user-authored go/no-go. The engine blocks workspace mutation until that exact plan generation is approved.',
-        ].join(' '))
+        if (!active || !input?.sessionID || !Array.isArray(output?.system))
+          return;
+        const handoff = await routeHandoff(
+          input.sessionID,
+          experimental_task_quality,
+        );
+        if (!handoff?.qualifies) return;
+        const loaded = await loadOrCreate(adapter, input.sessionID, handoff);
+        if (loaded.lifecycle?.revocationPending) {
+          output.system.push(
+            "Task-quality scope transition is waiting for an exact in-flight execution to settle. Do not run another mutating tool, checkpoint a new plan, or claim completion. Report that execution settlement is still pending.",
+          );
+          return;
+        }
+        if (loaded.lifecycle?.phase === "awaiting-artifact-review") {
+          output.system.push(
+            "Task-quality artifact review is required for the previously approved task. Use task_quality_artifact_checkpoint with the completed artifact and its exact acceptance evidence. Do not checkpoint a new plan or claim completion unless that tool returns title 'Artifact review recorded' with taskQuality.completionAuthorized=true.",
+          );
+          return;
+        }
+        output.system.push(
+          [
+            "## Task-quality lifecycle — required gate",
+            "This is a qualifying routed task. Preserve the existing planning/review skills and repair the plan. Before returning ANY assistant-visible text, you MUST call task_quality_checkpoint with that repaired plan and concrete acceptance criteria. Do not claim a plan is saved unless that tool returned success; a prose-only plan is not valid and cannot be approved.",
+            "Show the repaired plan to the user and wait for a later, explicit user-authored go/no-go. The engine blocks workspace mutation until that exact plan generation is approved.",
+          ].join(" "),
+        );
+        if (loaded.lifecycle?.phase === "approved")
+          output.system.push(
+            "Completion-claim gate: you must not state or imply that work is complete, recorded, shipped, verified, or successful unless task_quality_artifact_checkpoint returned title 'Artifact review recorded' with taskQuality.completionAuthorized=true. Any 'found gaps', 'not recorded', or denied result authorizes only a failure report and a new routed follow-up.",
+          );
       } catch (error) {
-        log(`system transform error: ${error?.message || error}`)
+        log(`system transform error: ${error?.message || error}`);
       }
     },
 
-    'chat.message.persisted': async (input, output) => {
+    "chat.message.persisted": async (input, output) => {
       try {
-        if (!active || !input?.sessionID || !input?.messageID) return
-        await recordApproval(adapter, input, output)
+        if (!active || !input?.sessionID || !input?.messageID) return;
+        if (input.origin === "external-user") {
+          planCheckpointDenied.delete(input.sessionID);
+        }
+        await recordApproval(adapter, input, output);
       } catch (error) {
         // A CAS conflict or unavailable persistence must never become an
         // approval by implication. Admission remains denied until a later
         // exact external-user approval is durably recorded.
-        log(`approval capture error: ${error?.message || error}`)
+        log(`approval capture error: ${error?.message || error}`);
       }
     },
 
-    'tool.execute.admission': async (input, output) => {
+    "experimental.text.complete": async (input, output) => {
+      if (!active || !input?.sessionID || !output || typeof output.text !== "string") return;
+      if (planCheckpointDenied.has(input.sessionID)) {
+        output.text = "The plan checkpoint was not recorded, so no implementation or approval is authorized. Resolve the routing or lifecycle failure and checkpoint the plan successfully before asking for GO.";
+        return;
+      }
+      let denied = completionDenied.has(input.sessionID);
+      let awaiting = false;
+      let settling = false;
+      try {
+        const lifecycle = normalizeSnapshot(await adapter.get(input.sessionID)).data;
+        if (lifecycle?.phase === "artifact-review-failed") denied = true;
+        if (lifecycle?.phase === "awaiting-artifact-review") awaiting = true;
+        if (lifecycle?.revocationPending) settling = true;
+      } catch (error) {
+        // The per-turn latch is enough for an immediately preceding denial;
+        // never replace unrelated text merely because a later read failed.
+        log(`completion gate state read error: ${error?.message || error}`);
+      }
+      if (denied) {
+        output.text = "Artifact review was denied or found gaps. No completion claim is authorized. This task generation is closed; route a repaired follow-up as a new task.";
+        return;
+      }
+      if (settling) {
+        output.text = "An earlier execution is still settling under the durable task-quality lifecycle. No new mutation or completion claim is authorized until its exact receipt or permission rejection is recorded.";
+        return;
+      }
+      if (awaiting) {
+        output.text = "Artifact review is still required for the approved task. No completion claim is authorized until task_quality_artifact_checkpoint records a passing review.";
+        return;
+      }
+      return;
+    },
+
+    "tool.execute.admission": async (input, output) => {
       try {
         if (!active) {
-          if (input.capability !== 'read') Object.assign(output, { decision: 'deny', reason: 'Task quality requires an Agent Omega v2.6 engine lifecycle surface before mutating tools may run.', policyVersion: 'agent-omega/task-quality@1' })
-          return
+          if (input.capability !== "read")
+            Object.assign(output, {
+              decision: "deny",
+              reason:
+                "Task quality requires an Agent Omega v2.6 engine lifecycle surface before mutating tools may run.",
+              policyVersion: "agent-omega/task-quality@1",
+            });
+          return;
         }
-        const snapshot = input.tool === CONTROL_TOOL ? null : normalizeSnapshot(await adapter.get(input.sessionID))
-        Object.assign(output, admitTaskQualityTool({
-          tool: input.tool,
-          source: input.source,
-          capability: input.capability,
-          trustedControl: input.trustedControl,
-          lifecycle: snapshot?.data || null,
-        }))
+        const owner =
+          input.tool === CONTROL_TOOL
+            ? null
+            : await lifecycleOwner(
+                adapter,
+                experimental_task_quality,
+                input.sessionID,
+              );
+        const directTaskGrant =
+          owner?.sessionID !== input.sessionID &&
+          typeof experimental_task_quality?.directTaskGrant === "function"
+            ? experimental_task_quality.directTaskGrant(input.sessionID)
+            : undefined;
+        const directTaskWrapperCallID =
+          directTaskGrant &&
+          owner &&
+          directTaskGrant.parentSessionID === owner.sessionID
+            ? directTaskGrant.parentTaskCallID
+            : undefined;
+        Object.assign(
+          output,
+          admitTaskQualityTool({
+            tool: input.tool,
+            source: input.source,
+            capability: input.capability,
+            trustedControl: input.trustedControl,
+            lifecycle: owner?.snapshot?.data || null,
+            directTaskWrapperCallID,
+          }),
+        );
       } catch (error) {
-        if (input.capability !== 'read') {
-          Object.assign(output, { decision: 'deny', reason: 'Task quality could not read durable lifecycle state; mutation is blocked until the state store is available.', policyVersion: 'agent-omega/task-quality@1' })
+        if (input.capability !== "read") {
+          Object.assign(output, {
+            decision: "deny",
+            reason:
+              "Task quality could not read durable lifecycle state; mutation is blocked until the state store is available.",
+            policyVersion: "agent-omega/task-quality@1",
+          });
         }
-        log(`admission error: ${error?.message || error}`)
+        log(`admission error: ${error?.message || error}`);
       }
     },
 
-    'tool.execute.preexecute': async (input) => {
-      if (!active) return
+    "tool.execute.preexecute": async (input) => {
+      if (!active) return;
       // Let a failed CAS/read reject tool execution. Swallowing this error
       // would allow an unrecoverable mutation with no durable precommit. The
       // engine invokes this only after policy admission succeeds.
-      await markExecutionStarted(adapter, input)
+      const owner = await lifecycleOwner(
+        adapter,
+        experimental_task_quality,
+        input.sessionID,
+      );
+      if (owner.sessionID !== input.sessionID) {
+        const boundParent =
+          typeof experimental_task_quality?.beginDirectTaskExecution ===
+          "function"
+            ? experimental_task_quality.beginDirectTaskExecution(
+                input.sessionID,
+                input.callID,
+              )
+            : undefined;
+        if (boundParent !== owner.sessionID)
+          throw new Error(
+            "no live engine-issued direct-task execution grant exists for mutation precommit",
+          );
+      }
+      await markExecutionStarted(adapter, input, owner.sessionID);
     },
 
-    'tool.execute.persisted': async (input, output) => {
+    "tool.execute.persisted": async (input, output) => {
       try {
-        if (!active) return
-        await captureReceipt(adapter, input, output)
+        if (!active) return;
+        const owner = await settlementOwner(
+          adapter,
+          experimental_task_quality,
+          input,
+        );
+        await captureReceipt(adapter, input, output, owner.sessionID);
       } catch (error) {
         // Evidence capture cannot authorize anything. A failure leaves the
         // artifact checkpoint closed and never changes the original tool result.
-        log(`receipt capture error: ${error?.message || error}`)
+        log(`receipt capture error: ${error?.message || error}`);
       }
     },
 
-    'tool.execute.permission_rejected': async (input) => {
+    "tool.execute.permission_rejected": async (input) => {
       try {
-        if (!active) return
-        await settlePermissionRejectedExecution(adapter, input)
+        if (!active) return;
+        const owner = await settlementOwner(
+          adapter,
+          experimental_task_quality,
+          input,
+        );
+        await settlePermissionRejectedExecution(
+          adapter,
+          input,
+          owner.sessionID,
+        );
       } catch (error) {
         // The rejection is already durable. If its recovery settlement cannot
         // be saved, retain the conservative pending record rather than
         // guessing about a side effect.
-        log(`permission rejection settlement error: ${error?.message || error}`)
+        log(
+          `permission rejection settlement error: ${error?.message || error}`,
+        );
       }
     },
 
     tool: {
       [CONTROL_TOOL]: tool({
-        description: 'Record the repaired plan for the current qualifying task. This control-plane tool does not edit files or execute commands. Call only after the required plan review has been repaired, then show the plan and wait for the user to approve it.',
+        description:
+          "Record the repaired plan for the current qualifying task. This control-plane tool does not edit files or execute commands. Call only after the required plan review has been repaired, then show the plan and wait for the user to approve it.",
         args: {
           // Some llama.cpp-compatible OpenAI endpoints reject grammars synthesized
           // from JSON Schema cardinality bounds before the model receives a token.
           // Keep the provider-facing contract simple; enforce limits in execute.
-          repaired_plan: z.string().describe('The complete repaired implementation plan that will be shown to the user for explicit go/no-go.'),
-          acceptance_criteria: z.array(z.string()).describe('Concrete observable conditions the repaired plan must satisfy.'),
+          repaired_plan: z
+            .string()
+            .describe(
+              "The complete repaired implementation plan that will be shown to the user for explicit go/no-go.",
+            ),
+          acceptance_criteria: z
+            .array(z.string())
+            .describe(
+              "Concrete observable conditions the repaired plan must satisfy.",
+            ),
         },
         execute: async (args, context) => {
-          if (!active) return { title: 'Task-quality blocked', output: 'The installed engine cannot run and persist an isolated task-quality review. Update Agent Omega v2.6 before continuing a qualifying change.' }
+          if (!active)
+            return {
+              title: "Task-quality blocked",
+              output:
+                "The installed engine cannot run and persist an isolated task-quality review. Update Agent Omega v2.6 before continuing a qualifying change.",
+            };
           try {
-            const plan = boundedText(args.repaired_plan, 'repaired plan')
-            const acceptanceCriteria = boundedCriteria(args.acceptance_criteria)
+            const plan = boundedText(args.repaired_plan, "repaired plan");
+            const acceptanceCriteria = boundedCriteria(
+              args.acceptance_criteria,
+            );
+            // Read and require durable state before starting the isolated HSS/
+            // CRAP call. Otherwise a missing router result wastes a reviewer
+            // run and can mislead the model into claiming the plan was saved.
+            const lifecycleSnapshot = normalizeSnapshot(
+              await adapter.get(context.sessionID),
+            );
+            const lifecycle = lifecycleSnapshot.data;
+            if (!lifecycle)
+              throw new Error(
+                "No durable qualifying task lifecycle exists. Do not implement; establish the task plan first.",
+              );
+            const expected = taskIdentity(lifecycle);
+            if (
+              !sameTaskIdentity(
+                lifecycle,
+                expected,
+                lifecycleSnapshot.generation,
+              )
+            )
+              throw new Error(
+                "The durable task lifecycle has an invalid identity. Start a fresh routed task before checkpointing.",
+              );
             const review = await adapter.review({
               sessionID: context.sessionID,
-              contract: getRouteHandoff(context.sessionID)?.taskText || '',
+              contract: lifecycle.taskContract || "",
               acceptanceCriteria,
-              submission: { kind: 'plan', content: plan, digest: digestPlan(plan) },
-            })
-            const lifecycle = await recordPlan(adapter, context.sessionID, plan, acceptanceCriteria, review)
+              submission: {
+                kind: "plan",
+                content: plan,
+                digest: digestPlan(plan),
+              },
+            });
+            const recorded = await recordPlan(
+              adapter,
+              context.sessionID,
+              expected,
+              plan,
+              acceptanceCriteria,
+              review,
+            );
+            planCheckpointDenied.delete(context.sessionID);
+            // Only a successfully recorded rewrite creates a fresh generation
+            // that can safely release a prior response-local artifact denial.
+            completionDenied.delete(context.sessionID);
             return {
-              title: 'Repaired plan recorded',
-              output: `Repaired plan generation ${lifecycle.generation} is recorded. Show this exact plan to the user and wait for an explicit go/no-go before any implementation tool call.`,
-              metadata: { taskQuality: { phase: lifecycle.phase, generation: lifecycle.generation, planDigest: lifecycle.repairedPlan.digest } },
-            }
+              title: "Repaired plan recorded",
+              output: `Repaired plan generation ${recorded.generation} is recorded. Show this exact plan to the user and wait for an explicit go/no-go before any implementation tool call.`,
+              metadata: {
+                taskQuality: {
+                  phase: recorded.phase,
+                  generation: recorded.generation,
+                  planDigest: recorded.repairedPlan.digest,
+                },
+              },
+            };
           } catch (error) {
-            return { title: 'Task-quality plan not recorded', output: `No implementation is authorized: ${error?.message || error}` }
+            planCheckpointDenied.add(context.sessionID);
+            return {
+              title: "Task-quality plan not recorded",
+              output: `No implementation is authorized: ${error?.message || error}`,
+            };
           }
         },
       }),
       [ARTIFACT_CONTROL_TOOL]: tool({
-        description: 'Record a bounded final artifact review after approved work. This control-plane tool does not edit files or execute commands. It requires sanitized engine-captured execution receipts and permanently closes the current task generation on review success or failure.',
+        description:
+          "Record a bounded final artifact review after approved work. This control-plane tool does not edit files or execute commands. It requires sanitized engine-captured execution receipts and permanently closes the current task generation on review success or failure.",
         args: {
-          artifact: z.string().describe('A concise final work-product report or artifact summary to be independently reviewed.'),
+          artifact: z
+            .string()
+            .describe(
+              "A concise final work-product report or artifact summary to be independently reviewed.",
+            ),
         },
         execute: async (args, context) => {
-          if (!active) return { title: 'Task-quality blocked', output: 'The installed engine cannot run and persist an isolated artifact review. Update Agent Omega v2.6 before continuing.' }
+          if (!active)
+            return {
+              title: "Task-quality blocked",
+              output:
+                "The installed engine cannot run and persist an isolated artifact review. Update Agent Omega v2.6 before continuing.",
+            };
           try {
-            const artifact = boundedText(args.artifact, 'artifact')
-            const lifecycle = normalizeSnapshot(await adapter.get(context.sessionID)).data
-            if (!hasCurrentApproval(lifecycle) || hasUnsettledExecution(lifecycle)) throw new Error('a current explicit external-user approval with no unresolved execution is required before artifact review')
-            if (!Array.isArray(lifecycle.receipts) || lifecycle.receipts.length < 1) throw new Error('at least one sanitized execution or verification receipt is required before artifact review')
+            const artifact = boundedText(args.artifact, "artifact");
+            const lifecycle = normalizeSnapshot(
+              await adapter.get(context.sessionID),
+            ).data;
+            if (
+              !hasArtifactReviewAuthorization(lifecycle) ||
+              hasUnsettledExecution(lifecycle)
+            )
+              throw new Error(
+                "a current explicit external-user approval with no unresolved execution is required before artifact review",
+              );
+            if (
+              !Array.isArray(lifecycle.receipts) ||
+              lifecycle.receipts.length < 1
+            )
+              throw new Error(
+                "at least one sanitized execution or verification receipt is required before artifact review",
+              );
             const review = await adapter.review({
               sessionID: context.sessionID,
-              contract: lifecycle?.taskContract || '',
+              contract: lifecycle?.taskContract || "",
               acceptanceCriteria: lifecycle?.acceptanceCriteria || [],
-              submission: { kind: 'artifact', content: artifact, digest: digestPlan(artifact) },
-            })
-            const recorded = await recordArtifact(adapter, context.sessionID, artifact, review)
-            const passed = recorded.phase === 'artifact-reviewed'
+              submission: {
+                kind: "artifact",
+                content: artifact,
+                digest: digestPlan(artifact),
+              },
+            });
+            const recorded = await recordArtifact(
+              adapter,
+              context.sessionID,
+              artifact,
+              review,
+            );
+            const passed = recorded.phase === "artifact-reviewed";
+            if (passed) completionDenied.delete(context.sessionID);
+            else completionDenied.add(context.sessionID);
             return {
-              title: passed ? 'Artifact review recorded' : 'Artifact review found gaps',
+              title: passed
+                ? "Artifact review recorded"
+                : "Artifact review found gaps",
               output: passed
-                ? 'The final artifact review is durably recorded. This task generation is closed; begin a new routed task before further implementation.'
-                : 'The isolated artifact review found gaps or was blocked. This task generation is closed; route a repaired follow-up as a new task before further implementation.',
-              metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, artifactDigest: recorded.reviewedArtifact?.digest || null } },
-            }
+                ? "The final artifact review is durably recorded. This task generation is closed; begin a new routed task before further implementation."
+                : "The isolated artifact review found gaps or was blocked. This task generation is closed; route a repaired follow-up as a new task before further implementation.",
+              metadata: {
+                taskQuality: {
+                  phase: recorded.phase,
+                  generation: recorded.generation,
+                  artifactDigest: recorded.reviewedArtifact?.digest || null,
+                  completionAuthorized: passed,
+                },
+              },
+            };
           } catch (error) {
-            return { title: 'Task-quality artifact review not recorded', output: `No completion claim is authorized: ${error?.message || error}` }
+            completionDenied.add(context.sessionID);
+            // A reviewer transport/contract failure is a terminal denial for
+            // this approved generation, not a recoverable-looking omission.
+            // Persist that denial before returning any model-visible result.
+            try {
+              const artifact = typeof args?.artifact === "string" ? boundedText(args.artifact, "artifact") : null;
+              if (artifact) {
+                const denied = await recordArtifactDenial(adapter, context.sessionID, artifact, error?.message || String(error));
+                return {
+                  title: "Artifact review denied",
+                  output: "No completion claim is authorized. The artifact review could not be completed or validated, and this task generation is durably closed; route a repaired follow-up as a new task.",
+                  metadata: { taskQuality: { phase: denied.phase, generation: denied.generation, artifactDigest: denied.artifactReviewFailure?.digest || null, completionAuthorized: false } },
+                };
+              }
+            } catch (denialError) {
+              log(`artifact denial recording error: ${denialError?.message || denialError}`);
+            }
+            return {
+              title: "Task-quality artifact review not recorded",
+              output: `No completion claim is authorized: ${error?.message || error}`,
+              metadata: { taskQuality: { completionAuthorized: false } },
+            };
           }
         },
       }),
     },
-  }
-}
+  };
+};
 
 // This must use the v1 plugin-module shape rather than the legacy bare
 // function export. The engine grants its private lifecycle/review bridge only
 // to the loader-attested global config slot, and legacy plugins cannot receive
 // that capability.
 export default {
-  id: 'agent-omega.task-quality',
+  id: "agent-omega.task-quality",
   server: TaskQualityPlugin,
-}
+};

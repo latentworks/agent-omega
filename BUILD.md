@@ -33,7 +33,7 @@ core. Same convention, different toolchains (Swift vs .NET):
 The **engine** binary (`engine/opencode` on macOS, `engine/opencode.exe` on Windows) is built
 once per architecture from the fork and is **not** committed. `make engine` / `.\build.ps1 engine`
 just checks it is present. A public release must publish the matching engine asset and SHA-256
-checksum alongside the app source; presence alone is not compatibility proof. v2.6.0 publishes a
+checksum alongside the app source; presence alone is not compatibility proof. v2.6.1 publishes a
 Windows engine asset only, and the sidecar rejects an engine that lacks its required task-quality
 capabilities.
 

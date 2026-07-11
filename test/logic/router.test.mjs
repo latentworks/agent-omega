@@ -9,9 +9,10 @@ import assert from 'node:assert/strict'
 
 process.env.ROUTER_EXTRACT_URL = 'http://127.0.0.1:9/chat/completions' // truthy → router not inert
 process.env.ROUTER_MODEL = 'test-model'
+process.env.ROUTER_TIMEOUT_MS = '25'
 const {
   buildPrompt, parseSkills, buildDirective, pickModel,
-  routerCall, route, lastUserMessages, lastUserMessageEntries, EXTRACT_URL, ROUTER_MODEL,
+  routerCall, route, classifierIdentity, lastUserMessages, lastUserMessageEntries, isLeadingDirectDecision, EXTRACT_URL, ROUTER_MODEL, ROUTER_TIMEOUT_MS,
 } = await import('../../config-template/opencode/skill-router/router.mjs')
 
 const VALID = { debugging: 'debug things', verify: 'verify things', tdd: 'test first' }
@@ -20,6 +21,7 @@ test('env override makes the router live and picks the configured model', async 
   assert.equal(EXTRACT_URL, 'http://127.0.0.1:9/chat/completions')
   assert.equal(ROUTER_MODEL, 'test-model')
   assert.equal(await pickModel(), 'test-model')
+  assert.equal(ROUTER_TIMEOUT_MS, 50)
 })
 
 test('parseSkills: finds valid names in order of appearance, ignores prose/unknowns', () => {
@@ -74,6 +76,28 @@ test('buildDirective: empty → "", one vs many skills phrase differently', () =
   assert.match(many, /in the order listed/)
 })
 
+test('leading direct decisions bypass classification without treating plan discussion as approval', () => {
+  assert.equal(isLeadingDirectDecision('GO.'), true)
+  assert.equal(isLeadingDirectDecision('Ship it'), true)
+  assert.equal(isLeadingDirectDecision('No.'), true)
+  assert.equal(isLeadingDirectDecision("Let's go over the plan before deciding."), false)
+  assert.equal(isLeadingDirectDecision('Go add OAuth login too.'), false)
+  assert.equal(isLeadingDirectDecision('GO. Execute it now.'), false)
+  assert.equal(isLeadingDirectDecision('Should we proceed?'), false)
+})
+
+test('classifier identity is endpoint, model, and resolved provider specific', () => {
+  const classifier = { url: 'HTTP://127.0.0.1:9101/v1/chat/completions', model: 'model-a', source: 'active-local-model' }
+  assert.notEqual(
+    classifierIdentity(classifier, { providerID: 'box-a', modelID: 'model-a' }),
+    classifierIdentity(classifier, { providerID: 'box-b', modelID: 'model-a' }),
+  )
+  assert.notEqual(
+    classifierIdentity(classifier, { providerID: 'box-a', modelID: 'model-a' }),
+    classifierIdentity({ ...classifier, model: 'model-b' }, { providerID: 'box-a', modelID: 'model-b' }),
+  )
+})
+
 test('lastUserMessages: keeps last N user texts, skips harness re-prompts', () => {
   const mk = (role, text, id = text) => ({ info: { role, id }, parts: [{ type: 'text', text }] })
   const msgs = [
@@ -81,6 +105,7 @@ test('lastUserMessages: keeps last N user texts, skips harness re-prompts', () =
     mk('assistant', 'reply'),
     mk('user', '[iterate-loop] keep going'),   // harness re-prompt → skipped
     mk('user', '[verify-guard] run the tests'), // harness re-prompt → skipped
+    { info: { role: 'user', id: 'internal', origin: 'internal-subagent' }, parts: [{ type: 'text', text: 'internal request' }] },
     mk('user', 'second request'),
     mk('user', 'third request'),
   ]
@@ -105,6 +130,11 @@ test('routerCall: a non-2xx status throws reachable=true (server answered, bad s
 test('routerCall: a thrown fetch (connection refused) throws reachable=false', async () => {
   const boom = async () => { throw new Error('ECONNREFUSED') }
   await assert.rejects(() => routerCall('p', boom), (e) => { assert.equal(e.reachable, false); return /connection failed/.test(e.message) })
+})
+
+test('routerCall: a fetch that never resolves fails within the bounded classifier budget', async () => {
+  const never = () => new Promise(() => {})
+  await assert.rejects(() => routerCall('p', never), (e) => { assert.equal(e.code, 'ROUTER_TIMEOUT'); assert.equal(e.reachable, false); return /timed out/.test(e.message) })
 })
 
 test('routerCall: a 200 with an unparseable body throws reachable=true (reply unusable)', async () => {

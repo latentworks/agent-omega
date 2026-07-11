@@ -299,13 +299,13 @@
         <!-- CRT: version footer -->
         <div class="crt-homefoot" style="font-size:18px; color:#3f4a44; width:680px; max-width:calc(100% - 48px); display:flex; justify-content:space-between; margin-top:24px; padding-top:8px; border-top:1px solid #161c1f;">
           <span class="footPath"></span>
-          <span>agent-omega · v2.6.0</span>
+          <span>agent-omega · v2.6.1</span>
         </div>
 
         <!-- Modern: footer (hidden in CRT) -->
         <div class="m-homefoot">
           <span class="footPath"></span>
-          <span>agent-omega · v2.6.0</span>
+          <span>agent-omega · v2.6.1</span>
         </div>
         </div><!-- /.m-surface -->
       </div>
@@ -584,6 +584,12 @@ function setUsage(used,size){
   const runnerTokens=$('runnerTokens'), runnerLimit=$('runnerContextLimit');
   if(runnerTokens) runnerTokens.textContent=s;
   if(runnerLimit) runnerLimit.textContent=size>0 ? (formatTokens(size)+' ('+Math.min(100,Math.round(used/size*100))+'% used)') : 'not reported';
+}
+function clearUsage(){
+  tok.textContent='';
+  const runnerTokens=$('runnerTokens'), runnerLimit=$('runnerContextLimit');
+  if(runnerTokens) runnerTokens.textContent='—';
+  if(runnerLimit) runnerLimit.textContent='—';
 }
 function setCost(c){ costEl.textContent = (typeof c==='number' && c>0) ? '$'+c.toFixed(2) : ''; }
 
@@ -1843,7 +1849,7 @@ function resetSession(){
   resetTurn();
   if(activePerm){ try{activePerm.el.remove();}catch(e){} activePerm=null; }
   permPending=false;
-  tok.textContent=''; costEl.textContent='';
+  clearUsage(); costEl.textContent='';
   chatInput.value=''; homeInput.value='';
   if(window.ftpInput){ window.ftpInput.exitShell(); window.ftpInput.autosizeAll(); }
   setStatus(connOpen?'ready':'offline');
@@ -1936,6 +1942,8 @@ function onWs(m){
   if(window.AgentOmegaOnboard){ try{ if(window.AgentOmegaOnboard.onWs(m)) return; }catch(e){} }   // first-run onboarding card consumes first-run / onboard-status / onboard-result
   switch(m.type){
     case 'ready':
+      const sessionChanged=!!m.sessionId && m.sessionId!==sessionId;
+      if(sessionChanged){ clearUsage(); costEl.textContent=''; }
       sessionId=m.sessionId||sessionId;
       models=Array.isArray(m.models)?m.models:models;
       agents=Array.isArray(m.agents)?m.agents:agents;

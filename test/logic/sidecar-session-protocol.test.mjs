@@ -98,7 +98,10 @@ async function harness(t, options = {}) {
     control.setEncoding('utf8'); control.on('data', (chunk) => { controlBuffer += chunk; let at; while ((at = controlBuffer.indexOf('\n')) >= 0) { const line = controlBuffer.slice(0, at); controlBuffer = controlBuffer.slice(at + 1); try { controlEvents.push(JSON.parse(line)) } catch {} } })
   }
   if (!options.expectIncompatible) await reconnectControl()
-  else await waitForPort(wsPort, 'sidecar WebSocket')
+  // The fake ACP control socket can become ready before the sidecar's public
+  // WebSocket listener on slower Windows runs. Wait for both boundaries;
+  // otherwise the test races a valid startup and fails with ECONNREFUSED.
+  await waitForPort(wsPort, 'sidecar WebSocket')
   ws = new WebSocket('ws://127.0.0.1:' + wsPort); const messages = []
   ws.on('message', (data) => { try { messages.push(JSON.parse(data)) } catch {} })
   await once(ws, 'open')

@@ -33,6 +33,25 @@ export function createLifecycleAdapter(_client, internal, reviewers = []) {
       ) {
         throw new Error('the engine review result does not bind to the canonical submitted artifact digest')
       }
+      // Do not flatten a non-passing result into the generic lifecycle error
+      // below. It is an expected adversarial outcome, not an infrastructure
+      // failure, and the builder needs to repair the submitted plan instead
+      // of guessing whether the reviewer or persistence path broke.
+      if (payload.review.result.verdict !== 'pass') {
+        const verdict = typeof payload.review.result.verdict === 'string' ? payload.review.result.verdict : 'invalid'
+        const summary = typeof payload.review.result.summary === 'string'
+          ? payload.review.result.summary.replace(/\s+/g, ' ').trim().slice(0, 600)
+          : ''
+        throw new Error(`the isolated review returned ${verdict}${summary ? `: ${summary}` : ''}; repair the submitted plan before requesting approval`)
+      }
+      const routeModel = typeof payload.route.model === 'string'
+        ? payload.route.model
+        : payload.route.model?.providerID && payload.route.model?.modelID
+          ? `${payload.route.model.providerID}/${payload.route.model.modelID}`
+          : ''
+      if (typeof payload.route.kind !== 'string' || !routeModel) {
+        throw new Error('the engine returned an isolated review without an attributable route')
+      }
       return { route: payload.route, submission: payload.submission, result: payload.review.result }
     },
   })

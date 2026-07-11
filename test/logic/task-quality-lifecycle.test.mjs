@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { buildRouteHandoff } from '../../config-template/opencode/task-quality/handoff.mjs'
-import { PHASE, createLifecycle, digestPlan, hasCurrentApproval, recordArtifactReview, recordExecutionPermissionRejected, recordExecutionStarted, recordReceipt, recordRepairedPlan, recordUserDecision, reconstructLifecycle } from '../../config-template/opencode/task-quality/lifecycle.mjs'
+import { PHASE, createLifecycle, digestPlan, hasCurrentApproval, recordArtifactReview, recordArtifactReviewDenied, recordExecutionPermissionRejected, recordExecutionStarted, recordReceipt, recordRepairedPlan, recordUserDecision, reconstructLifecycle, revokeApprovalForSubstantiveTurn } from '../../config-template/opencode/task-quality/lifecycle.mjs'
 import { admitTaskQualityTool, ARTIFACT_CONTROL_TOOL, CONTROL_TOOL } from '../../config-template/opencode/task-quality/admission.mjs'
 import { createLifecycleAdapter, normalizeSnapshot } from '../../config-template/opencode/task-quality/adapter.mjs'
 
@@ -35,12 +35,27 @@ test('only an explicit external-user go approves the exact current generation', 
   const repaired = recordRepairedPlan(createLifecycle(handoff, { now: 10 }), planText, { review: passReview, reviewedDigest: passReview.submission.digest, acceptanceCriteria: ['Works'], now: 20 })
   assert.equal(recordUserDecision(repaired, { origin: 'internal-subagent', messageID: 'msg-internal', text: 'go', expectedGeneration: 2 }).ok, false)
   assert.equal(recordUserDecision(repaired, { origin: 'external-user', messageID: 'msg-user', text: 'can we go?', expectedGeneration: 2 }).ok, false)
+  assert.equal(recordUserDecision(repaired, { origin: 'external-user', messageID: 'msg-scope-change', text: 'Go ahead and also delete B.', expectedGeneration: 2 }).reason, 'ambiguous-user-decision')
   assert.equal(recordUserDecision(repaired, { origin: 'external-user', messageID: 'msg-user', text: 'go for it', expectedGeneration: 1 }).reason, 'stale-plan-generation')
   const approved = recordUserDecision(repaired, { origin: 'external-user', messageID: 'msg-user', text: 'Go for gold.', expectedGeneration: 2, now: 30 })
   assert.equal(approved.ok, true)
   assert.equal(approved.lifecycle.phase, PHASE.APPROVED)
   assert.equal(approved.lifecycle.approval.planDigest, repaired.repairedPlan.digest)
   assert.equal(hasCurrentApproval(approved.lifecycle), true)
+})
+
+test('a substantive external-user turn revokes an approved generation while a standalone decision does not', () => {
+  const repaired = recordRepairedPlan(createLifecycle(handoff, { now: 10 }), planText, { review: passReview, reviewedDigest: passReview.submission.digest, acceptanceCriteria: ['Works'], now: 20 })
+  const approved = recordUserDecision(repaired, { origin: 'external-user', messageID: 'msg-user', text: 'go', expectedGeneration: repaired.generation, now: 30 }).lifecycle
+  assert.equal(revokeApprovalForSubstantiveTurn(approved, { origin: 'external-user', text: 'GO.' }).ok, false)
+  assert.equal(revokeApprovalForSubstantiveTurn(approved, { origin: 'internal-subagent', text: 'Build another thing' }).ok, false)
+  const revoked = revokeApprovalForSubstantiveTurn(approved, { origin: 'external-user', messageID: 'msg-new-scope', text: 'Build another thing', now: 40 })
+  assert.equal(revoked.ok, true)
+  assert.equal(revoked.lifecycle.phase, PHASE.PLANNING)
+  assert.equal(revoked.lifecycle.generation, approved.generation + 1)
+  assert.equal(revoked.lifecycle.repairedPlan, null)
+  assert.equal(revoked.lifecycle.approval, null)
+  assert.equal(hasCurrentApproval(revoked.lifecycle), false)
 })
 
 test('different routed task reconstructs with a new generation and drops stale approval', () => {
@@ -68,6 +83,12 @@ test('admission fails closed for missing, stale, and unknown state while allowin
   assert.equal(admitTaskQualityTool({ tool: 'edit', capability: 'mutate', lifecycle: repaired }).decision, 'deny')
   const approved = recordUserDecision(repaired, { origin: 'external-user', messageID: 'msg-go', text: 'ship it', expectedGeneration: repaired.generation }).lifecycle
   assert.equal(admitTaskQualityTool({ tool: 'edit', capability: 'mutate', lifecycle: approved }).decision, 'allow')
+  const taskPending = recordExecutionStarted(approved, { callID: 'call-direct-task', tool: 'task', startedAt: 30 })
+  assert.equal(admitTaskQualityTool({ tool: 'write', capability: 'mutate', lifecycle: taskPending }).decision, 'deny')
+  assert.equal(admitTaskQualityTool({ tool: 'write', capability: 'mutate', lifecycle: taskPending, directTaskWrapperCallID: 'call-direct-task' }).decision, 'allow')
+  assert.equal(admitTaskQualityTool({ tool: 'write', capability: 'mutate', lifecycle: taskPending, directTaskWrapperCallID: 'other-task' }).decision, 'deny')
+  const actionPending = recordExecutionStarted(taskPending, { callID: 'call-write', tool: 'write', startedAt: 31 })
+  assert.equal(admitTaskQualityTool({ tool: 'write', capability: 'mutate', lifecycle: actionPending, directTaskWrapperCallID: 'call-direct-task' }).decision, 'deny')
 })
 
 test('artifact review is receipt-bound, digest-bound, terminal, and duplicate receipt delivery is idempotent', () => {
@@ -79,13 +100,81 @@ test('artifact review is receipt-bound, digest-bound, terminal, and duplicate re
   assert.equal(withReceipt.receipts.length, 1)
   assert.equal(recordReceipt(withReceipt, receipt, { now: 52 }), withReceipt)
   assert.throws(() => recordReceipt(withReceipt, { ...receipt, outputDigest: digestPlan('different') }), /different evidence/)
+  assert.throws(() => recordReceipt(started, { ...receipt, agent: 'bad agent name' }), /agent identity is invalid/)
+  assert.throws(() => recordReceipt(started, { ...receipt, childBuiltinReads: 0 }), /child builtin read count is invalid/)
   const artifact = 'Changed the implementation and observed the focused proof pass.'
   const review = { route: { kind: 'crap', model: 'local/model' }, submission: { kind: 'artifact', digest: digestPlan(artifact) }, result: { verdict: 'pass', summary: 'Evidence sufficient.', findings: [] } }
-  const complete = recordArtifactReview(withReceipt, artifact, { review, reviewedDigest: digestPlan(artifact), now: 60 })
+  const suspended = revokeApprovalForSubstantiveTurn(withReceipt, { origin: 'external-user', messageID: 'msg-artifact', text: 'Run the final artifact review now.', now: 55 })
+  assert.equal(suspended.ok, true)
+  assert.equal(suspended.lifecycle.phase, PHASE.AWAITING_ARTIFACT_REVIEW)
+  assert.equal(suspended.lifecycle.artifactReviewMessageID, 'msg-artifact')
+  assert.equal(suspended.lifecycle.receipts.length, 1)
+  assert.equal(admitTaskQualityTool({ tool: 'edit', capability: 'mutate', lifecycle: suspended.lifecycle }).decision, 'deny')
+  const complete = recordArtifactReview(suspended.lifecycle, artifact, { review, reviewedDigest: digestPlan(artifact), now: 60 })
   assert.equal(complete.phase, PHASE.ARTIFACT_REVIEWED)
   assert.equal(complete.reviewedArtifact.receiptCount, 1)
   assert.equal(hasCurrentApproval(complete), false)
   assert.throws(() => recordArtifactReview(withReceipt, artifact, { review, reviewedDigest: digestPlan('other') }), /does not match/)
+})
+
+test('artifact-review authorization survives routing only for the exact follow-up message', () => {
+  const repaired = recordRepairedPlan(createLifecycle(handoff), planText, { review: passReview, reviewedDigest: passReview.submission.digest, acceptanceCriteria: ['Works'] })
+  const approved = recordUserDecision(repaired, { origin: 'external-user', messageID: 'msg-go', text: 'go', expectedGeneration: repaired.generation }).lifecycle
+  const started = recordExecutionStarted(approved, { callID: 'call-proof', tool: 'bash', startedAt: 49 })
+  const withReceipt = recordReceipt(started, { callID: 'call-proof', tool: 'bash', kind: 'verification', outputDigest: digestPlan('pass'), outputBytes: 4, capturedAt: 50 })
+  const awaiting = revokeApprovalForSubstantiveTurn(withReceipt, { origin: 'external-user', messageID: 'msg-artifact', text: 'Review the artifact.', now: 55 }).lifecycle
+  const exact = buildRouteHandoff({ sessionID: 'ses-1', messageID: 'msg-artifact', messages: ['Review the artifact.'], skillNames: ['verification'] })
+  assert.equal(reconstructLifecycle(awaiting, exact), awaiting)
+  const later = buildRouteHandoff({ sessionID: 'ses-1', messageID: 'msg-later', messages: ['Build something else'], skillNames: ['brainstorming'] })
+  const next = reconstructLifecycle(awaiting, later)
+  assert.equal(next.phase, PHASE.PLANNING)
+  assert.equal(next.approval, null)
+  assert.equal(next.generation, awaiting.generation + 1)
+})
+
+test('a scope transition latches across unsettled execution and cannot reactivate stale approval', () => {
+  const repaired = recordRepairedPlan(createLifecycle(handoff), planText, { review: passReview, reviewedDigest: passReview.submission.digest, acceptanceCriteria: ['Works'] })
+  const approved = recordUserDecision(repaired, { origin: 'external-user', messageID: 'msg-go', text: 'go', expectedGeneration: repaired.generation }).lifecycle
+  const started = recordExecutionStarted(approved, { callID: 'call-write', tool: 'write', startedAt: 49 })
+  const latched = revokeApprovalForSubstantiveTurn(started, { origin: 'external-user', messageID: 'msg-next', text: 'Now do something else.', now: 50 }).lifecycle
+  assert.equal(latched.pendingExecutions.length, 1)
+  assert.equal(latched.revocationPending.messageID, 'msg-next')
+  assert.equal(hasCurrentApproval(latched), false)
+  const nextHandoff = buildRouteHandoff({ sessionID: 'ses-1', messageID: 'msg-next', messages: ['Now do something else.'], skillNames: ['debugging'] })
+  assert.equal(reconstructLifecycle(latched, nextHandoff), latched)
+  const settled = recordReceipt(latched, { callID: 'call-write', tool: 'write', kind: 'tool', outputDigest: digestPlan('done'), outputBytes: 4, capturedAt: 51 })
+  assert.equal(settled.pendingExecutions.length, 0)
+  assert.equal(settled.revocationPending, null)
+  assert.equal(settled.phase, PHASE.AWAITING_ARTIFACT_REVIEW)
+  assert.equal(settled.artifactReviewMessageID, 'msg-next')
+  assert.equal(hasCurrentApproval(settled), false)
+})
+
+test('permission rejection closes a pending scope transition without reviving approval', () => {
+  const repaired = recordRepairedPlan(createLifecycle(handoff), planText, { review: passReview, reviewedDigest: passReview.submission.digest, acceptanceCriteria: ['Works'] })
+  const approved = recordUserDecision(repaired, { origin: 'external-user', messageID: 'msg-go', text: 'go', expectedGeneration: repaired.generation }).lifecycle
+  const started = recordExecutionStarted(approved, { callID: 'call-edit', tool: 'edit', startedAt: 49 })
+  const latched = revokeApprovalForSubstantiveTurn(started, { origin: 'external-user', messageID: 'msg-next', text: 'Change scope.', now: 50 }).lifecycle
+  const settled = recordExecutionPermissionRejected(latched, { callID: 'call-edit', tool: 'edit', now: 51 })
+  assert.equal(settled.phase, PHASE.PLANNING)
+  assert.equal(settled.generation, approved.generation + 1)
+  assert.equal(settled.approval, null)
+  assert.equal(settled.revocationPending, null)
+  assert.equal(hasCurrentApproval(settled), false)
+})
+
+test('an incomplete artifact review is durably denied and cannot retain approval', () => {
+  const repaired = recordRepairedPlan(createLifecycle(handoff), planText, { review: passReview, reviewedDigest: passReview.submission.digest, acceptanceCriteria: ['Works'] })
+  const approved = recordUserDecision(repaired, { origin: 'external-user', messageID: 'msg-go', text: 'go for it', expectedGeneration: repaired.generation }).lifecycle
+  const started = recordExecutionStarted(approved, { callID: 'call-proof', tool: 'bash', startedAt: 49 })
+  const withReceipt = recordReceipt(started, { callID: 'call-proof', tool: 'bash', kind: 'verification', outputDigest: digestPlan('tests passed'), outputBytes: 12, capturedAt: 50 })
+  const artifact = 'The engine returned an incomplete isolated review result.'
+  const denied = recordArtifactReviewDenied(withReceipt, artifact, { reason: 'the engine returned an incomplete isolated review result', now: 60 })
+  assert.equal(denied.phase, PHASE.ARTIFACT_REVIEW_FAILED)
+  assert.equal(denied.reviewedArtifact, null)
+  assert.equal(denied.artifactReview, null)
+  assert.equal(denied.artifactReviewFailure.digest, digestPlan(artifact))
+  assert.equal(hasCurrentApproval(denied), false)
 })
 
 test('only a matching durable permission rejection settles its exact precommit', () => {
@@ -117,4 +206,14 @@ test('engine adapter uses the attested lifecycle/review bridge and exposes missi
     review: async () => ({ route: { kind: 'crap', model: 'local/model' }, submission: { kind: 'plan', digest: 'wrong' }, review: { status: 'complete', result: { verdict: 'pass' } } }),
   })
   await assert.rejects(() => mismatched.review({ sessionID: 'ses-1', submission: { kind: 'plan', content: 'z', digest: 'd' } }), /canonical submitted artifact digest/)
+  const needsRepair = createLifecycleAdapter({}, {
+    ...internal,
+    review: async (input) => ({ route: { kind: 'subagent', model: { providerID: 'local', modelID: 'reviewer' } }, submission: input.submission, review: { status: 'complete', result: { verdict: 'needs_changes', summary: 'Specify the byte-level writer.', findings: [] } } }),
+  })
+  await assert.rejects(() => needsRepair.review({ sessionID: 'ses-1', submission: { kind: 'plan', content: 'z', digest: 'd' } }), /isolated review returned needs_changes: Specify the byte-level writer/)
+  const unattributed = createLifecycleAdapter({}, {
+    ...internal,
+    review: async (input) => ({ route: { kind: 'subagent' }, submission: input.submission, review: { status: 'complete', result: { verdict: 'pass', findings: [] } } }),
+  })
+  await assert.rejects(() => unattributed.review({ sessionID: 'ses-1', submission: { kind: 'plan', content: 'z', digest: 'd' } }), /without an attributable route/)
 })

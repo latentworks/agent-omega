@@ -101,18 +101,38 @@ let cfg = null
   existsSync(path.join(PLUGIN_ROOT, 'memory', 'MEMORY.md')) ? pass('memory/MEMORY.md seed present') : warn('memory/MEMORY.md missing (file-based memory index)')
 }
 
-// 8) Router/engram endpoint derivation (the fix: derive from the local provider, no owner infra)
+// 8) Router/engram endpoint derivation. A local endpoint may have a machine-specific
+// provider name; only loopback/private-LAN endpoints qualify, never a cloud URL.
+function isLocalHost(host) {
+  const h = String(host || '').toLowerCase()
+  if (h === 'localhost' || h === '::1') return true
+  if (/^127(?:\.\d{1,3}){3}$/.test(h) || /^10(?:\.\d{1,3}){3}$/.test(h) || /^192\.168(?:\.\d{1,3}){2}$/.test(h)) return true
+  return /^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(h)
+}
+function localProvider(config) {
+  const providers = config && config.provider && typeof config.provider === 'object' ? config.provider : {}
+  const localBase = providers.local?.options?.baseURL
+  if (typeof localBase === 'string' && localBase && isLocalURL(localBase)) return { id: 'local', baseURL: localBase }
+  const candidates = Object.entries(providers)
+    .map(([id, provider]) => ({ id, baseURL: provider?.options?.baseURL }))
+    .filter((provider) => typeof provider.baseURL === 'string' && provider.baseURL && isLocalURL(provider.baseURL))
+  const mainId = typeof config?.model === 'string' ? config.model.split('/')[0] : ''
+  return candidates.find((provider) => provider.id === mainId) || candidates[0] || null
+}
+function isLocalURL(baseURL) {
+  try { return isLocalHost(new URL(baseURL).hostname) } catch { return false }
+}
 {
-  const local = cfg && cfg.provider && cfg.provider.local
-  const baseURL = local && local.options && typeof local.options.baseURL === 'string' ? local.options.baseURL : ''
+  const local = localProvider(cfg)
+  const baseURL = local?.baseURL || ''
   if (process.env.ROUTER_EXTRACT_URL || process.env.ENGRAM_EXTRACT_URL) {
     pass('router/engram endpoint set via env override')
   } else if (baseURL) {
     pass('router/engram endpoint derives from local provider -> ' + baseURL.replace(/\/+$/, '') + '/chat/completions')
   } else if (cfg && typeof cfg.model === 'string' && !cfg.model.startsWith('local/')) {
-    warn('no local provider configured — skill-router + engram auto-extraction are inert (fine for a cloud-lead setup; set the local provider baseURL to enable them)')
+    warn('no private/loopback local provider configured — skill-router + engram auto-extraction are inert (fine for a cloud-lead setup; configure a local endpoint to enable them)')
   } else {
-    warn('no local provider baseURL found in opencode.json — set provider.local.options.baseURL')
+    warn('no private/loopback local provider baseURL found in opencode.json')
   }
 }
 

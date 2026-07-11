@@ -192,16 +192,34 @@ async function probe(url, ms = 4000) {
     return r.ok
   } catch { return false }
 }
-if (cfg && cfg.provider && cfg.provider.local) {
-  const base = ((cfg.provider.local.options || {}).baseURL || '').replace(/\/$/, '')
-  const helpers = Object.entries(cfg.agent || {}).filter(([, a]) => a && typeof a.model === 'string' && a.model.startsWith('local/'))
-  if (!base) warn('local models: provider configured but no baseURL set — point it at your llama.cpp/Ollama/LM Studio server')
-  else {
-    const ok = await probe(base + '/models')
-    if (ok) pass('local models: endpoint reachable (' + base + ')')
-    else warn('local models: endpoint NOT reachable (' + base + ') — local models and helper delegation are unavailable')
-    if (helpers.length) (ok ? pass : warn)('helpers: ' + helpers.map(([n]) => n).join(', ') + ' -> local endpoint ' + (ok ? 'up' : 'down'))
-  }
+function isLocalHost(host) {
+  const h = String(host || '').toLowerCase()
+  if (h === 'localhost' || h === '::1') return true
+  if (/^127(?:\.\d{1,3}){3}$/.test(h) || /^10(?:\.\d{1,3}){3}$/.test(h) || /^192\.168(?:\.\d{1,3}){2}$/.test(h)) return true
+  return /^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(h)
+}
+function isLocalBaseURL(baseURL) {
+  try { return isLocalHost(new URL(baseURL).hostname) } catch { return false }
+}
+function localProvider(config) {
+  const providers = config && config.provider && typeof config.provider === 'object' ? config.provider : {}
+  const literal = providers.local
+  const literalBase = literal?.options?.baseURL
+  if (typeof literalBase === 'string' && literalBase && isLocalBaseURL(literalBase)) return { id: 'local', provider: literal, baseURL: literalBase }
+  const candidates = Object.entries(providers)
+    .map(([id, provider]) => ({ id, provider, baseURL: provider?.options?.baseURL }))
+    .filter((candidate) => typeof candidate.baseURL === 'string' && candidate.baseURL && isLocalBaseURL(candidate.baseURL))
+  const mainId = typeof config?.model === 'string' ? config.model.split('/')[0] : ''
+  return candidates.find((candidate) => candidate.id === mainId) || candidates[0] || null
+}
+const configuredLocal = localProvider(cfg)
+if (configuredLocal) {
+  const base = configuredLocal.baseURL.replace(/\/$/, '')
+  const helpers = Object.entries(cfg.agent || {}).filter(([, a]) => a && typeof a.model === 'string' && a.model.startsWith(configuredLocal.id + '/'))
+  const ok = await probe(base + '/models')
+  if (ok) pass('local models: endpoint reachable (' + base + ')')
+  else warn('local models: endpoint NOT reachable (' + base + ') — local models and helper delegation are unavailable')
+  if (helpers.length) (ok ? pass : warn)('helpers: ' + helpers.map(([n]) => n).join(', ') + ' -> local endpoint ' + (ok ? 'up' : 'down'))
 }
 
 // ---- 7) anon-web bridge -----------------------------------------------------------
@@ -235,8 +253,8 @@ if (cfg && cfg.permission) {
 
 // ---- 9b) engram auto-memory (automatic fact distillation) -------------------------
 {
-  // Mirror engram's EXTRACT_URL derivation: process.env.ENGRAM_EXTRACT_URL || provider.local.options.baseURL.
-  const localBase = cfg && cfg.provider && cfg.provider.local && cfg.provider.local.options && typeof cfg.provider.local.options.baseURL === 'string' ? cfg.provider.local.options.baseURL : ''
+  // Mirror engram's safe derivation: an explicit override or a private/loopback local provider.
+  const localBase = configuredLocal?.baseURL || ''
   const extractUrl = process.env.ENGRAM_EXTRACT_URL || localBase
   if (!extractUrl) info('memory: manual "remember" and the memory file are ON. AUTOMATIC fact-saving at the end of long chats needs a small model to summarize — it uses your LOCAL model, so it switches on the moment you add one (or set ENGRAM_EXTRACT_URL). Manual memory works fine until then.')
   else pass('memory: automatic fact-saving is configured (distilling via ' + extractUrl.replace(/\/chat\/completions.*/, '') + ') — active whenever that endpoint is reachable')
@@ -244,8 +262,8 @@ if (cfg && cfg.permission) {
 
 // ---- 9c) skill-router just-in-time directives ------------------------------------
 {
-  // Mirror skill-router's endpoint derivation: process.env.ROUTER_EXTRACT_URL || provider.local.options.baseURL.
-  const localBase = cfg && cfg.provider && cfg.provider.local && cfg.provider.local.options && typeof cfg.provider.local.options.baseURL === 'string' ? cfg.provider.local.options.baseURL : ''
+  // Mirror skill-router's safe derivation: an explicit override or a private/loopback local provider.
+  const localBase = configuredLocal?.baseURL || ''
   const routerUrl = process.env.ROUTER_EXTRACT_URL || localBase
   if (!routerUrl) info('skill routing: your model invokes skills itself (all cloud models do) — automatic, nothing to set up. The optional just-in-time router (extra "use skill X now" nudges) is off; it turns on when a local model is configured.')
   else pass('skill routing: just-in-time router ON (classifier at ' + routerUrl + ') — adds skill nudges on top of the model self-invoking')

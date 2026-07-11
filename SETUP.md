@@ -77,10 +77,10 @@ Copy-Item -Force scripts\secrets.ps1 "$env:USERPROFILE\.agent-omega\secrets.ps1"
 
 The `opencode` engine ships as a prebuilt binary. Because Agent Omega runs a **fork** of opencode, use **this repo's** release (not upstream):
 
-- Download **`opencode.exe`** and **`SHA256SUMS-v2.6.0.txt`** from the [v2.6.0 release](https://github.com/latentworks/agent-omega/releases/tag/v2.6.0). This exact forked engine is required; upstream opencode and earlier Agent Omega engines are intentionally rejected at startup.
+- Download **`opencode.exe`** and **`SHA256SUMS-v2.6.1.txt`** from the [v2.6.1 release](https://github.com/latentworks/agent-omega/releases/tag/v2.6.1). This exact forked engine is required; upstream opencode and earlier Agent Omega engines are intentionally rejected at startup.
 - **Verify the download** before you trust it (it's an unsigned binary you're about to run with your privileges). The SHA-256 for the `opencode.exe` is:
   ```
-  46a6650e4239f9aa1baa231f2d361346b6894c168cf1476a089af6aa31b3550a
+  4a1c01e4c3192fb7aaac924e1aeccf9190936ad35a092e22fc9260b618eb3799
   ```
   Check it: `Get-FileHash .\engine\opencode.exe -Algorithm SHA256` and confirm the hash matches. If it doesn't match, do NOT run it — re-download.
 - Put it in an **`engine\` folder at the repo root** (`agent-omega\engine\opencode.exe`) — the build (step 7) copies it beside the exe automatically.
@@ -92,7 +92,7 @@ Open `%USERPROFILE%\.config\opencode\opencode.json` (that's what `~/.config/open
 
 **Cloud (simplest).** Set `"model"` to a provider you have a key for — e.g. `anthropic/claude-opus-4-8`, `openai/gpt-5.5`, `google/gemini-3.5-flash`. Provide the key either as an environment variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) or via the encrypted vault (below).
 
-**Local.** Point the `local` provider's `baseURL` at your llama.cpp / Ollama / LM Studio server (default `http://127.0.0.1:8080/v1`), give it a model id, and set `"model": "local/local-model"`. The `helper1` / `helper2` worker subagents also delegate to the `local` provider — so a cloud lead can hand grunt work down to a local model.
+**Local.** Point a provider's `baseURL` at your llama.cpp / Ollama / LM Studio server (default `http://127.0.0.1:8080/v1`), give it a model id, and set `"model"` to that provider/model pair. `local` is the conventional provider name, but a machine-specific name also works when its endpoint is loopback or private-LAN. The `helper1` / `helper2` worker subagents can delegate to that local provider — so a cloud lead can hand grunt work down to a local model.
 
 ### The encrypted vault (recommended for keys)
 
@@ -136,7 +136,7 @@ The key-free web search relies on a separate **anon-web** component, which is **
 All optional — the defaults are derived from your `opencode.json`, so you normally set none of these:
 
 - `AGENT_OMEGA_WORKDIR` — the project folder to work in (same as `--workdir`).
-- `ROUTER_EXTRACT_URL`, `ROUTER_MODEL` — override the skill-router's classify endpoint/model (default: your `local` provider's `baseURL` + model).
+- `ROUTER_EXTRACT_URL`, `ROUTER_MODEL` — explicitly select the skill-router's local classify endpoint/model for cloud-led turns. With a local lead, the router follows that turn's active local provider/model automatically; it never selects an arbitrary local provider for a cloud lead.
 - `ENGRAM_EXTRACT_URL`, `ENGRAM_MODEL` — override the memory distiller's endpoint/model (same default).
 - `ITERATE_WEB_SEARCH=0|1` — force the iterate-loop web-search rung off/on (default: on only if anon-web is configured).
 
@@ -161,6 +161,6 @@ Remove those folders to fully uninstall. `vault.dat` holds your API keys (DPAPI-
 - **A crash / "engine exited" you can't explain** — the sidecar and engine now log to `~/.agent-omega\logs\sidecar.log`. Open it (the engine-down message also names the path) — the real error is there.
 - **First cloud call fails right after adding a key** — adding a key in Settings → Vault reloads the engine automatically and keeps your current conversation; if the very first call still fails, restart the app once.
 - **Blank window** — install the WebView2 Runtime (see prerequisites).
-- **`helper1`/`helper2` delegation errors** — you have no `local` provider configured; either point `local.baseURL` at a running local server or just let the lead work inline.
+- **`helper1`/`helper2` delegation errors** — you have no reachable local provider configured; point a provider's `baseURL` at a running local server or let the lead work inline.
 - **Engine won't start / "engine-down" right after downloading it** — Windows SmartScreen/antivirus may have quarantined the unsigned `opencode.exe`. Run `Unblock-File .\engine\opencode.exe`, and allowlist it in your antivirus if needed.
 - **Behind a corporate proxy** — `npm install` and the engine download honor `HTTP_PROXY`/`HTTPS_PROXY`; set those (or `npm config set proxy <url>`) before steps 3 and 5.

@@ -3,7 +3,17 @@ import { hasCurrentApproval, hasUnsettledExecution, TASK_QUALITY_POLICY_VERSION 
 const CONTROL_TOOL = 'task_quality_checkpoint'
 const ARTIFACT_CONTROL_TOOL = 'task_quality_artifact_checkpoint'
 
-export function admitTaskQualityTool({ tool, source, capability, trustedControl, lifecycle } = {}) {
+function hasMatchingDirectTaskWrapperPending(lifecycle, parentTaskCallID) {
+  const pending = lifecycle?.pendingExecutions
+  return (
+    Array.isArray(pending) &&
+    pending.length === 1 &&
+    pending[0]?.tool === 'task' &&
+    pending[0]?.callID === parentTaskCallID
+  )
+}
+
+export function admitTaskQualityTool({ tool, source, capability, trustedControl, lifecycle, directTaskWrapperCallID } = {}) {
   // The checkpoint is the narrowly-scoped local control plane that can create
   // the repaired-plan record. It does not touch workspace state or execute a
   // command; every other unknown/plugin/MCP tool remains denied.
@@ -34,7 +44,15 @@ export function admitTaskQualityTool({ tool, source, capability, trustedControl,
   if (!hasCurrentApproval(lifecycle)) {
     return { decision: 'deny', reason: 'Task quality is awaiting an explicit external-user go for the current repaired-plan generation.', policyVersion: TASK_QUALITY_POLICY_VERSION }
   }
-  if (hasUnsettledExecution(lifecycle)) {
+  // A direct TaskTool call has its own durable wrapper precommit while its
+  // engine-issued child performs the actual workspace action. That private
+  // child may proceed through its exact wrapper only; any real unresolved
+  // action remains fail-closed. The wrapper call ID is resolved solely from
+  // loader-attested engine provenance, never from tool input.
+  if (
+    hasUnsettledExecution(lifecycle) &&
+    !hasMatchingDirectTaskWrapperPending(lifecycle, directTaskWrapperCallID)
+  ) {
     return { decision: 'deny', reason: 'Task quality recovered an unresolved execution attempt. Do not continue mutation; inspect the durable tool result and route a repaired follow-up.', policyVersion: TASK_QUALITY_POLICY_VERSION }
   }
   return { decision: 'allow', policyVersion: TASK_QUALITY_POLICY_VERSION }
