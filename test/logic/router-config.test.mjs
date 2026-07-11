@@ -10,6 +10,10 @@ import { spawnSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 
 process.env.ROUTER_COOLDOWN_MS = '20'
+// Keep the in-process plugin cases hermetic. Child-process configuration
+// fixtures below explicitly remove these overrides before loading router.mjs.
+process.env.ROUTER_EXTRACT_URL = 'http://127.0.0.1:9199/v1'
+process.env.ROUTER_MODEL = 'test-router'
 const ROUTER_URL = pathToFileURL(resolve('config-template/opencode/skill-router/router.mjs')).href
 const ROUTER_PLUGIN_URL = pathToFileURL(resolve('config-template/opencode/skill-router/index.js')).href
 
