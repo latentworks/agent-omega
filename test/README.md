@@ -23,6 +23,19 @@ This is an optional paid/API end-to-end suite, not a release gate. The v2.6 rele
 record lists the exact checks that were run and the surfaces that remain unverified:
 [`docs/releases/v2.6.2.md`](../docs/releases/v2.6.2.md).
 
+## v2.7.2 candidate evidence
+
+`npm test` passed 179/179 on the v2.7.2 candidate. The paired engine full
+typecheck passed, and its focused terminal processor, loader attestation, and
+direct-dispatch suites passed 22/22. Those deterministic checks prove the
+held-terminal contract: ordinary plugins cannot receive terminal evidence;
+raw approval-bound text never persists or streams before the loader-attested
+lifecycle hook explicitly releases a safe replacement; and a missing release
+fails closed as fixed lifecycle feedback. A fresh Windows Release output
+contained exactly one bundled engine executable and no ignored local backups.
+The optional paid suite above and the retained Qwen3.6-35B campaign remain
+required before claiming live desktop or live-model proof.
+
 ## v2.6 lifecycle and router logic checks
 
 These focused tests use fakes and injected fetches; they do not require a paid
@@ -43,8 +56,12 @@ plan-generation approval from an external user; the settled
 `awaiting-artifact-review` boundary; durable execution
 receipts with no unresolved execution before artifact review; transform-resolved
 task-agent and built-in child-read provenance; and firewalls between plan text,
-artifact text, receipts, and builder context. Protocol negotiation fails closed
-unless protocol 2 and all seven task-quality features are present. The router checks bind
+artifact text, receipts, and builder context. They also cover the engine-owned
+terminal hook: an ordinary stopped plan is durable before the exact routed
+parent may enter plan review, while an approval-bound final candidate is held
+out of the transcript until review selects safe text; only a settled receipt
+can close artifact review. Protocol negotiation fails closed
+unless protocol 2 and all ten task-quality features are present. The router checks bind
 classification to the active local model, require an explicit local fallback for
 cloud-led turns, scope failure cooldowns to the classifier endpoint/model/provider
 instead of globally poisoning other routes, and exclude internal subagent messages.

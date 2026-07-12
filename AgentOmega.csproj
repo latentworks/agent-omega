@@ -7,9 +7,9 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>agent-omega</AssemblyName>
     <ApplicationIcon>agent-omega.ico</ApplicationIcon>
-    <Version>2.7.1</Version>
-    <AssemblyVersion>2.7.1.0</AssemblyVersion>
-    <FileVersion>2.7.1.0</FileVersion>
+    <Version>2.7.2</Version>
+    <AssemblyVersion>2.7.2.0</AssemblyVersion>
+    <FileVersion>2.7.2.0</FileVersion>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4022.49" />
@@ -21,9 +21,13 @@
     <!-- the Node sidecar + its manifest ship beside the exe; setup runs `npm install` here and drops the engine in ./engine/ -->
     <None Include="sidecar.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="session-transition.mjs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="managed-task-quality.mjs" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Keep the task-quality contract beside the desktop app so an existing
+         Agent Omega install can receive a safe, narrow plugin refresh. -->
+    <None Include="config-template\opencode\task-quality\**\*" CopyToOutputDirectory="PreserveNewest" />
     <None Include="package.json" CopyToOutputDirectory="PreserveNewest" />
-    <!-- the engine binary (dropped in ./engine/ per SETUP) ships beside the exe; empty glob is a no-op if not yet downloaded -->
-    <None Include="engine\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Ship only the canonical engine. Local backup files must never leak into a release bundle. -->
+    <None Include="engine\opencode.exe" CopyToOutputDirectory="PreserveNewest" />
     <None Include="scripts\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <!-- Vendor the sidecar's node deps beside the exe so a relocated/copied build stays self-contained.

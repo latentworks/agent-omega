@@ -1,5 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   TASK_QUALITY_FEATURES,
   TASK_QUALITY_PLUGIN,
@@ -7,6 +10,8 @@ import {
   assessTaskQualityHealth,
   reconcileTaskQualityConfig,
 } from '../../config-template/opencode/task-quality/compat.mjs'
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
 const shipped = [
   './skill-router/index.js',
@@ -48,4 +53,9 @@ test('task-quality engine health fails closed for old, incomplete, and valid eng
   const valid = assessTaskQualityHealth({ taskQuality: { protocol: TASK_QUALITY_PROTOCOL, features: TASK_QUALITY_FEATURES, build: { id: 'test' } } })
   assert.equal(valid.ok, true)
   assert.deepEqual(valid.build, { id: 'test' })
+})
+
+test('managed task-quality policy declares every compatibility feature', () => {
+  const policy = JSON.parse(fs.readFileSync(path.join(ROOT, 'config-template', 'opencode', 'task-quality', 'policy.json'), 'utf8'))
+  assert.deepEqual(policy.engine.requiredFeatures, TASK_QUALITY_FEATURES)
 })

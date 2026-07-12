@@ -13,6 +13,7 @@ import * as acp from '@agentclientprotocol/sdk'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import crypto from 'node:crypto'
 import { createSessionTransition } from './session-transition.mjs'
+import { syncManagedTaskQuality } from './managed-task-quality.mjs'
 
 // Fix E — engine-orphan reaper mode. A hard-kill of the sidecar itself (Task Manager End Task,
 // TerminateProcess, OOM — anything that skips the SIGTERM/SIGINT/'exit' handlers near the bottom of
@@ -295,6 +296,29 @@ function ensureVault() {
 }
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')   // honors XDG_CONFIG_HOME so an isolated instance reads its own config (council, onboarding marker, AGENTS.md)
 const COUNCIL_JSON = path.join(CONFIG_DIR, 'opencode', 'council', 'council.json')
+
+function provisionManagedTaskQuality() {
+  if (!isWin) return true
+  try {
+    const result = syncManagedTaskQuality({ packageRoot: HERE, configRoot: CONFIG_DIR })
+    if (result.status === 'synced') return true
+    const message = result.status === 'foreign'
+      ? 'Agent Omega will not start because the existing OpenCode configuration is not an Agent Omega installation. It was left unchanged.'
+      : 'Agent Omega configuration is missing. Run the packaged setup before starting task work.'
+    lastEngineDown = { type: 'engine-down', message }
+    log('managed task-quality synchronization refused:', result.status)
+    broadcast(lastEngineDown)
+    return false
+  } catch {
+    lastEngineDown = {
+      type: 'engine-down',
+      message: 'Task-quality safety files could not be synchronized. Reinstall Agent Omega before starting task work.',
+    }
+    log('managed task-quality synchronization failed')
+    broadcast(lastEngineDown)
+    return false
+  }
+}
 // The task-quality contract lives with the provisioned config so setup/doctor/sidecar all
 // enforce one versioned definition. Test fixtures intentionally have no HTTP engine surface;
 // only that explicit fixture mode bypasses the live capability probe.
@@ -754,6 +778,7 @@ async function newSession(lease = sessionTransition.epoch) {
 }
 
 async function start(lease = sessionTransition.epoch) {
+  if (!provisionManagedTaskQuality()) return null
   if (!OPENCODE_SRC && !TEST_ENGINE_COMMAND && !fs.existsSync(ENGINE)) {   // engine preflight — clear message instead of a raw ENOENT
     const getEngine = isWin ? 'download opencode.exe into an engine/ folder (see SETUP.md)' : 'build the engine into engine/opencode (see SETUP.md, macOS section)'
     lastEngineDown = { type: 'engine-down', message: 'Engine not found at ' + ENGINE + ' — ' + getEngine + ', or set AGENT_OMEGA_ENGINE.' }

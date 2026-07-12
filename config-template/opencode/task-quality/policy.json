@@ -10,7 +10,9 @@
       "plain-review-report",
       "review-address-gate",
       "review-resume",
-      "internal-automation"
+      "internal-automation",
+      "deterministic-terminal-review",
+      "terminal-completion-gate"
     ]
   },
   "enforcement": {

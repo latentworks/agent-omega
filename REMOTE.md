@@ -1,6 +1,6 @@
 # Remote control (terminal attach)
 
-> **Stable (v2.7.1).** Terminal rendering redesigned to a Claude-Code-style TUI — bordered input
+> **Stable (v2.7.2).** Terminal rendering redesigned to a Claude-Code-style TUI — bordered input
 > box, live spinner, tool/permission cards, `+`/`−` diff tinting, arrow-or-digit menus — attach to the
 > live session, replay history, stream turns, approve permissions, switch models. Falls back to a plain
 > scrolling log on dumb terminals / non-TTY (`ATTACH_PLAIN=1`).

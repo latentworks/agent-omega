@@ -1301,3 +1301,177 @@ test("plain CRAP artifact review closes only after delivered feedback causes new
   assert.equal(fake.state(sessionID).data.addressReceipt.postReportReceiptCount, 1);
   clearRouteHandoff(sessionID);
 });
+
+test("engine terminal hook records a fully persisted prose plan only for the routed parent", async () => {
+  const sessionID = "ses-terminal-plan";
+  clearRouteHandoff(sessionID);
+  recordRouteHandoff(buildRouteHandoff({ sessionID, messageID: "msg-task", messages: ["Build it"], skillNames: ["brainstorming"] }));
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({ client: fake.client, experimental_task_quality: fake.internal });
+  await hooks["experimental.chat.system.transform"]({ sessionID }, { system: [] });
+
+  await hooks["experimental.task_quality.terminal"]({
+    sessionID,
+    messageID: "msg-assistant-plan",
+    parentMessageID: "msg-unrelated",
+    text: "1. This must not become a plan.",
+  });
+  assert.equal(fake.state(sessionID).data.phase, "planning");
+  assert.equal(fake.reviews.length, 0);
+
+  await hooks["experimental.task_quality.terminal"]({
+    sessionID,
+    messageID: "msg-assistant-plan",
+    parentMessageID: "msg-task",
+    text: "1. Implement the change.\n2. Run the focused proof.",
+  });
+  assert.equal(fake.state(sessionID).data.phase, "awaiting-approval");
+  assert.equal(fake.reviews.length, 1);
+  assert.equal(fake.reviews[0].submission.kind, "plan");
+  assert.match(fake.reviews[0].acceptanceCriteria.join("\n"), /scope drift/i);
+  clearRouteHandoff(sessionID);
+});
+
+test("engine terminal hook holds and closes an explicit artifact-review follow-up", async () => {
+  const sessionID = "ses-terminal-artifact";
+  clearRouteHandoff(sessionID);
+  recordRouteHandoff(buildRouteHandoff({ sessionID, messageID: "msg-task", messages: ["Build it"], skillNames: ["brainstorming"] }));
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({ client: fake.client, experimental_task_quality: fake.internal });
+  await hooks["experimental.chat.system.transform"]({ sessionID }, { system: [] });
+  await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Build it.\n2. Verify it.", acceptance_criteria: ["Proof passes."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  await hooks["chat.message.persisted"](
+    { sessionID, messageID: "msg-go", origin: "external-user" },
+    { parts: [{ type: "text", text: "go" }] },
+  );
+  await hooks["tool.execute.preexecute"]({ sessionID, tool: "bash", callID: "call-proof", capability: "mutate" }, {});
+  await hooks["tool.execute.persisted"](
+    { sessionID, tool: "bash", callID: "call-proof", completedAt: 20 },
+    { output: "proof passed" },
+  );
+  await hooks["chat.message.persisted"](
+    { sessionID, messageID: "msg-final-review", origin: "external-user" },
+    { parts: [{ type: "text", text: "Run final artifact review now." }] },
+  );
+  assert.equal(fake.state(sessionID).data.phase, "awaiting-artifact-review");
+  const held = { hold: false };
+  await hooks["experimental.task_quality.terminal.start"](
+    { sessionID, messageID: "msg-artifact", parentMessageID: "msg-final-review" },
+    held,
+  );
+  assert.equal(held.hold, true);
+  await hooks["experimental.task_quality.terminal"]({
+    sessionID,
+    messageID: "msg-artifact",
+    parentMessageID: "msg-final-review",
+    text: "Implemented the approved change and the focused proof passed.",
+  });
+  assert.equal(fake.state(sessionID).data.phase, "artifact-reviewed");
+  assert.equal(fake.reviews.at(-1).submission.kind, "artifact");
+  clearRouteHandoff(sessionID);
+});
+
+test("engine terminal hook replaces an ineligible held completion with lifecycle feedback", async () => {
+  const sessionID = "ses-terminal-ineligible-artifact";
+  clearRouteHandoff(sessionID);
+  recordRouteHandoff(buildRouteHandoff({ sessionID, messageID: "msg-task", messages: ["Build it"], skillNames: ["brainstorming"] }));
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({ client: fake.client, experimental_task_quality: fake.internal });
+  await hooks["experimental.chat.system.transform"]({ sessionID }, { system: [] });
+  await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Build it.\n2. Verify it.", acceptance_criteria: ["Proof passes."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  await hooks["chat.message.persisted"](
+    { sessionID, messageID: "msg-go", origin: "external-user" },
+    { parts: [{ type: "text", text: "go" }] },
+  );
+  const held = { hold: false };
+  await hooks["experimental.task_quality.terminal.start"](
+    { sessionID, messageID: "msg-artifact", parentMessageID: "msg-go" },
+    held,
+  );
+  assert.equal(held.hold, true);
+  const output = { text: "Everything is complete.", release: false };
+  await hooks["experimental.task_quality.terminal"](
+    { sessionID, messageID: "msg-artifact", parentMessageID: "msg-go", text: output.text },
+    output,
+  );
+  assert.equal(output.release, true);
+  assert.match(output.text, /not eligible for artifact review yet/i);
+  assert.equal(fake.state(sessionID).data.phase, "approved");
+  clearRouteHandoff(sessionID);
+});
+
+test("engine terminal artifact hold routes CRAP repair back through a new receipt before completion", async () => {
+  const sessionID = "ses-terminal-crap-artifact";
+  clearRouteHandoff(sessionID);
+  recordRouteHandoff(buildRouteHandoff({ sessionID, messageID: "msg-task", messages: ["Build it"], skillNames: ["brainstorming"] }));
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({ client: fake.client, experimental_task_quality: fake.internal });
+  await hooks["experimental.chat.system.transform"]({ sessionID }, { system: [] });
+  await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Build it.\n2. Verify it.", acceptance_criteria: ["Proof passes."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  await hooks["chat.message.persisted"](
+    { sessionID, messageID: "msg-go", origin: "external-user" },
+    { parts: [{ type: "text", text: "go" }] },
+  );
+  await hooks["tool.execute.preexecute"]({ sessionID, tool: "bash", callID: "call-proof", capability: "mutate" }, {});
+  await hooks["tool.execute.persisted"](
+    { sessionID, tool: "bash", callID: "call-proof", completedAt: 20 },
+    { output: "proof passed" },
+  );
+
+  const unrelated = { hold: false };
+  await hooks["experimental.task_quality.terminal.start"](
+    { sessionID, messageID: "msg-artifact", parentMessageID: "msg-unrelated" },
+    unrelated,
+  );
+  assert.equal(unrelated.hold, false);
+  const approvalBound = { hold: false };
+  await hooks["experimental.task_quality.terminal.start"](
+    { sessionID, messageID: "msg-artifact", parentMessageID: "msg-go" },
+    approvalBound,
+  );
+  assert.equal(approvalBound.hold, true);
+
+  const report = "Repair the overflow branch and rerun the proof.";
+  fake.setReview(async (input) => ({
+    route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
+    submission: { kind: input.submission.kind, digest: digestText(input.submission.content) },
+    review: { status: "complete", report, reportDigest: digestText(report), reviewID: "review-terminal-artifact-1", completedAt: 30, toolCalls: 0 },
+  }));
+  const firstOutput = { text: "Implemented the approved change and the focused proof passed." };
+  await hooks["experimental.task_quality.terminal"](
+    { sessionID, messageID: "msg-artifact", parentMessageID: "msg-go", text: firstOutput.text },
+    firstOutput,
+  );
+  assert.match(firstOutput.text, /feedback was delivered for repair/i);
+  assert.equal(fake.state(sessionID).data.pendingReview.delivery.messageID, "msg-review-1");
+
+  await hooks["tool.execute.preexecute"]({ sessionID, tool: "edit", callID: "call-repair", capability: "mutate" }, {});
+  await hooks["tool.execute.persisted"](
+    { sessionID, tool: "edit", callID: "call-repair", completedAt: 40 },
+    { output: "overflow branch repaired" },
+  );
+  const repairBound = { hold: false };
+  await hooks["experimental.task_quality.terminal.start"](
+    { sessionID, messageID: "msg-repair", parentMessageID: "msg-review-1" },
+    repairBound,
+  );
+  assert.equal(repairBound.hold, true);
+  const repairedOutput = { text: "Repaired the overflow branch and reran the proof successfully." };
+  await hooks["experimental.task_quality.terminal"](
+    { sessionID, messageID: "msg-repair", parentMessageID: "msg-review-1", text: repairedOutput.text },
+    repairedOutput,
+  );
+  assert.equal(fake.state(sessionID).data.phase, "artifact-reviewed");
+  assert.equal(fake.state(sessionID).data.addressReceipt.postReportReceiptCount, 1);
+  assert.match(repairedOutput.text, /reran the proof successfully/i);
+  clearRouteHandoff(sessionID);
+});

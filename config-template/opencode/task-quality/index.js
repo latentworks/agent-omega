@@ -495,6 +495,149 @@ async function recordArtifactDenial(adapter, sessionID, artifact, reason) {
   throw new Error("Task quality could not durably record artifact-review denial due to a concurrent lifecycle update.");
 }
 
+// A terminal checkpoint must not depend on a smaller local model choosing the
+// control-plane tool correctly. The engine supplies only a fully persisted
+// terminal response and its exact parent identity; this hook then uses the
+// same isolated HSS/CRAP review and CAS writes as the explicit controls.
+function automaticPlanCriteria(lifecycle) {
+  const contract = String(lifecycle?.taskContract || "the routed task")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 1800);
+  return [
+    `The plan addresses the routed task without scope drift: ${contract || "the routed task"}.`,
+    "The plan identifies concrete implementation steps and a testable verification path.",
+    "The plan identifies material unknowns, dependencies, and research needs before implementation.",
+  ];
+}
+
+async function captureTerminalPlan(adapter, input) {
+  const snapshot = normalizeSnapshot(await adapter.get(input.sessionID));
+  const lifecycle = snapshot.data;
+  if (!lifecycle || hasUnsettledExecution(lifecycle) || lifecycle.revocationPending)
+    return false;
+
+  if (
+    lifecycle.phase === "planning" &&
+    lifecycle.taskMessageID === input.parentMessageID
+  ) {
+    const plan = boundedText(input.text, "terminal plan");
+    const expected = taskIdentity(lifecycle);
+    const acceptanceCriteria = automaticPlanCriteria(lifecycle);
+    const review = await adapter.review({
+      sessionID: input.sessionID,
+      contract: lifecycle.taskContract || "",
+      acceptanceCriteria,
+      submission: {
+        kind: "plan",
+        content: plan,
+        digest: digestPlan(plan),
+      },
+    });
+    if (review.plainReport) {
+      await persistCurrentTransition(adapter, input.sessionID, expected, (current) =>
+        recordPendingPlanReview(current, plan, {
+          review,
+          acceptanceCriteria,
+          reviewedDigest: review.submission.digest,
+        }),
+      );
+      const delivery = await adapter.resumeWithReview({
+        sessionID: input.sessionID,
+        reviewID: review.plainReport.reviewID,
+      });
+      await persistCurrentTransition(adapter, input.sessionID, expected, (current) =>
+        recordReviewDelivered(current, delivery),
+      );
+      return true;
+    }
+    await recordPlan(adapter, input.sessionID, expected, plan, acceptanceCriteria, review);
+    return true;
+  }
+
+  if (
+    lifecycle.phase === "awaiting-plan-repair" &&
+    lifecycle.pendingReview?.kind === "plan" &&
+    lifecycle.pendingReview.delivery?.messageID === input.parentMessageID
+  ) {
+    const plan = boundedText(input.text, "terminal plan");
+    const expected = taskIdentity(lifecycle);
+    await persistCurrentTransition(adapter, input.sessionID, expected, (current) =>
+      recordAddressedPlan(current, plan, {
+        acceptanceCriteria: current.acceptanceCriteria,
+      }),
+    );
+    return true;
+  }
+  return false;
+}
+
+async function captureTerminalArtifact(adapter, input) {
+  const snapshot = normalizeSnapshot(await adapter.get(input.sessionID));
+  const lifecycle = snapshot.data;
+  const isPendingRepair =
+    lifecycle?.pendingReview?.kind === "artifact" &&
+    lifecycle.pendingReview.delivery?.messageID === input.parentMessageID;
+  if (isPendingRepair) {
+    const artifact = boundedText(input.text, "addressed terminal artifact");
+    const expected = taskIdentity(lifecycle);
+    await persistCurrentTransition(adapter, input.sessionID, expected, (current) =>
+      recordAddressedArtifact(current, artifact),
+    );
+    return { handled: true };
+  }
+  if (
+    !lifecycle ||
+    lifecycle.pendingReview ||
+    hasUnsettledExecution(lifecycle) ||
+    !Array.isArray(lifecycle.receipts) ||
+    lifecycle.receipts.length < 1
+  )
+    return false;
+  const isApprovalTurn =
+    lifecycle.phase === "approved" &&
+    lifecycle.approval?.messageID === input.parentMessageID;
+  const isArtifactFollowup =
+    lifecycle.phase === "awaiting-artifact-review" &&
+    lifecycle.artifactReviewMessageID === input.parentMessageID;
+  if (!isApprovalTurn && !isArtifactFollowup) return false;
+
+  const artifact = boundedText(input.text, "terminal artifact");
+  const expected = taskIdentity(lifecycle);
+  const review = await adapter.review({
+    sessionID: input.sessionID,
+    contract: lifecycle.taskContract || "",
+    acceptanceCriteria: lifecycle.acceptanceCriteria || [],
+    submission: {
+      kind: "artifact",
+      content: artifact,
+      digest: digestPlan(artifact),
+    },
+  });
+  if (review.plainReport) {
+    await persistCurrentTransition(adapter, input.sessionID, expected, (current) =>
+      recordPendingArtifactReview(current, artifact, {
+        review,
+        reviewedDigest: review.submission.digest,
+      }),
+    );
+    const delivery = await adapter.resumeWithReview({
+      sessionID: input.sessionID,
+      reviewID: review.plainReport.reviewID,
+    });
+    await persistCurrentTransition(adapter, input.sessionID, expected, (current) =>
+      recordReviewDelivered(current, delivery),
+    );
+    return {
+      handled: true,
+      visibleText:
+        "Artifact review feedback was delivered for repair. Complete the repair and record newly settled post-report proof before making a completion claim.",
+    };
+  }
+  await recordArtifact(adapter, input.sessionID, artifact, review);
+  return { handled: true };
+}
+
 export const TaskQualityPlugin = async ({
   client,
   experimental_task_quality,
@@ -510,6 +653,11 @@ export const TaskQualityPlugin = async ({
   // latch covers the exact response that receives a denied checkpoint even
   // if denial persistence loses a CAS race and a subsequent read is stale.
   const completionDenied = new Set();
+  // Terminal-start decides whether a response is private before any text can
+  // stream. Remember that exact assistant message so terminal handling must
+  // explicitly choose safe replacement text before the engine may release it.
+  const heldTerminalCandidates = new Set();
+  const heldTerminalKey = (input) => `${input.sessionID}\u0000${input.messageID}`;
   // A failed plan checkpoint has no durable lifecycle phase to inspect. Keep
   // a response-local denial so the model cannot turn the failed tool result
   // into a false "checkpoint recorded" claim. A later external user turn
@@ -557,7 +705,7 @@ export const TaskQualityPlugin = async ({
         output.system.push(
           [
             "## Task-quality lifecycle — required gate",
-            "This is a qualifying routed task. Preserve the existing planning/review skills and repair the plan. Before returning ANY assistant-visible text, you MUST call task_quality_checkpoint with that repaired plan and concrete acceptance criteria. Do not claim a plan is saved unless that tool returned success; a prose-only plan is not valid and cannot be approved.",
+            "This is a qualifying routed task. Preserve the existing planning/review skills and repair the plan. Use task_quality_checkpoint with that repaired plan and concrete acceptance criteria whenever the provider can call it. A fully terminal prose-only plan is independently captured and reviewed by the engine; it is never an approval bypass. Do not claim a plan is saved unless the lifecycle records it.",
             "Show the repaired plan to the user and wait for a later, explicit user-authored go/no-go. The engine blocks workspace mutation until that exact plan generation is approved.",
           ].join(" "),
         );
@@ -582,6 +730,88 @@ export const TaskQualityPlugin = async ({
         // approval by implication. Admission remains denied until a later
         // exact external-user approval is durably recorded.
         log(`approval capture error: ${error?.message || error}`);
+      }
+    },
+
+    "experimental.task_quality.terminal.start": async (input, output) => {
+      if (!active || !input?.sessionID || !input?.parentMessageID || !output)
+        return;
+      try {
+        const lifecycle = normalizeSnapshot(await adapter.get(input.sessionID)).data;
+        const approvalBound =
+          lifecycle?.phase === "approved" &&
+          lifecycle.approval?.messageID === input.parentMessageID;
+        const artifactReviewBound =
+          lifecycle?.phase === "awaiting-artifact-review" &&
+          lifecycle.artifactReviewMessageID === input.parentMessageID;
+        const artifactRepairBound =
+          lifecycle?.pendingReview?.kind === "artifact" &&
+          lifecycle.pendingReview.delivery?.messageID === input.parentMessageID;
+        if (approvalBound || artifactReviewBound || artifactRepairBound) {
+          output.hold = true;
+          heldTerminalCandidates.add(heldTerminalKey(input));
+        }
+      } catch (error) {
+        // A state-read failure must not expose an unreviewed completion
+        // candidate. The terminal handler supplies a clear fail-closed result.
+        completionDenied.add(input.sessionID);
+        output.hold = true;
+        heldTerminalCandidates.add(heldTerminalKey(input));
+        log(`terminal completion hold error: ${error?.message || error}`);
+      }
+    },
+
+    "experimental.task_quality.terminal": async (input, output) => {
+      if (!active || !input?.sessionID || !input?.parentMessageID || !input?.text)
+        return;
+      const held = heldTerminalCandidates.delete(heldTerminalKey(input));
+      try {
+        if (await captureTerminalPlan(adapter, input)) {
+          planCheckpointDenied.delete(input.sessionID);
+          completionDenied.delete(input.sessionID);
+          if (held && output && typeof output.text === "string") output.release = true;
+          return;
+        }
+      } catch (error) {
+        // Never let an optional reviewer failure crash the completed engine
+        // turn. The response is fail-closed by the latch until a new user
+        // message reopens planning.
+        planCheckpointDenied.add(input.sessionID);
+        log(`terminal plan capture error: ${error?.message || error}`);
+        return;
+      }
+      try {
+        const result = await captureTerminalArtifact(adapter, input);
+        if (result?.handled) {
+          completionDenied.delete(input.sessionID);
+          if (result.visibleText && output && typeof output.text === "string")
+            output.text = result.visibleText;
+          if (held && output && typeof output.text === "string") output.release = true;
+          return;
+        }
+        if (held && output && typeof output.text === "string") {
+          output.text =
+            "Completion is not eligible for artifact review yet because the required execution proof is missing or still unsettled. Complete and settle the required work, then retry the final artifact review.";
+          output.release = true;
+        }
+      } catch (error) {
+        completionDenied.add(input.sessionID);
+        if (output && typeof output.text === "string")
+          output.text =
+            "Artifact review could not be recorded, so no completion claim is authorized. Resolve the lifecycle failure before continuing this task.";
+        if (held && output && typeof output.text === "string") output.release = true;
+        try {
+          const artifact = boundedText(input.text, "terminal artifact");
+          await recordArtifactDenial(
+            adapter,
+            input.sessionID,
+            artifact,
+            error?.message || String(error),
+          );
+        } catch (denialError) {
+          log(`terminal artifact denial persistence error: ${denialError?.message || denialError}`);
+        }
+        log(`terminal artifact capture error: ${error?.message || error}`);
       }
     },
 
@@ -638,7 +868,7 @@ export const TaskQualityPlugin = async ({
             Object.assign(output, {
               decision: "deny",
               reason:
-                "Task quality requires an Agent Omega v2.6 engine lifecycle surface before mutating tools may run.",
+                "Task quality requires an Agent Omega v2.7.2 engine lifecycle surface before mutating tools may run.",
               policyVersion: "agent-omega/task-quality@1",
             });
           return;
@@ -776,7 +1006,7 @@ export const TaskQualityPlugin = async ({
             return {
               title: "Task-quality blocked",
               output:
-                "The installed engine cannot run and persist an isolated task-quality review. Update Agent Omega v2.6 before continuing a qualifying change.",
+                "The installed engine cannot run and persist an isolated task-quality review. Update Agent Omega v2.7.2 before continuing a qualifying change.",
             };
           try {
             const plan = boundedText(args.repaired_plan, "repaired plan");
@@ -893,7 +1123,7 @@ export const TaskQualityPlugin = async ({
             return {
               title: "Task-quality blocked",
               output:
-                "The installed engine cannot run and persist an isolated artifact review. Update Agent Omega v2.6 before continuing.",
+                "The installed engine cannot run and persist an isolated artifact review. Update Agent Omega v2.7.2 before continuing.",
             };
           try {
             const artifact = boundedText(args.artifact, "artifact");

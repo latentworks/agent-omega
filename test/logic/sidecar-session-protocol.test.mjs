@@ -60,15 +60,21 @@ async function harness(t, options = {}) {
     AGENT_OMEGA_ENGINE: options.engine || path.join(root, 'missing-engine'), AO_FAKE_ACP_CONTROL_PORT: String(controlPort),
     AO_FAKE_ACP_LAUNCH_FILE: path.join(root, 'engine-launches.log'),
   })
-  fs.mkdirSync(path.join(config, 'opencode', 'task-quality'), { recursive: true })
-  fs.copyFileSync(path.join(ROOT, 'config-template', 'opencode', 'task-quality', 'compat.mjs'), path.join(config, 'opencode', 'task-quality', 'compat.mjs'))
+  if (options.foreignConfig) {
+    fs.mkdirSync(path.join(config, 'opencode'), { recursive: true })
+    fs.writeFileSync(path.join(config, 'opencode', 'opencode.json'), JSON.stringify({ plugin: ['./private.js'] }))
+  } else {
+    fs.mkdirSync(path.join(config, 'opencode', 'skill-router'), { recursive: true })
+    fs.writeFileSync(path.join(config, 'opencode', 'skill-router', 'index.js'), '// Agent Omega marker\n')
+    fs.writeFileSync(path.join(config, 'opencode', 'opencode.json'), JSON.stringify({ plugin: ['./skill-router/index.js'] }))
+  }
   // Set the controlled engine only after stripping inherited Agent Omega overrides.
   env.AGENT_OMEGA_TEST_ENGINE_COMMAND = FIXTURE
   if (options.verifyTaskQuality) env.AO_TEST_VERIFY_TASK_QUALITY = '1'
   let healthServer = null
   if (options.healthMode) {
     const payload = options.healthMode === 'valid'
-      ? { healthy: true, taskQuality: { protocol: 2, features: ['tool-admission', 'isolated-review', 'trusted-origin', 'lifecycle-cas', 'plain-review-report', 'review-address-gate', 'review-resume', 'internal-automation'] } }
+      ? { healthy: true, taskQuality: { protocol: 2, features: ['tool-admission', 'isolated-review', 'trusted-origin', 'lifecycle-cas', 'plain-review-report', 'review-address-gate', 'review-resume', 'internal-automation', 'deterministic-terminal-review', 'terminal-completion-gate'] } }
       : { healthy: true, taskQuality: { protocol: 0, features: [] } }
     healthServer = http.createServer((_, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)) })
     healthServer.listen(wsPort + 1, '127.0.0.1')
@@ -122,7 +128,7 @@ async function harness(t, options = {}) {
   const eventAfter = async (index, name, predicate = () => true) => {
     return await wait(() => controlEvents.slice(index).find((e) => e.event === name && predicate(e)))
   }
-  return { messages, controlEvents, send, release, crash, reconnectControl, event, eventAfter, wait, launchCount }
+  return { messages, controlEvents, send, release, crash, reconnectControl, event, eventAfter, wait, launchCount, config }
 }
 const count = (messages, type) => messages.filter((m) => m.type === type).length
 
@@ -219,6 +225,23 @@ test('sidecar blocks an old engine before it creates a task session', { concurre
   const down = await h.wait(() => h.messages.find((m) => m.type === 'engine-down'))
   assert.match(down.message, /Task-quality safety update required/i)
   assert.equal(h.controlEvents.some((e) => e.event === 'newSession'), false)
+})
+
+test('sidecar refuses a foreign OpenCode config before it can spawn an engine', { concurrency: false }, async (t) => {
+  const h = await harness(t, { foreignConfig: true, expectIncompatible: true })
+  const down = await h.wait(() => h.messages.find((m) => m.type === 'engine-down'))
+  assert.match(down.message, /not an Agent Omega installation/i)
+  assert.equal(h.launchCount(), 0)
+})
+
+test('sidecar refreshes only its managed task-quality plugin before creating a session', { concurrency: false }, async (t) => {
+  const h = await harness(t)
+  const config = JSON.parse(fs.readFileSync(path.join(h.config, 'opencode', 'opencode.json'), 'utf8'))
+  assert.ok(config.plugin.includes('./task-quality/index.js'))
+  assert.equal(
+    fs.readFileSync(path.join(h.config, 'opencode', 'task-quality', 'index.js'), 'utf8'),
+    fs.readFileSync(path.join(ROOT, 'config-template', 'opencode', 'task-quality', 'index.js'), 'utf8'),
+  )
 })
 
 test('sidecar admits only a complete task-quality engine report before creating a session', { concurrency: false }, async (t) => {
