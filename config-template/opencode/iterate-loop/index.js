@@ -25,7 +25,7 @@ function log(m) {
   try { appendFileSync(LOG_PATH, `[${new Date().toISOString()}] ${m}\n`) } catch {}
 }
 
-const IterateLoopPlugin = async ({ client }) => {
+const IterateLoopPlugin = async ({ client, experimental_internal_automation: internalAutomation }) => {
   log('loaded')
   const sessions = new Map()
 
@@ -81,7 +81,8 @@ const IterateLoopPlugin = async ({ client }) => {
         if (!d) return                                // verified, or nothing changed -> let it finish
         if (!(await isPrimary(id, s))) return         // skip subagent sessions
         if (DRYRUN) { log(`WOULD ${d.action} ${id}`); return }
-        await client.session.promptAsync({ path: { id }, body: { parts: [{ type: 'text', text: d.text }] } })
+        if (!internalAutomation) throw new Error('engine internal automation bridge unavailable')
+        await internalAutomation.continue({ sessionID: id, text: d.text })
         log(`${d.action} sent ${id} (tier=${s.tier} shots=${s.shots} prompts=${s.prompts})`)
       } catch (e) { log(`event error: ${e}`) }
       finally { if (s && acquired) s.busy = false }

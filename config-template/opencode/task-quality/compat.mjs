@@ -14,6 +14,7 @@ export const TASK_QUALITY_FEATURES = [
   'plain-review-report',
   'review-address-gate',
   'review-resume',
+  'internal-automation',
 ]
 
 const own = (value) => value && typeof value === 'object' && !Array.isArray(value)

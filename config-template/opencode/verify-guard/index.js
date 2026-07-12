@@ -73,7 +73,7 @@ function logEval(record) {
   }
 }
 
-const VerifyGuardPlugin = async ({ client }) => {
+const VerifyGuardPlugin = async ({ client, experimental_internal_automation: internalAutomation }) => {
   log(`loaded (dryrun=${DRYRUN}, verifyCap=${VERIFY_CAP}, failureCap=${FAILURE_CAP})`)
   const sessions = new Map()
   const tracker = createFailureTracker()
@@ -184,7 +184,8 @@ const VerifyGuardPlugin = async ({ client }) => {
           if (DRYRUN) {
             log(`WOULD ${kind.toUpperCase()} ${id}`)
           } else {
-            await client.session.promptAsync({ path: { id }, body: { parts: [{ type: 'text', text }] } })
+            if (!internalAutomation) throw new Error('engine internal automation bridge unavailable')
+            await internalAutomation.continue({ sessionID: id, text })
             log(`${kind} prompt sent ${id}`)
           }
         }

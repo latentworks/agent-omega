@@ -9,7 +9,8 @@
       "lifecycle-cas",
       "plain-review-report",
       "review-address-gate",
-      "review-resume"
+      "review-resume",
+      "internal-automation"
     ]
   },
   "enforcement": {

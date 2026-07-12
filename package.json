@@ -1,6 +1,6 @@
 {
   "name": "agent-omega",
-  "version": "2.7.0",
+  "version": "2.7.1",
   "private": true,
   "scripts": {
     "test": "node --test \"test/logic/**/*.test.mjs\"",
