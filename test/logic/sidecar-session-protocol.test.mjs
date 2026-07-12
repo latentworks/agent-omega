@@ -12,6 +12,7 @@ import { WebSocket } from 'ws'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const FIXTURE = path.join(ROOT, 'test', 'fixtures', 'fake-acp-engine.mjs')
+const MANAGED_WINDOWS_RUNTIME = process.platform === 'win32'
 
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b }); return { promise, resolve, reject } }
 function isolatedChildEnv(parent) {
@@ -67,6 +68,10 @@ async function harness(t, options = {}) {
     fs.mkdirSync(path.join(config, 'opencode', 'skill-router'), { recursive: true })
     fs.writeFileSync(path.join(config, 'opencode', 'skill-router', 'index.js'), '// Agent Omega marker\n')
     fs.writeFileSync(path.join(config, 'opencode', 'opencode.json'), JSON.stringify({ plugin: ['./skill-router/index.js'] }))
+    // Windows owns the managed refresh at sidecar boot. Non-Windows fixture
+    // configs model the already-provisioned plugin supplied by their installer.
+    if (!MANAGED_WINDOWS_RUNTIME)
+      fs.cpSync(path.join(ROOT, 'config-template', 'opencode', 'task-quality'), path.join(config, 'opencode', 'task-quality'), { recursive: true })
   }
   // Set the controlled engine only after stripping inherited Agent Omega overrides.
   env.AGENT_OMEGA_TEST_ENGINE_COMMAND = FIXTURE
@@ -227,14 +232,14 @@ test('sidecar blocks an old engine before it creates a task session', { concurre
   assert.equal(h.controlEvents.some((e) => e.event === 'newSession'), false)
 })
 
-test('sidecar refuses a foreign OpenCode config before it can spawn an engine', { concurrency: false }, async (t) => {
+test('sidecar refuses a foreign OpenCode config before it can spawn an engine', { concurrency: false, skip: !MANAGED_WINDOWS_RUNTIME }, async (t) => {
   const h = await harness(t, { foreignConfig: true, expectIncompatible: true })
   const down = await h.wait(() => h.messages.find((m) => m.type === 'engine-down'))
   assert.match(down.message, /not an Agent Omega installation/i)
   assert.equal(h.launchCount(), 0)
 })
 
-test('sidecar refreshes only its managed task-quality plugin before creating a session', { concurrency: false }, async (t) => {
+test('sidecar refreshes only its managed task-quality plugin before creating a session', { concurrency: false, skip: !MANAGED_WINDOWS_RUNTIME }, async (t) => {
   const h = await harness(t)
   const config = JSON.parse(fs.readFileSync(path.join(h.config, 'opencode', 'opencode.json'), 'utf8'))
   assert.ok(config.plugin.includes('./task-quality/index.js'))

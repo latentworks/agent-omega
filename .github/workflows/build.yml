@@ -69,7 +69,13 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "24" }
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: "8.0.x" }
+      - name: run Windows sidecar and managed-plugin tests
+        run: |
+          npm ci
+          node --test test/logic/managed-task-quality.test.mjs test/logic/sidecar-session-protocol.test.mjs
       - name: build the WinForms shell
         run: dotnet build -c Release

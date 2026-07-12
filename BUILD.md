@@ -38,7 +38,7 @@ will publish native engine assets for Windows x64, Linux x64/arm64, and macOS In
 public [`opencode-omega`](https://github.com/latentworks/opencode-omega) fork. The sidecar rejects
 an engine that lacks its required task-quality capabilities.
 
-## CI: one push, two jobs
+## CI: one push, three jobs across two desktop hosts
 
 `.github/workflows/build.yml` runs on every push/PR:
 - **shared** (ubuntu, Node 24) — `node --check` the sidecar + every plugin, then **run the
@@ -46,7 +46,10 @@ an engine that lacks its required task-quality capabilities.
   brain against real inputs, and validate config. (`node --check` only parses; the tests prove
   behavior. Node 24 because `engram/store.mjs` uses the built-in `node:sqlite`.)
 - **macOS** — `swiftc -parse` the Swift host, lint the shell scripts, `plutil` the Info.plist.
-- **Windows** — `dotnet build` the WinForms host.
+- **Windows** — runs the real sidecar/managed-plugin integration tests under
+  Node 24, then `dotnet build`s the WinForms host. The source checkout has no
+  engine asset, so this is intentionally a host-build check rather than a
+  release-bundle check.
 
 So a single commit is proven to compile on both OSes automatically. (Producing a full *signed*
 release bundle needs the engine binary + an Apple Developer ID, so that's a separate,

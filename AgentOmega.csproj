@@ -26,8 +26,9 @@
          Agent Omega install can receive a safe, narrow plugin refresh. -->
     <None Include="config-template\opencode\task-quality\**\*" CopyToOutputDirectory="PreserveNewest" />
     <None Include="package.json" CopyToOutputDirectory="PreserveNewest" />
-    <!-- Ship only the canonical engine. Local backup files must never leak into a release bundle. -->
-    <None Include="engine\opencode.exe" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Ship only the canonical engine when a release asset has been installed.
+         Source-only CI intentionally has no ignored engine binary. -->
+    <None Include="engine\opencode.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('engine\opencode.exe')" />
     <None Include="scripts\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <!-- Vendor the sidecar's node deps beside the exe so a relocated/copied build stays self-contained.
