@@ -2,11 +2,19 @@
 // This module intentionally contains no lifecycle/reviewer behavior: it only defines the
 // fail-closed engine contract and the minimal config reconciliation needed to provision it.
 
-export const TASK_QUALITY_PROTOCOL = 1
+export const TASK_QUALITY_PROTOCOL = 2
 export const TASK_QUALITY_PLUGIN = './task-quality/index.js'
 export const SKILL_ROUTER_PLUGIN = './skill-router/index.js'
 export const TASK_QUALITY_POLICY = 'task-quality/policy.json'
-export const TASK_QUALITY_FEATURES = ['tool-admission', 'isolated-review', 'trusted-origin', 'lifecycle-cas']
+export const TASK_QUALITY_FEATURES = [
+  'tool-admission',
+  'isolated-review',
+  'trusted-origin',
+  'lifecycle-cas',
+  'plain-review-report',
+  'review-address-gate',
+  'review-resume',
+]
 
 const own = (value) => value && typeof value === 'object' && !Array.isArray(value)
 

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { configuredReviewerCandidates } from '../../config-template/opencode/task-quality/reviewer.mjs'
-import { buildCrapEnvelope, parseCrapResult, renderCrapPrompt } from '../../config-template/opencode/task-quality/crap.mjs'
+import { buildCrapEnvelope, renderCrapPrompt, validateCrapReport } from '../../config-template/opencode/task-quality/crap.mjs'
 
 test('reviewer policy: provides a managed order, explicit opt-out, and no fabricated health state', () => {
   assert.deepEqual(configuredReviewerCandidates(), [{ agent: 'helper2' }, { agent: 'helper1' }])
@@ -29,21 +29,13 @@ test('CRAP envelope is allow-list-only and excludes builder context, rationale, 
   assert.deepEqual(Object.keys(envelope).sort(), ['acceptanceCriteria', 'contract', 'evidence', 'protocol', 'submission'])
 })
 
-test('CRAP parser retains supported findings/dispositions and drops guesses or orphaned dispositions', () => {
-  const parsed = parseCrapResult(JSON.stringify({
-    verdict: 'needs-repair', summary: 'One real issue.',
-    findings: [
-      { id: 'F1', severity: 'high', requirement: 'No unsafe selection.', evidence: 'helper had bash.', failureScenario: 'Reviewer can mutate.', },
-      { id: 'guess', severity: 'low', requirement: 'maybe bad' },
-    ],
-    dispositions: [
-      { findingID: 'F1', status: 'needs-repair', reason: 'Remove bash.' },
-      { findingID: 'guess', status: 'accepted', reason: 'No support.' },
-    ],
-  }))
+test('CRAP report validation preserves complete plain language verbatim and binds its digest', () => {
+  const report = 'Gap one.\r\n\r\nRepair it exactly. ✅'
+  const parsed = validateCrapReport(report)
   assert.equal(parsed.ok, true)
-  assert.deepEqual(parsed.result.findings.map((finding) => finding.id), ['F1'])
-  assert.deepEqual(parsed.result.dispositions.map((item) => item.findingID), ['F1'])
-  assert.equal(parseCrapResult('not JSON').ok, false)
-  assert.equal(parseCrapResult(JSON.stringify({ verdict: 'needs-repair', summary: 'Unsupported concern.', findings: [{ id: 'G1', requirement: 'maybe' }] })).ok, false)
+  assert.equal(parsed.report, report)
+  assert.equal(validateCrapReport(report, parsed.reportDigest).ok, true)
+  assert.equal(validateCrapReport(report, '0'.repeat(64)).ok, false)
+  assert.equal(validateCrapReport('   ').ok, false)
+  assert.doesNotMatch(renderCrapPrompt(buildCrapEnvelope({ contract: 'x', acceptanceCriteria: ['y'], submission: { kind: 'plan', content: 'z', digest: 'd' } })), /JSON only/)
 })

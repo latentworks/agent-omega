@@ -83,7 +83,10 @@ function boundedMs(value, fallback, min, max) {
   return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.floor(n))) : fallback
 }
 // Must finish comfortably inside the engine's 25-second attested-router timeout.
-export const ROUTER_TIMEOUT_MS = boundedMs(process.env.ROUTER_TIMEOUT_MS, 4000, 50, 20_000)
+// Slow local 35B+ classifiers need the full router bridge deadline, especially
+// just after another inference releases a shared slot. The cooldown bounds a
+// genuinely hung endpoint without retrying inside the same turn.
+export const ROUTER_TIMEOUT_MS = boundedMs(process.env.ROUTER_TIMEOUT_MS, 20_000, 50, 20_000)
 export const ROUTER_COOLDOWN_MS = boundedMs(process.env.ROUTER_COOLDOWN_MS, 10_000, 0, 300_000)
 // Thinking OFF by default — a classify call needs no chain-of-thought (the spec).
 const NOTHINK = !['0', 'false', 'off'].includes(String(process.env.ROUTER_NOTHINK ?? '1').toLowerCase())

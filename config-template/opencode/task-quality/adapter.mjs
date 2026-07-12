@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 // Thin client adapter for the fork's durable task-quality endpoints. Keeping
 // this boundary explicit makes the plugin fail closed on an old engine instead
 // of quietly falling back to an in-memory authorization map.
@@ -14,6 +16,14 @@ export function createLifecycleAdapter(_client, internal, reviewers = []) {
     async update(input) {
       return await internal.update(input)
     },
+    async resumeWithReview(input) {
+      if (typeof internal.resumeWithReview !== 'function') throw new Error('the installed engine cannot deliver a CRAP report as a fresh durable turn')
+      const receipt = await internal.resumeWithReview(input)
+      if (!receipt || receipt.reviewID !== input.reviewID || !/^[a-f0-9]{64}$/.test(String(receipt.reportDigest || '')) || typeof receipt.messageID !== 'string' || !receipt.messageID) {
+        throw new Error('the engine returned an invalid CRAP delivery receipt')
+      }
+      return Object.freeze({ reviewID: receipt.reviewID, reportDigest: receipt.reportDigest, messageID: receipt.messageID })
+    },
     async review(input) {
       // HSS candidate order crosses only the loader-attested in-process
       // bridge. Ordinary SDK callers cannot select or probe helpers.
@@ -22,9 +32,7 @@ export function createLifecycleAdapter(_client, internal, reviewers = []) {
       // The engine owns the route, active-model affinity, workspace, immutable
       // receipts, and review execution. Accept only its completed envelope;
       // caller-shaped review objects must never authorize a plan checkpoint.
-      if (!payload || payload.review?.status !== 'complete' || !payload.route || !payload.submission || !payload.review.result) {
-        throw new Error('the engine returned an incomplete isolated review result')
-      }
+      if (!payload || !payload.route || !payload.submission || !payload.review) throw new Error('the engine returned an incomplete isolated review result')
       if (
         payload.submission.kind !== input?.submission?.kind ||
         typeof payload.submission.digest !== 'string' ||
@@ -33,6 +41,41 @@ export function createLifecycleAdapter(_client, internal, reviewers = []) {
       ) {
         throw new Error('the engine review result does not bind to the canonical submitted artifact digest')
       }
+      const routeModel = typeof payload.route.model === 'string'
+        ? payload.route.model
+        : payload.route.model?.providerID && payload.route.model?.modelID
+          ? `${payload.route.model.providerID}/${payload.route.model.modelID}`
+          : ''
+      if (typeof payload.route.kind !== 'string' || !routeModel) {
+        throw new Error('the engine returned an isolated review without an attributable route')
+      }
+      if (payload.review.status !== 'complete') {
+        const failure = payload.review.failure && typeof payload.review.failure === 'object' ? payload.review.failure : payload.review
+        const parts = [failure.code, failure.message, failure.reason].filter((value) => typeof value === 'string' && value.trim()).map((value) => value.replace(/\s+/g, ' ').trim().slice(0, 1200))
+        const identity = [failure.providerID, failure.modelID].filter((value) => typeof value === 'string' && value).join('/')
+        throw new Error(`isolated review ${String(payload.review.status || 'failed')}${identity ? ` on ${identity}` : ''}${parts.length ? `: ${parts.join(': ')}` : ''}`)
+      }
+      // A healthy HSS structured pass retains the established one-call path.
+      // Same-model CRAP deliberately uses an ordinary final text report so
+      // thinking providers are not forced through an incompatible tool_choice.
+      if (!payload.review.result && payload.route.kind === 'crap') {
+        const reportValue = typeof payload.review.report === 'string' ? payload.review.report : payload.review.report?.text
+        if (typeof reportValue !== 'string' || !reportValue.trim() || Buffer.byteLength(reportValue, 'utf8') > 24 * 1024) throw new Error('the engine returned a completed CRAP review without a bounded plain-language report')
+        const reviewID = payload.review.reviewID ?? payload.review.id ?? payload.reviewID
+        const reportDigest = payload.review.reportDigest ?? payload.review.report?.sha256
+        if (typeof reviewID !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(reviewID)) throw new Error('the engine returned a CRAP report without a valid engine-owned review identity')
+        const calculated = createHash('sha256').update(reportValue, 'utf8').digest('hex')
+        if (typeof reportDigest !== 'string' || reportDigest !== calculated) throw new Error('the engine CRAP report digest does not match the exact report text')
+        const completedAt = payload.review.completedAt
+        const toolCount = payload.review.toolCalls ?? 0
+        if (!Number.isSafeInteger(completedAt) || completedAt <= 0 || !Number.isSafeInteger(toolCount) || toolCount < 0) throw new Error('the engine returned a CRAP report without valid completion provenance')
+        return {
+          route: payload.route,
+          submission: payload.submission,
+          plainReport: Object.freeze({ reviewID, text: reportValue, reportDigest, completedAt, toolCount, model: routeModel }),
+        }
+      }
+      if (!payload.review.result) throw new Error('the engine returned an incomplete isolated review result')
       // Do not flatten a non-passing result into the generic lifecycle error
       // below. It is an expected adversarial outcome, not an infrastructure
       // failure, and the builder needs to repair the submitted plan instead
@@ -43,14 +86,6 @@ export function createLifecycleAdapter(_client, internal, reviewers = []) {
           ? payload.review.result.summary.replace(/\s+/g, ' ').trim().slice(0, 600)
           : ''
         throw new Error(`the isolated review returned ${verdict}${summary ? `: ${summary}` : ''}; repair the submitted plan before requesting approval`)
-      }
-      const routeModel = typeof payload.route.model === 'string'
-        ? payload.route.model
-        : payload.route.model?.providerID && payload.route.model?.modelID
-          ? `${payload.route.model.providerID}/${payload.route.model.modelID}`
-          : ''
-      if (typeof payload.route.kind !== 'string' || !routeModel) {
-        throw new Error('the engine returned an isolated review without an attributable route')
       }
       return { route: payload.route, submission: payload.submission, result: payload.review.result }
     },

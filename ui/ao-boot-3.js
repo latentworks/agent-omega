@@ -76,7 +76,7 @@
   /* ------------------------------------------------------------------ */
   /* type: 'header' | 'ok' | 'auth' | 'nominal' */
   var BOOT_LINES = [
-    /* 0  */ ['AGENT-OMEGA  SECURE BOOT   v2.6.2',        'header' ],
+    /* 0  */ ['AGENT-OMEGA  SECURE BOOT   v2.7.0',        'header' ],
     /* 1  */ ['detecting cpu features',               'ok'     ],
     /* 2  */ ['initializing kernel modules',          'ok'     ],
     /* 3  */ ['mounting /dev/agents',                 'ok'     ],
@@ -332,7 +332,7 @@
     // left slot mirrors the live home footer's workspace path, which is empty until a real workdir
     // arrives — no hardcoded '~/dev/agent-omega' placeholder
     var fL = document.createElement('span');
-    var fR = document.createElement('span'); fR.textContent = 'agent-omega · v2.6.2';
+    var fR = document.createElement('span'); fR.textContent = 'agent-omega · v2.7.0';
     settleFooter.appendChild(fL); settleFooter.appendChild(fR);
 
     /* CRT overlays (highest z) */

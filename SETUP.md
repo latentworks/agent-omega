@@ -6,11 +6,11 @@ Agent Omega is a desktop app: a frameless **WebView shell** → a **Node sidecar
 
 Same model as Windows — **get the code and launch it from the terminal.** A locally-built app carries no quarantine flag, so macOS runs it directly; there is no "clickable installer" or code-signing requirement. The native build (`mac/AgentOmega.swift` — a Swift + WKWebView shell) targets **Apple Silicon (arm64), macOS 13+**, and is **self-contained at runtime** — no Node or Python needed (the sidecar and engine are compiled binaries; the vault uses the macOS Keychain).
 
-> **v2.6 platform scope:** matching engine assets are published for Windows x64, macOS Apple Silicon/Intel, and Linux x64/arm64. The desktop shell currently supports Windows x64 and macOS Apple Silicon; Linux and macOS Intel assets are engine-fork adopter builds, not desktop-app packages.
+> **v2.7 platform scope:** matching engine assets are published for Windows x64, macOS Apple Silicon/Intel, and Linux x64/arm64. The desktop shell currently supports Windows x64 and macOS Apple Silicon; Linux and macOS Intel assets are engine-fork adopter builds, not desktop-app packages.
 
 **Build-time tools** (to build, not to run): Xcode Command Line Tools (`xcode-select --install`), [bun](https://bun.sh), and Node/npm.
 
-1. Download the matching `opencode-darwin-arm64` engine from the [Agent Omega engine v2.6.2 release](https://github.com/latentworks/opencode-omega/releases/tag/omega-v2.6.2), verify it against `SHA256SUMS-omega-v2.6.2.txt`, rename it to `engine/opencode`, and run `chmod +x engine/opencode`. A downloaded binary may be quarantined — clear it with `xattr -dr com.apple.quarantine engine/opencode`; one you build locally is not. The complete engine source and build contract are public in that repository.
+1. Download the matching `opencode-darwin-arm64` engine from the [Agent Omega engine v2.7.0 release](https://github.com/latentworks/opencode-omega/releases/tag/omega-v2.7.0), verify it against `SHA256SUMS-omega-v2.7.0.txt`, rename it to `engine/opencode`, and run `chmod +x engine/opencode`. A downloaded binary may be quarantined — clear it with `xattr -dr com.apple.quarantine engine/opencode`; one you build locally is not. The complete engine source and build contract are public in that repository.
 2. **Launch:** `sh mac/run.sh` — builds the self-contained `AgentOmega.app` once and launches it. (Equivalently: `sh mac/build-app.sh` then `open mac/build/AgentOmega.app`; or `sh mac/install.sh` to also copy it to `/Applications`.)
 3. First run installs the config + Keychain vault into your home and shows how to add a model.
 4. **Add a model** (same requirement as Windows — the agent needs one): open Settings (`⌃,`, the gear icon, or `/settings`) → **Vault** → paste an API key (Anthropic / OpenAI / Google / DeepSeek / Moonshot / Z.AI), or run a local server (llama.cpp / Ollama / LM Studio) and pick the `local` model. **Local models need a large context window** — Agent Omega's system prompt is big, so start your server with plenty of context (e.g. `llama-server -c 32768 --parallel 2`; llama.cpp divides `-c` across parallel slots). A too-small context fails every turn with "context size exceeded". Verified working locally with Qwen2.5-1.5B-Instruct on an 8 GB M-series Mac.
@@ -77,12 +77,8 @@ Copy-Item -Force scripts\secrets.ps1 "$env:USERPROFILE\.agent-omega\secrets.ps1"
 
 The `opencode` engine ships as a prebuilt binary. Because Agent Omega runs a **fork** of opencode, use **this repo's** release (not upstream):
 
-- Download **`opencode-windows-x64.exe`** and **`SHA256SUMS-omega-v2.6.2.txt`** from the [Agent Omega engine v2.6.2 release](https://github.com/latentworks/opencode-omega/releases/tag/omega-v2.6.2). Rename the binary to `opencode.exe`. This exact forked engine is required; upstream opencode and earlier Agent Omega engines are intentionally rejected at startup.
-- **Verify the download** before you trust it (it's an unsigned binary you're about to run with your privileges). The SHA-256 for the `opencode.exe` is:
-  ```
-  fd1afe651fb75d072887c046d570c831621602979c576ed1575da47ef6b07bec
-  ```
-  Check it: `Get-FileHash .\engine\opencode.exe -Algorithm SHA256` and confirm the hash matches. If it doesn't match, do NOT run it — re-download.
+- Download **`opencode-windows-x64.exe`** and **`SHA256SUMS-omega-v2.7.0.txt`** from the [Agent Omega engine v2.7.0 release](https://github.com/latentworks/opencode-omega/releases/tag/omega-v2.7.0). Rename the binary to `opencode.exe`. This exact forked engine is required; upstream opencode and earlier Agent Omega engines are intentionally rejected at startup.
+- **Verify the download** before you trust it (it's an unsigned binary you're about to run with your privileges). Check `Get-FileHash .\engine\opencode.exe -Algorithm SHA256` against the published checksum file and `SOURCE-PROVENANCE.json`. If it does not match, do NOT run it — re-download.
 - Put it in an **`engine\` folder at the repo root** (`agent-omega\engine\opencode.exe`) — the build (step 7) copies it beside the exe automatically.
 - (Alternative, works any time: `setx AGENT_OMEGA_ENGINE "C:\full\path\to\opencode.exe"`, then reopen your terminal.)
 

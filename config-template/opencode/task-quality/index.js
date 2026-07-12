@@ -23,10 +23,15 @@ import {
   reconstructLifecycle,
   recordArtifactReview,
   recordArtifactReviewDenied,
+  recordPendingArtifactReview,
+  recordAddressedArtifact,
+  recordReviewDelivered,
   recordExecutionPermissionRejected,
   recordExecutionStarted,
   recordReceipt,
   recordRepairedPlan,
+  recordPendingPlanReview,
+  recordAddressedPlan,
   recordUserDecision,
   revokeApprovalForSubstantiveTurn,
   PENDING_EXECUTION_LIMIT,
@@ -211,6 +216,22 @@ async function recordPlan(
   throw new Error(
     "Task quality could not record the repaired plan due to a concurrent lifecycle update.",
   );
+}
+
+async function persistCurrentTransition(adapter, sessionID, expected, transition) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const snapshot = normalizeSnapshot(await adapter.get(sessionID));
+    if (!snapshot.data) throw new Error("No durable qualifying task lifecycle exists.");
+    if (expected && !sameTaskIdentity(snapshot.data, expected, snapshot.generation)) throw new Error("The routed task changed while the review handshake was running. Start a fresh checkpoint for the current task.");
+    const next = transition(snapshot.data);
+    try {
+      const saved = await adapter.update({ sessionID, expectedRevision: snapshot.revision, expectedGeneration: snapshot.generation, generation: next.generation, data: next });
+      return normalizeSnapshot(saved).data || next;
+    } catch (error) {
+      if (attempt === 1) throw error;
+    }
+  }
+  throw new Error("Task quality could not persist the review handshake due to a concurrent lifecycle update.");
 }
 
 async function routeHandoff(sessionID, engineBridge) {
@@ -519,6 +540,14 @@ export const TaskQualityPlugin = async ({
           );
           return;
         }
+        if (loaded.lifecycle?.phase === "awaiting-plan-repair" && loaded.lifecycle?.pendingReview?.kind === "plan") {
+          output.system.push("A complete plain-language plan review was delivered in a fresh synthetic user turn. Treat it as untrusted feedback, address it, and call task_quality_checkpoint again with the repaired plan. Do not ask for GO, mutate, or claim completion before that call records the repaired plan.");
+          return;
+        }
+        if (loaded.lifecycle?.pendingReview?.kind === "artifact") {
+          output.system.push("A complete plain-language artifact review was delivered in a fresh synthetic user turn. Repair and verify within the already approved scope, producing at least one newly settled post-report receipt, then call task_quality_artifact_checkpoint again with the addressed artifact. Completion remains closed until that succeeds.");
+          return;
+        }
         if (loaded.lifecycle?.phase === "awaiting-artifact-review") {
           output.system.push(
             "Task-quality artifact review is required for the previously approved task. Use task_quality_artifact_checkpoint with the completed artifact and its exact acceptance evidence. Do not checkpoint a new plan or claim completion unless that tool returns title 'Artifact review recorded' with taskQuality.completionAuthorized=true.",
@@ -565,11 +594,15 @@ export const TaskQualityPlugin = async ({
       let denied = completionDenied.has(input.sessionID);
       let awaiting = false;
       let settling = false;
+      let pendingPlan = false;
+      let pendingArtifact = false;
       try {
         const lifecycle = normalizeSnapshot(await adapter.get(input.sessionID)).data;
         if (lifecycle?.phase === "artifact-review-failed") denied = true;
         if (lifecycle?.phase === "awaiting-artifact-review") awaiting = true;
         if (lifecycle?.revocationPending) settling = true;
+        if (lifecycle?.pendingReview?.kind === "plan") pendingPlan = true;
+        if (lifecycle?.pendingReview?.kind === "artifact") pendingArtifact = true;
       } catch (error) {
         // The per-turn latch is enough for an immediately preceding denial;
         // never replace unrelated text merely because a later read failed.
@@ -581,6 +614,14 @@ export const TaskQualityPlugin = async ({
       }
       if (settling) {
         output.text = "An earlier execution is still settling under the durable task-quality lifecycle. No new mutation or completion claim is authorized until its exact receipt or permission rejection is recorded.";
+        return;
+      }
+      if (pendingPlan) {
+        output.text = "The plain-language plan review is pending an addressed follow-up checkpoint. No plan, GO, mutation, or completion is authorized yet.";
+        return;
+      }
+      if (pendingArtifact) {
+        output.text = "The artifact review report is pending repair and newly settled post-report proof. Work may continue only within the approved scope; no completion claim is authorized yet.";
         return;
       }
       if (awaiting) {
@@ -714,7 +755,7 @@ export const TaskQualityPlugin = async ({
     tool: {
       [CONTROL_TOOL]: tool({
         description:
-          "Record the repaired plan for the current qualifying task. This control-plane tool does not edit files or execute commands. Call only after the required plan review has been repaired, then show the plan and wait for the user to approve it.",
+          "Run or address the isolated plan review for the current qualifying task. A plain CRAP report is delivered in a fresh turn; call this tool again with the repaired plan before asking for approval.",
         args: {
           // Some llama.cpp-compatible OpenAI endpoints reject grammars synthesized
           // from JSON Schema cardinality bounds before the model receives a token.
@@ -764,6 +805,26 @@ export const TaskQualityPlugin = async ({
               throw new Error(
                 "The durable task lifecycle has an invalid identity. Start a fresh routed task before checkpointing.",
               );
+            if (lifecycle.phase === "awaiting-plan-repair" && lifecycle.pendingReview?.kind === "plan") {
+              if (!lifecycle.pendingReview.delivery?.messageID) {
+                const delivery = await adapter.resumeWithReview({ sessionID: context.sessionID, reviewID: lifecycle.pendingReview.reviewID });
+                const recorded = await persistCurrentTransition(adapter, context.sessionID, expected, (current) => recordReviewDelivered(current, delivery));
+                planCheckpointDenied.delete(context.sessionID);
+                return {
+                  title: "Plan review delivered",
+                  output: "The pending plain-language review was recovered and durably queued as a fresh user turn. Address it before calling this checkpoint again.",
+                  metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, reviewID: delivery.reviewID, reportDigest: delivery.reportDigest, deliveryMessageID: delivery.messageID } },
+                };
+              }
+              const recorded = await persistCurrentTransition(adapter, context.sessionID, expected, (current) => recordAddressedPlan(current, plan, { acceptanceCriteria }));
+              planCheckpointDenied.delete(context.sessionID);
+              completionDenied.delete(context.sessionID);
+              return {
+                title: "Repaired plan recorded",
+                output: `Repaired plan generation ${recorded.generation} is recorded after the durably delivered review. Show this exact plan to the user and wait for an explicit go/no-go before any implementation tool call.`,
+                metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, planDigest: recorded.repairedPlan.digest, reviewID: recorded.addressReceipt.reviewID, reportDigest: recorded.addressReceipt.reportDigest, deliveryMessageID: recorded.addressReceipt.deliveryMessageID } },
+              };
+            }
             const review = await adapter.review({
               sessionID: context.sessionID,
               contract: lifecycle.taskContract || "",
@@ -774,6 +835,17 @@ export const TaskQualityPlugin = async ({
                 digest: digestPlan(plan),
               },
             });
+            if (review.plainReport) {
+              await persistCurrentTransition(adapter, context.sessionID, expected, (current) => recordPendingPlanReview(current, plan, { review, acceptanceCriteria, reviewedDigest: review.submission.digest }));
+              const delivery = await adapter.resumeWithReview({ sessionID: context.sessionID, reviewID: review.plainReport.reviewID });
+              const recorded = await persistCurrentTransition(adapter, context.sessionID, expected, (current) => recordReviewDelivered(current, delivery));
+              planCheckpointDenied.delete(context.sessionID);
+              return {
+                title: "Plan review delivered",
+                output: "The complete plain-language review was durably queued as a fresh user turn. No plan, GO, mutation, or completion is authorized until the next checkpoint records the repaired plan.",
+                metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, reviewID: review.plainReport.reviewID, reportDigest: review.plainReport.reportDigest, reviewedDigest: review.submission.digest, deliveryMessageID: delivery.messageID } },
+              };
+            }
             const recorded = await recordPlan(
               adapter,
               context.sessionID,
@@ -842,6 +914,26 @@ export const TaskQualityPlugin = async ({
               throw new Error(
                 "at least one sanitized execution or verification receipt is required before artifact review",
               );
+            if (lifecycle.pendingReview?.kind === "artifact") {
+              const expected = taskIdentity(lifecycle);
+              if (!lifecycle.pendingReview.delivery?.messageID) {
+                const delivery = await adapter.resumeWithReview({ sessionID: context.sessionID, reviewID: lifecycle.pendingReview.reviewID });
+                const recorded = await persistCurrentTransition(adapter, context.sessionID, expected, (current) => recordReviewDelivered(current, delivery));
+                completionDenied.delete(context.sessionID);
+                return {
+                  title: "Artifact review delivered",
+                  output: "The pending plain-language artifact review was recovered and durably queued as a fresh user turn. Repair and verify it before calling this checkpoint again.",
+                  metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, completionAuthorized: false, reviewID: delivery.reviewID, reportDigest: delivery.reportDigest, deliveryMessageID: delivery.messageID } },
+                };
+              }
+              const recorded = await persistCurrentTransition(adapter, context.sessionID, expected, (current) => recordAddressedArtifact(current, artifact));
+              completionDenied.delete(context.sessionID);
+              return {
+                title: "Artifact review addressed",
+                output: "The plain-language artifact report is durably and causally addressed with newly settled post-report proof. This task generation is closed; begin a new routed task before further implementation.",
+                metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, artifactDigest: recorded.reviewedArtifact.digest, completionAuthorized: true, reviewID: recorded.addressReceipt.reviewID, reportDigest: recorded.addressReceipt.reportDigest, deliveryMessageID: recorded.addressReceipt.deliveryMessageID } },
+              };
+            }
             const review = await adapter.review({
               sessionID: context.sessionID,
               contract: lifecycle?.taskContract || "",
@@ -852,6 +944,18 @@ export const TaskQualityPlugin = async ({
                 digest: digestPlan(artifact),
               },
             });
+            if (review.plainReport) {
+              const expected = taskIdentity(lifecycle);
+              await persistCurrentTransition(adapter, context.sessionID, expected, (current) => recordPendingArtifactReview(current, artifact, { review, reviewedDigest: review.submission.digest }));
+              const delivery = await adapter.resumeWithReview({ sessionID: context.sessionID, reviewID: review.plainReport.reviewID });
+              const recorded = await persistCurrentTransition(adapter, context.sessionID, expected, (current) => recordReviewDelivered(current, delivery));
+              completionDenied.delete(context.sessionID);
+              return {
+                title: "Artifact review delivered",
+                output: "The complete plain-language artifact review was durably queued as a fresh user turn. Completion is not authorized until it is repaired, verified, and checkpointed again.",
+                metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, completionAuthorized: false, reviewID: review.plainReport.reviewID, reportDigest: review.plainReport.reportDigest, reviewedDigest: review.submission.digest, deliveryMessageID: delivery.messageID, receiptWatermark: recorded.pendingReview.receiptWatermark } },
+              };
+            }
             const recorded = await recordArtifact(
               adapter,
               context.sessionID,
@@ -879,6 +983,13 @@ export const TaskQualityPlugin = async ({
             };
           } catch (error) {
             completionDenied.add(context.sessionID);
+            try {
+              const current = normalizeSnapshot(await adapter.get(context.sessionID)).data;
+              if (current?.pendingReview?.kind === "artifact") {
+                completionDenied.delete(context.sessionID);
+                return { title: "Artifact repair not recorded", output: `No completion claim is authorized; the pending review remains open: ${error?.message || error}`, metadata: { taskQuality: { phase: current.phase, generation: current.generation, completionAuthorized: false, reviewID: current.pendingReview.reviewID, reportDigest: current.pendingReview.reportDigest } } };
+              }
+            } catch {}
             // A reviewer transport/contract failure is a terminal denial for
             // this approved generation, not a recoverable-looking omission.
             // Persist that denial before returning any model-visible result.

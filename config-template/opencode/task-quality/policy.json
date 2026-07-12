@@ -1,12 +1,15 @@
 {
   "schemaVersion": 1,
   "engine": {
-    "minimumTaskQualityProtocol": 1,
+    "minimumTaskQualityProtocol": 2,
     "requiredFeatures": [
       "tool-admission",
       "isolated-review",
       "trusted-origin",
-      "lifecycle-cas"
+      "lifecycle-cas",
+      "plain-review-report",
+      "review-address-gate",
+      "review-resume"
     ]
   },
   "enforcement": {

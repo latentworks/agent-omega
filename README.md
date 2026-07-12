@@ -28,10 +28,10 @@ an encrypted secrets vault, anonymous web access, a skill and memory system, mod
 delegation, and the council. Credit where it's due: without opencode there is no
 Agent Omega.
 
-**v2.6 engine requirement.** This release requires the matching Agent Omega
+**v2.7 engine requirement.** This release requires the matching Agent Omega
 engine asset; an upstream or earlier engine intentionally fails closed rather
-than running the lifecycle unenforced. See the [v2.6 engine migration
-note](docs/V2.6_ENGINE_MIGRATION.md). The released v2.6 engine asset is currently
+than running the lifecycle unenforced. See the [v2.7 engine migration
+note](docs/V2.7_ENGINE_MIGRATION.md). The released v2.7 engine asset is currently
 available for Windows x64, Linux x64/arm64, and macOS Intel/Apple Silicon; the
 complete fork source is public at
 [`latentworks/opencode-omega`](https://github.com/latentworks/opencode-omega).

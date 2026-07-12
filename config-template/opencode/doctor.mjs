@@ -9,7 +9,7 @@ import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
-import { TASK_QUALITY_PLUGIN, TASK_QUALITY_POLICY, TASK_QUALITY_FEATURES } from './task-quality/compat.mjs'
+import { TASK_QUALITY_PLUGIN, TASK_QUALITY_POLICY, TASK_QUALITY_FEATURES, TASK_QUALITY_PROTOCOL } from './task-quality/compat.mjs'
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const out = []
@@ -60,7 +60,7 @@ if (cfg) {
     try {
       const policy = JSON.parse(readFileSync(join(ROOT, TASK_QUALITY_POLICY), 'utf8'))
       const required = policy && policy.engine && policy.engine.requiredFeatures
-      if (policy?.engine?.minimumTaskQualityProtocol !== 1 || !Array.isArray(required) || TASK_QUALITY_FEATURES.some((feature) => !required.includes(feature)) || policy?.enforcement?.mode !== 'fail-closed') {
+      if (policy?.engine?.minimumTaskQualityProtocol !== TASK_QUALITY_PROTOCOL || !Array.isArray(required) || TASK_QUALITY_FEATURES.some((feature) => !required.includes(feature)) || policy?.enforcement?.mode !== 'fail-closed') {
         fail('task-quality: managed policy is incompatible; reinstall/update Agent Omega')
       } else pass('task-quality: fail-closed policy registered after skill-router')
     } catch { fail('task-quality: managed policy does not parse') }

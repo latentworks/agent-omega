@@ -5,6 +5,7 @@ import { digestText } from './handoff.mjs'
 export const TASK_QUALITY_POLICY_VERSION = 'agent-omega/task-quality@1'
 export const PHASE = Object.freeze({
   PLANNING: 'planning',
+  AWAITING_PLAN_REPAIR: 'awaiting-plan-repair',
   AWAITING_APPROVAL: 'awaiting-approval',
   APPROVED: 'approved',
   AWAITING_ARTIFACT_REVIEW: 'awaiting-artifact-review',
@@ -35,6 +36,8 @@ export function createLifecycle(handoff, { generation = 1, now = Date.now() } = 
     phase: PHASE.PLANNING,
     generation,
     planReview: null,
+    pendingReview: null,
+    addressReceipt: null,
     repairedPlan: null,
     approval: null,
     artifactReviewMessageID: null,
@@ -119,12 +122,140 @@ export function recordRepairedPlan(lifecycle, plan, { review, acceptanceCriteria
     generation,
     phase: PHASE.AWAITING_APPROVAL,
     planReview,
+    pendingReview: null,
+    addressReceipt: null,
     acceptanceCriteria: normalizeCriteria(acceptanceCriteria),
       repairedPlan,
       approval: null,
       artifactReviewMessageID: null,
       revocationPending: null,
       updatedAt: nowValue(now),
+  })
+}
+
+function plainReviewRecord(review, kind, reviewedDigest) {
+  if (!review?.plainReport || review?.submission?.kind !== kind || review.submission.digest !== reviewedDigest) throw new Error('a completed bound plain-language review report is required')
+  const routeModel = typeof review.route?.model === 'string'
+    ? review.route.model
+    : review.route?.model?.providerID && review.route?.model?.modelID
+      ? `${review.route.model.providerID}/${review.route.model.modelID}`
+      : ''
+  if (!routeModel || typeof review.route?.kind !== 'string') throw new Error('the review report route is not attributable')
+  const report = review.plainReport
+  if (typeof report.reviewID !== 'string' || typeof report.text !== 'string' || !report.text.trim() || !DIGEST.test(report.reportDigest)) throw new Error('the review report receipt is invalid')
+  return Object.freeze({
+    kind,
+    reviewID: report.reviewID,
+    report: report.text,
+    reportDigest: report.reportDigest,
+    reviewedDigest,
+    route: Object.freeze({ kind: review.route.kind, model: routeModel, ...(review.route.agent ? { agent: String(review.route.agent) } : {}) }),
+    completedAt: report.completedAt,
+    toolCount: report.toolCount,
+  })
+}
+
+export function recordPendingPlanReview(lifecycle, plan, { review, acceptanceCriteria, reviewedDigest, now = Date.now() } = {}) {
+  if (!lifecycle || lifecycle.version !== 1 || lifecycle.phase !== PHASE.PLANNING || hasUnsettledExecution(lifecycle) || lifecycle.revocationPending) throw new Error('the current task is not eligible for a plan review report')
+  if (reviewedDigest !== digestPlan(plan)) throw new Error('the reviewed-plan digest does not match the exact submitted plan content')
+  const pendingReview = plainReviewRecord(review, 'plan', reviewedDigest)
+  return Object.freeze({
+    ...lifecycle,
+    phase: PHASE.AWAITING_PLAN_REPAIR,
+    pendingReview: Object.freeze({ ...pendingReview, generation: lifecycle.generation, receivedAt: nowValue(now) }),
+    addressReceipt: null,
+    acceptanceCriteria: normalizeCriteria(acceptanceCriteria),
+    approval: null,
+    updatedAt: nowValue(now),
+  })
+}
+
+export function recordReviewDelivered(lifecycle, { reviewID, reportDigest, messageID, now = Date.now() } = {}) {
+  const pending = lifecycle?.pendingReview
+  if (!pending || pending.reviewID !== reviewID || pending.reportDigest !== reportDigest) throw new Error('the delivered review does not match the current pending report')
+  if (typeof messageID !== 'string' || !messageID) throw new Error('the review delivery requires a durable synthetic message')
+  if (pending.delivery) {
+    if (pending.delivery.messageID !== messageID) throw new Error('the current review is already bound to a different delivery message')
+    return lifecycle
+  }
+  const receiptWatermark = pending.kind === 'artifact'
+    ? Object.freeze({
+        count: Array.isArray(lifecycle.receipts) ? lifecycle.receipts.length : 0,
+        callIDs: Object.freeze((Array.isArray(lifecycle.receipts) ? lifecycle.receipts : []).map((item) => item.callID)),
+        capturedAt: (Array.isArray(lifecycle.receipts) ? lifecycle.receipts : []).reduce((max, item) => Math.max(max, item.capturedAt || 0), 0),
+      })
+    : undefined
+  return Object.freeze({
+    ...lifecycle,
+    pendingReview: Object.freeze({ ...pending, ...(receiptWatermark ? { receiptWatermark } : {}), delivery: Object.freeze({ messageID, deliveredAt: nowValue(now) }) }),
+    updatedAt: nowValue(now),
+  })
+}
+
+function requirePendingAddress(lifecycle, kind) {
+  const pending = lifecycle?.pendingReview
+  if (!pending || pending.kind !== kind || pending.generation !== lifecycle.generation) throw new Error(`no current ${kind} review report is awaiting an addressed submission`)
+  if (!pending.delivery?.messageID) throw new Error('the current review report has not been durably delivered to the builder')
+  return pending
+}
+
+export function recordAddressedPlan(lifecycle, plan, { acceptanceCriteria, now = Date.now() } = {}) {
+  if (!lifecycle || lifecycle.version !== 1 || lifecycle.phase !== PHASE.AWAITING_PLAN_REPAIR || hasUnsettledExecution(lifecycle) || lifecycle.revocationPending) throw new Error('the current task is not awaiting a repaired plan')
+  const pending = requirePendingAddress(lifecycle, 'plan')
+  const generation = lifecycle.generation + 1
+  const addressedDigest = digestPlan(plan)
+  const addressReceipt = Object.freeze({ reviewID: pending.reviewID, reportDigest: pending.reportDigest, reviewedDigest: pending.reviewedDigest, addressedDigest, deliveryMessageID: pending.delivery.messageID, addressedAt: nowValue(now), route: pending.route })
+  return Object.freeze({
+    ...lifecycle,
+    generation,
+    phase: PHASE.AWAITING_APPROVAL,
+    planReview: null,
+    pendingReview: null,
+    addressReceipt,
+    acceptanceCriteria: normalizeCriteria(acceptanceCriteria),
+    repairedPlan: Object.freeze({ digest: addressedDigest, generation, recordedAt: nowValue(now) }),
+    approval: null,
+    artifactReviewMessageID: null,
+    revocationPending: null,
+    updatedAt: nowValue(now),
+  })
+}
+
+export function recordPendingArtifactReview(lifecycle, artifact, { review, reviewedDigest, now = Date.now() } = {}) {
+  if (!hasArtifactReviewAuthorization(lifecycle) || hasUnsettledExecution(lifecycle)) throw new Error('a current explicit approval with no unresolved execution is required before artifact review')
+  if (!Array.isArray(lifecycle.receipts) || lifecycle.receipts.length < 1) throw new Error('at least one sanitized execution or verification receipt is required before artifact review')
+  if (reviewedDigest !== digestPlan(artifact)) throw new Error('the reviewed-artifact digest does not match the exact submitted artifact content')
+  const pendingReview = plainReviewRecord(review, 'artifact', reviewedDigest)
+  return Object.freeze({
+    ...lifecycle,
+    phase: PHASE.APPROVED,
+    pendingReview: Object.freeze({ ...pendingReview, generation: lifecycle.generation, receivedAt: nowValue(now) }),
+    addressReceipt: null,
+    artifactReview: null,
+    reviewedArtifact: null,
+    updatedAt: nowValue(now),
+  })
+}
+
+export function recordAddressedArtifact(lifecycle, artifact, { now = Date.now() } = {}) {
+  if (!hasArtifactReviewAuthorization(lifecycle) || hasUnsettledExecution(lifecycle)) throw new Error('the approved artifact repair must have zero unresolved execution')
+  const pending = requirePendingAddress(lifecycle, 'artifact')
+  const oldIDs = new Set(pending.receiptWatermark?.callIDs || [])
+  const newReceipts = (Array.isArray(lifecycle.receipts) ? lifecycle.receipts : []).filter((item) => !oldIDs.has(item.callID))
+  if (newReceipts.length < 1) throw new Error('at least one newly settled post-report execution or verification receipt is required')
+  const generation = lifecycle.generation + 1
+  const addressedDigest = digestPlan(artifact)
+  const addressReceipt = Object.freeze({ reviewID: pending.reviewID, reportDigest: pending.reportDigest, reviewedDigest: pending.reviewedDigest, addressedDigest, deliveryMessageID: pending.delivery.messageID, addressedAt: nowValue(now), route: pending.route, postReportReceiptCount: newReceipts.length })
+  return Object.freeze({
+    ...lifecycle,
+    generation,
+    phase: PHASE.ARTIFACT_REVIEWED,
+    pendingReview: null,
+    addressReceipt,
+    artifactReview: null,
+    reviewedArtifact: Object.freeze({ digest: addressedDigest, generation, receiptCount: lifecycle.receipts.length, recordedAt: nowValue(now), causallyAddressed: true }),
+    artifactReviewFailure: null,
+    updatedAt: nowValue(now),
   })
 }
 
@@ -214,6 +345,8 @@ export function revokeApprovalForSubstantiveTurn(lifecycle, { origin, messageID,
       phase: PHASE.PLANNING,
       generation,
       planReview: null,
+      pendingReview: null,
+      addressReceipt: null,
       repairedPlan: null,
       acceptanceCriteria: Object.freeze([]),
       approval: null,
@@ -279,6 +412,8 @@ function finishPendingScopeTransition(lifecycle, { now = Date.now() } = {}) {
     phase: PHASE.PLANNING,
     generation: lifecycle.generation + 1,
     planReview: null,
+    pendingReview: null,
+    addressReceipt: null,
     repairedPlan: null,
     acceptanceCriteria: Object.freeze([]),
     approval: null,
@@ -419,6 +554,8 @@ export function recordArtifactReview(lifecycle, artifact, { review, reviewedDige
     generation,
     phase: artifactReview.verdict === 'pass' ? PHASE.ARTIFACT_REVIEWED : PHASE.ARTIFACT_REVIEW_FAILED,
     artifactReview,
+    pendingReview: null,
+    addressReceipt: null,
     artifactReviewFailure: null,
     reviewedArtifact,
     updatedAt: nowValue(now),
@@ -442,6 +579,8 @@ export function recordArtifactReviewDenied(lifecycle, artifact, { reason, now = 
     generation,
     phase: PHASE.ARTIFACT_REVIEW_FAILED,
     artifactReview: null,
+    pendingReview: null,
+    addressReceipt: null,
     artifactReviewFailure: Object.freeze({
       digest: digestPlan(artifact),
       reason: detail.slice(0, 6000),

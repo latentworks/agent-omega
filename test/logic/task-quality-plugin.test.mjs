@@ -15,7 +15,11 @@ function fakeClient() {
   const directTaskExecutions = new Map();
   let lastState = null;
   let beforeUpdate = null;
+  let reviewHandler = null;
   const reviews = [];
+  const deliveries = [];
+  const deliveryByReview = new Map();
+  let failResumeAfterDelivery = false;
   return {
     reviews,
     client: {
@@ -88,6 +92,7 @@ function fakeClient() {
       },
       async review(input) {
         reviews.push(input);
+        if (reviewHandler) return await reviewHandler(input);
         return {
           route: {
             kind: "crap",
@@ -107,6 +112,21 @@ function fakeClient() {
             },
           },
         };
+      },
+      async resumeWithReview(input) {
+        const current = states.get(input.sessionID);
+        const reportDigest = current?.data?.pendingReview?.reportDigest;
+        let receipt = deliveryByReview.get(input.reviewID);
+        if (!receipt) {
+          receipt = { ...input, reportDigest, messageID: `msg-review-${deliveryByReview.size + 1}` };
+          deliveryByReview.set(input.reviewID, receipt);
+          deliveries.push(input);
+        }
+        if (failResumeAfterDelivery) {
+          failResumeAfterDelivery = false;
+          throw new Error("delivery response lost after durable write");
+        }
+        return receipt;
       },
       directTaskParent(sessionID) {
         return directTaskParents.get(sessionID)?.parentSessionID;
@@ -134,6 +154,13 @@ function fakeClient() {
     beforeNextUpdate: (callback) => {
       beforeUpdate = callback;
     },
+    setReview: (callback) => {
+      reviewHandler = callback;
+    },
+    failNextResumeAfterDelivery: () => {
+      failResumeAfterDelivery = true;
+    },
+    deliveries,
   };
 }
 
@@ -1136,4 +1163,141 @@ test("mutation precommit failures reject execution instead of becoming best-effo
       ),
     /no durable task-quality lifecycle exists for mutation precommit/,
   );
+});
+
+test("plain CRAP report is delivered once as a fresh engine turn and the next checkpoint records the repair", async () => {
+  const sessionID = "ses-plain-crap";
+  clearRouteHandoff(sessionID);
+  recordRouteHandoff(buildRouteHandoff({ sessionID, messageID: "msg-task", messages: ["Build it"], skillNames: ["brainstorming"] }));
+  const fake = fakeClient();
+  const report = "Break the retry loop. Preserve cobalt-17.";
+  fake.setReview(async (input) => ({
+    route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
+    submission: { kind: input.submission.kind, digest: digestText(input.submission.content) },
+    review: { status: "complete", report, reportDigest: digestText(report), reviewID: "review-plain-1", completedAt: 10, toolCalls: 2 },
+  }));
+  const hooks = await TaskQualityPlugin({ client: fake.client, experimental_task_quality: fake.internal });
+  await hooks["experimental.chat.system.transform"]({ sessionID }, { system: [] });
+
+  const first = await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Initial plan.", acceptance_criteria: ["It works."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(first.title, "Plan review delivered");
+  assert.doesNotMatch(first.output, /cobalt-17/);
+  assert.deepEqual(fake.deliveries, [{ sessionID, reviewID: "review-plain-1" }]);
+  assert.equal(fake.state(sessionID).data.pendingReview.delivery.messageID, "msg-review-1");
+
+  const pendingSystem = { system: [] };
+  await hooks["experimental.chat.system.transform"]({ sessionID }, pendingSystem);
+  assert.match(pendingSystem.system.join("\n"), /untrusted feedback/i);
+  const pendingAdmission = { decision: "allow" };
+  await hooks["tool.execute.admission"](
+    { sessionID, tool: "edit", callID: "call-review-injection", args: {}, source: "builtin", capability: "mutate" },
+    pendingAdmission,
+  );
+  assert.equal(pendingAdmission.decision, "deny");
+
+  const second = await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Preserve cobalt-17.\n2. Repair the retry loop.", acceptance_criteria: ["It works."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(second.title, "Repaired plan recorded");
+  assert.equal(fake.deliveries.length, 1);
+  assert.equal(fake.state(sessionID).data.phase, "awaiting-approval");
+  assert.equal(fake.state(sessionID).data.addressReceipt.deliveryMessageID, "msg-review-1");
+  clearRouteHandoff(sessionID);
+});
+
+test("plain CRAP delivery recovers the same durable message after the first response is lost", async () => {
+  const sessionID = "ses-plain-crap-resume";
+  clearRouteHandoff(sessionID);
+  recordRouteHandoff(buildRouteHandoff({ sessionID, messageID: "msg-task", messages: ["Build it"], skillNames: ["brainstorming"] }));
+  const fake = fakeClient();
+  const report = "Preserve the retry ceiling after restart.";
+  fake.setReview(async (input) => ({
+    route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
+    submission: { kind: input.submission.kind, digest: digestText(input.submission.content) },
+    review: { status: "complete", report, reportDigest: digestText(report), reviewID: "review-resume-1", completedAt: 10, toolCalls: 0 },
+  }));
+  const hooks = await TaskQualityPlugin({ client: fake.client, experimental_task_quality: fake.internal });
+  await hooks["experimental.chat.system.transform"]({ sessionID }, { system: [] });
+  fake.failNextResumeAfterDelivery();
+
+  const interrupted = await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Initial plan.", acceptance_criteria: ["It works."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(interrupted.title, "Task-quality plan not recorded");
+  assert.match(interrupted.output, /delivery response lost/);
+  assert.equal(fake.state(sessionID).data.pendingReview.delivery, undefined);
+
+  const recovered = await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Initial plan.", acceptance_criteria: ["It works."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(recovered.title, "Plan review delivered");
+  assert.equal(fake.state(sessionID).data.pendingReview.delivery.messageID, "msg-review-1");
+  assert.equal(fake.deliveries.length, 1);
+  clearRouteHandoff(sessionID);
+});
+
+test("plain CRAP artifact review closes only after delivered feedback causes new receipt-backed work", async () => {
+  const sessionID = "ses-plain-crap-artifact";
+  clearRouteHandoff(sessionID);
+  recordRouteHandoff(buildRouteHandoff({ sessionID, messageID: "msg-task", messages: ["Build it"], skillNames: ["brainstorming"] }));
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({ client: fake.client, experimental_task_quality: fake.internal });
+  await hooks["experimental.chat.system.transform"]({ sessionID }, { system: [] });
+  await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Build it.\n2. Verify it.", acceptance_criteria: ["Proof passes."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  await hooks["chat.message.persisted"](
+    { sessionID, messageID: "msg-go", origin: "external-user" },
+    { parts: [{ type: "text", text: "go" }] },
+  );
+  await hooks["tool.execute.preexecute"]({ sessionID, tool: "bash", callID: "call-initial", capability: "mutate" }, {});
+  await hooks["tool.execute.persisted"](
+    { sessionID, tool: "bash", callID: "call-initial", completedAt: 20 },
+    { output: "initial proof" },
+  );
+  await hooks["chat.message.persisted"](
+    { sessionID, messageID: "msg-artifact", origin: "external-user" },
+    { parts: [{ type: "text", text: "Run final artifact review now." }] },
+  );
+  const report = "Repair the overflow branch and rerun the proof.";
+  fake.setReview(async (input) => ({
+    route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
+    submission: { kind: input.submission.kind, digest: digestText(input.submission.content) },
+    review: { status: "complete", report, reportDigest: digestText(report), reviewID: "review-artifact-1", completedAt: 30, toolCalls: 0 },
+  }));
+  const artifactText = "Implemented the approved change and observed the focused proof pass.";
+  const first = await hooks.tool.task_quality_artifact_checkpoint.execute(
+    { artifact: artifactText },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(first.title, "Artifact review delivered");
+  assert.equal(fake.state(sessionID).data.pendingReview.delivery.messageID, "msg-review-1");
+
+  const premature = await hooks.tool.task_quality_artifact_checkpoint.execute(
+    { artifact: artifactText },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(premature.title, "Artifact repair not recorded");
+  assert.match(premature.output, /newly settled post-report/);
+
+  await hooks["tool.execute.preexecute"]({ sessionID, tool: "edit", callID: "call-repair", capability: "mutate" }, {});
+  await hooks["tool.execute.persisted"](
+    { sessionID, tool: "edit", callID: "call-repair", completedAt: 40 },
+    { output: "overflow branch repaired" },
+  );
+  const closed = await hooks.tool.task_quality_artifact_checkpoint.execute(
+    { artifact: artifactText },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(closed.title, "Artifact review addressed");
+  assert.equal(fake.state(sessionID).data.phase, "artifact-reviewed");
+  assert.equal(fake.state(sessionID).data.addressReceipt.postReportReceiptCount, 1);
+  clearRouteHandoff(sessionID);
 });

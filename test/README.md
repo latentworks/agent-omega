@@ -29,20 +29,44 @@ These focused tests use fakes and injected fetches; they do not require a paid
 provider, a running local model, or a desktop window:
 
 ```bash
-node --test test/logic/task-quality-lifecycle.test.mjs test/logic/task-quality-plugin.test.mjs test/logic/router.test.mjs test/logic/router-config.test.mjs
+node --test test/logic/task-quality-lifecycle.test.mjs test/logic/task-quality-plugin.test.mjs test/logic/task-quality-compat.test.mjs test/logic/task-quality-reviewer.test.mjs test/logic/sidecar-session-protocol.test.mjs test/logic/router.test.mjs test/logic/router-config.test.mjs
 ```
 
-They cover the engine-facing task-quality contract: one structured terminal
-review submission; required read-only workspace evidence for completed-artifact
-review; rejection of contradictory `pass` results that contain findings; exact
+They cover the engine-facing task-quality contract: structured HSS submission;
+bounded verbatim Unicode CRAP reports with exact digest binding; rejection of
+empty, oversized, malformed, or mismatched reports; idempotent durable delivery
+by review identity with no model-authored receipt; causal repair at the next
+checkpoint; artifact closure only after a new post-delivery receipt; required
+read-only workspace evidence for structured completed-artifact review;
+rejection of contradictory `pass` results that contain findings; exact
 plan-generation approval from an external user; the settled
 `awaiting-artifact-review` boundary; durable execution
 receipts with no unresolved execution before artifact review; transform-resolved
 task-agent and built-in child-read provenance; and firewalls between plan text,
-artifact text, receipts, and builder context. The router checks bind
+artifact text, receipts, and builder context. Protocol negotiation fails closed
+unless protocol 2 and all seven task-quality features are present. The router checks bind
 classification to the active local model, require an explicit local fallback for
 cloud-led turns, scope failure cooldowns to the classifier endpoint/model/provider
 instead of globally poisoning other routes, and exclude internal subagent messages.
+
+## Protocol 2 Windows pre-release evidence
+
+The final Windows development engine used for protocol 2 verification was
+`0.0.0-omega-202607112023`, SHA-256
+`8aafd5439a3794302c31d94c2dca89575f8d3d00c40fa248ee3b4c3e5b953b43`.
+With all helpers disabled, one local Qwen3-Coder 30B model acted as both the
+context-bearing builder and the context-free CRAP reviewer for 20 sequential
+randomized plan lifecycles. All 20 reached `awaiting-approval` with exactly one
+durable review turn, preserved both randomized facts in the report and repaired
+plan, repaired the deliberately ambiguous overflow behavior, bound the delivery
+message to the engine review identity and digest, and ended with zero pending
+executions. The minimum observed free RAM was 16.5 GiB. This proves the
+same-model plan-review handoff on that Windows/local-model path; it does not by
+itself claim protocol 2 artifact, HSS, cloud-provider, macOS, or Linux live proof.
+
+For the same source state, `npm test` passed 167/167. The engine and plugin
+typechecks passed; focused engine reviewer/message-write/SDK tests passed 34/34,
+and global protocol/identity tests passed 4/4.
 
 ## v2.6.1 final Windows live evidence
 

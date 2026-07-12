@@ -17,6 +17,15 @@ process.env.ROUTER_MODEL = 'test-router'
 const ROUTER_URL = pathToFileURL(resolve('config-template/opencode/skill-router/router.mjs')).href
 const ROUTER_PLUGIN_URL = pathToFileURL(resolve('config-template/opencode/skill-router/index.js')).href
 
+test('router gives supported slow local classifiers the full attested deadline by default', () => {
+  const env = { ...process.env }
+  delete env.ROUTER_TIMEOUT_MS
+  const script = `import { ROUTER_TIMEOUT_MS } from ${JSON.stringify(ROUTER_URL)}; process.stdout.write(String(ROUTER_TIMEOUT_MS))`
+  const out = spawnSync(process.execPath, ['--input-type=module', '--eval', script], { env, encoding: 'utf8' })
+  assert.equal(out.status, 0, out.stderr)
+  assert.equal(out.stdout, '20000')
+})
+
 test('router uses the attested v1 plugin-module shape required for its private engine bridge', async () => {
   const mod = await import(ROUTER_PLUGIN_URL)
   assert.equal(mod.default?.id, 'agent-omega.skill-router')

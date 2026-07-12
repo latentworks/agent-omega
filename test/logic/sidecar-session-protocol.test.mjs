@@ -68,7 +68,7 @@ async function harness(t, options = {}) {
   let healthServer = null
   if (options.healthMode) {
     const payload = options.healthMode === 'valid'
-      ? { healthy: true, taskQuality: { protocol: 1, features: ['tool-admission', 'isolated-review', 'trusted-origin', 'lifecycle-cas'] } }
+      ? { healthy: true, taskQuality: { protocol: 2, features: ['tool-admission', 'isolated-review', 'trusted-origin', 'lifecycle-cas', 'plain-review-report', 'review-address-gate', 'review-resume'] } }
       : { healthy: true, taskQuality: { protocol: 0, features: [] } }
     healthServer = http.createServer((_, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)) })
     healthServer.listen(wsPort + 1, '127.0.0.1')

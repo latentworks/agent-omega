@@ -55,14 +55,14 @@ Key idea: **the C# host owns only the window.** Everything the user interacts wi
 streaming output, interactive permissions, model/agent switches, settings — flows over the
 loopback WebSocket to the sidecar, which drives the engine over ACP (the Agent Client Protocol).
 
-### v2.6 engine compatibility boundary
+### v2.7 engine compatibility boundary
 
 The task-quality lifecycle is not a prompt-only convention. At startup, the
 sidecar verifies the engine's task-quality protocol/capabilities before accepting
 task work. A missing or older/upstream engine fails closed with an update state;
 the sidecar never substitutes an unenforced fallback. The source-complete public
 fork, native platform assets, build identity, and checksums are documented in
-[`docs/V2.6_ENGINE_MIGRATION.md`](docs/V2.6_ENGINE_MIGRATION.md).
+[`docs/V2.7_ENGINE_MIGRATION.md`](docs/V2.7_ENGINE_MIGRATION.md).
 
 ---
 

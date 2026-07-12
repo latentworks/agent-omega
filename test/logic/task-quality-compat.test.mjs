@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   TASK_QUALITY_FEATURES,
   TASK_QUALITY_PLUGIN,
+  TASK_QUALITY_PROTOCOL,
   assessTaskQualityHealth,
   reconcileTaskQualityConfig,
 } from '../../config-template/opencode/task-quality/compat.mjs'
@@ -42,8 +43,9 @@ test('task-quality reconciliation is idempotent and rejects malformed plugin sta
 test('task-quality engine health fails closed for old, incomplete, and valid engine reports', () => {
   assert.equal(assessTaskQualityHealth({}).ok, false)
   assert.equal(assessTaskQualityHealth({ taskQuality: { protocol: 0, features: TASK_QUALITY_FEATURES } }).ok, false)
-  assert.equal(assessTaskQualityHealth({ taskQuality: { protocol: 1, features: ['tool-admission'] } }).ok, false)
-  const valid = assessTaskQualityHealth({ taskQuality: { protocol: 1, features: TASK_QUALITY_FEATURES, build: { id: 'test' } } })
+  assert.equal(assessTaskQualityHealth({ taskQuality: { protocol: 1, features: TASK_QUALITY_FEATURES } }).ok, false)
+  assert.equal(assessTaskQualityHealth({ taskQuality: { protocol: TASK_QUALITY_PROTOCOL, features: ['tool-admission'] } }).ok, false)
+  const valid = assessTaskQualityHealth({ taskQuality: { protocol: TASK_QUALITY_PROTOCOL, features: TASK_QUALITY_FEATURES, build: { id: 'test' } } })
   assert.equal(valid.ok, true)
   assert.deepEqual(valid.build, { id: 'test' })
 })

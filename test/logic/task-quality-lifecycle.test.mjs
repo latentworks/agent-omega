@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { buildRouteHandoff } from '../../config-template/opencode/task-quality/handoff.mjs'
-import { PHASE, createLifecycle, digestPlan, hasCurrentApproval, recordArtifactReview, recordArtifactReviewDenied, recordExecutionPermissionRejected, recordExecutionStarted, recordReceipt, recordRepairedPlan, recordUserDecision, reconstructLifecycle, revokeApprovalForSubstantiveTurn } from '../../config-template/opencode/task-quality/lifecycle.mjs'
+import { PHASE, createLifecycle, digestPlan, hasCurrentApproval, recordAddressedArtifact, recordAddressedPlan, recordArtifactReview, recordArtifactReviewDenied, recordExecutionPermissionRejected, recordExecutionStarted, recordPendingArtifactReview, recordPendingPlanReview, recordReceipt, recordRepairedPlan, recordReviewDelivered, recordUserDecision, reconstructLifecycle, revokeApprovalForSubstantiveTurn } from '../../config-template/opencode/task-quality/lifecycle.mjs'
 import { admitTaskQualityTool, ARTIFACT_CONTROL_TOOL, CONTROL_TOOL } from '../../config-template/opencode/task-quality/admission.mjs'
 import { createLifecycleAdapter, normalizeSnapshot } from '../../config-template/opencode/task-quality/adapter.mjs'
 
@@ -216,4 +217,73 @@ test('engine adapter uses the attested lifecycle/review bridge and exposes missi
     review: async (input) => ({ route: { kind: 'subagent' }, submission: input.submission, review: { status: 'complete', result: { verdict: 'pass', findings: [] } } }),
   })
   await assert.rejects(() => unattributed.review({ sessionID: 'ses-1', submission: { kind: 'plan', content: 'z', digest: 'd' } }), /without an attributable route/)
+
+  const report = 'Break the retry loop. Preserve cobalt-17. ✅'
+  const reportDigest = createHash('sha256').update(report, 'utf8').digest('hex')
+  const plain = createLifecycleAdapter({}, {
+    ...internal,
+    review: async (input) => ({
+      route: { kind: 'crap', model: { providerID: 'local', modelID: 'builder' } },
+      submission: input.submission,
+      review: { status: 'complete', report, reportDigest, reviewID: 'review-1', completedAt: 10, toolCalls: 3 },
+    }),
+    resumeWithReview: async (input) => ({ ...input, reportDigest, messageID: 'msg-review-1' }),
+  })
+  const plainResult = await plain.review({ sessionID: 'ses-1', submission: { kind: 'plan', content: 'z', digest: 'd' } })
+  assert.deepEqual(plainResult.plainReport, { reviewID: 'review-1', text: report, reportDigest, completedAt: 10, toolCount: 3, model: 'local/builder' })
+  assert.deepEqual(await plain.resumeWithReview({ sessionID: 'ses-1', reviewID: 'review-1' }), { reviewID: 'review-1', reportDigest, messageID: 'msg-review-1' })
+  const oversized = '✅'.repeat(9000)
+  const oversizedDigest = createHash('sha256').update(oversized, 'utf8').digest('hex')
+  const oversizedAdapter = createLifecycleAdapter({}, {
+    ...internal,
+    review: async (input) => ({ route: { kind: 'crap', model: 'local/builder' }, submission: input.submission, review: { status: 'complete', report: oversized, reportDigest: oversizedDigest, reviewID: 'review-2', completedAt: 10, toolCalls: 0 } }),
+  })
+  await assert.rejects(() => oversizedAdapter.review({ sessionID: 'ses-1', submission: { kind: 'plan', content: 'z', digest: 'd' } }), /bounded plain-language report/)
+})
+
+test('plain CRAP delivery is engine-attested and the next checkpoint needs no model-authored receipt', () => {
+  const initial = createLifecycle(handoff, { generation: 4, now: 1 })
+  const plan = '1. Preserve cobalt-17.\n2. Verify restart recovery.'
+  const reviewedDigest = digestPlan(plan)
+  const review = {
+    route: { kind: 'crap', model: 'local/builder' },
+    submission: { kind: 'plan', digest: reviewedDigest },
+    plainReport: { reviewID: 'review-1', text: 'Preserve cobalt-17.', reportDigest: 'a'.repeat(64), completedAt: 2, toolCount: 1 },
+  }
+  const pending = recordPendingPlanReview(initial, plan, { review, acceptanceCriteria: ['Restart recovery works.'], reviewedDigest, now: 3 })
+  assert.equal(pending.phase, PHASE.AWAITING_PLAN_REPAIR)
+  assert.throws(() => recordAddressedPlan(pending, plan, { acceptanceCriteria: ['Restart recovery works.'], now: 4 }), /not been durably delivered/)
+  const delivered = recordReviewDelivered(pending, { reviewID: 'review-1', reportDigest: 'a'.repeat(64), messageID: 'msg-review-1', now: 4 })
+  assert.equal(recordReviewDelivered(delivered, { reviewID: 'review-1', reportDigest: 'a'.repeat(64), messageID: 'msg-review-1', now: 5 }), delivered)
+  const addressed = recordAddressedPlan(delivered, plan, { acceptanceCriteria: ['Restart recovery works.'], now: 6 })
+  assert.equal(addressed.phase, PHASE.AWAITING_APPROVAL)
+  assert.equal(addressed.planReview, null)
+  assert.equal(addressed.addressReceipt.deliveryMessageID, 'msg-review-1')
+  assert.equal(addressed.pendingReview, null)
+})
+
+test('artifact causal evidence starts only after the review is durably delivered', () => {
+  const repaired = recordRepairedPlan(createLifecycle(handoff), planText, { review: passReview, reviewedDigest: passReview.submission.digest, acceptanceCriteria: ['Works'] })
+  const approved = recordUserDecision(repaired, { origin: 'external-user', messageID: 'msg-go', text: 'go', expectedGeneration: repaired.generation }).lifecycle
+  const initialStarted = recordExecutionStarted(approved, { callID: 'call-initial', tool: 'bash', startedAt: 10 })
+  const initialSettled = recordReceipt(initialStarted, { callID: 'call-initial', tool: 'bash', kind: 'verification', outputDigest: digestPlan('initial'), outputBytes: 7, capturedAt: 11 })
+  const artifact = 'Retry repair with deterministic overflow handling.'
+  const report = 'The overflow rule is ambiguous.'
+  const review = {
+    route: { kind: 'crap', model: 'local/model' },
+    submission: { kind: 'artifact', digest: digestPlan(artifact) },
+    plainReport: { reviewID: 'review-artifact', text: report, reportDigest: createHash('sha256').update(report).digest('hex'), completedAt: 12, toolCount: 0 },
+  }
+  const pending = recordPendingArtifactReview(initialSettled, artifact, { review, reviewedDigest: digestPlan(artifact), now: 13 })
+  const betweenStarted = recordExecutionStarted(pending, { callID: 'call-between', tool: 'edit', startedAt: 14 })
+  const betweenSettled = recordReceipt(betweenStarted, { callID: 'call-between', tool: 'edit', kind: 'tool', outputDigest: digestPlan('between'), outputBytes: 7, capturedAt: 15 })
+  const delivered = recordReviewDelivered(betweenSettled, { reviewID: 'review-artifact', reportDigest: review.plainReport.reportDigest, messageID: 'msg-review-artifact', now: 16 })
+  assert.deepEqual(delivered.pendingReview.receiptWatermark.callIDs, ['call-initial', 'call-between'])
+  assert.throws(() => recordAddressedArtifact(delivered, artifact, { now: 17 }), /newly settled post-report/)
+  const afterStarted = recordExecutionStarted(delivered, { callID: 'call-after', tool: 'edit', startedAt: 18 })
+  const afterSettled = recordReceipt(afterStarted, { callID: 'call-after', tool: 'edit', kind: 'tool', outputDigest: digestPlan('after'), outputBytes: 5, capturedAt: 19 })
+  const addressed = recordAddressedArtifact(afterSettled, artifact, { now: 20 })
+  assert.equal(addressed.phase, PHASE.ARTIFACT_REVIEWED)
+  assert.equal(addressed.artifactReview, null)
+  assert.equal(addressed.addressReceipt.postReportReceiptCount, 1)
 })
