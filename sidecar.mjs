@@ -89,6 +89,17 @@ function beginTrackedTurn() {
   const turnConn = conn, turnSessionId = sessionId
   return sessionTransition.startTurn(() => turnConn && turnConn.cancel({ sessionId: turnSessionId }))
 }
+function trackedTurnIdentity(turnId, tracked) {
+  return { turnId, sessionId, engineGeneration: engineGen, sessionLease: tracked.lease }
+}
+function finishTrackedTurn(identity, tracked) {
+  // turn-end is intentionally the UI-unblock boundary (abort emits it before
+  // cancellation settles). Consumers that must serialize physical work use
+  // this exact-turn receipt instead. Emit before finish() releases a queued
+  // session replacement so the receipt cannot race behind its successor.
+  broadcast({ type: 'turn-settled', ...identity, settledAt: Date.now() })
+  tracked.finish()
+}
 function replaceSession(work, ownerTurn = null) {
   currentTurn = 0 // turn continuations also use this legacy guard for transcript/output state
   drainPerms()
@@ -550,7 +561,8 @@ async function runCommandTurn(name, args, enterSetup = false) {
   if (!tracked) return
   setupPendingRestart = false; setupFinished = false
   const myTurn = ++turnSeq; currentTurn = myTurn
-  busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
+  const turnIdentity = trackedTurnIdentity(myTurn, tracked)
+  busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start', ...turnIdentity })
   try {
     if (enterSetup) {
       await conn.setSessionConfigOption({ sessionId, configId: agentConfigId, value: 'setup' })
@@ -578,7 +590,7 @@ async function runCommandTurn(name, args, enterSetup = false) {
   finally {
     if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) busy = false
     try { if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) await afterSetupTurn(tracked.lease, tracked) }
-    finally { tracked.finish() }
+    finally { finishTrackedTurn(turnIdentity, tracked) }
   }
 }
 
@@ -1144,7 +1156,8 @@ wss.on('connection', (ws) => {
           if (!tracked) { broadcast({ type: 'error', message: 'The session is switching — try again in a moment.' }); break }
           setupPendingRestart = false; setupFinished = false   // drop any stale setup flags from an aborted/crashed prior turn before this one runs
           const myTurn = ++turnSeq; currentTurn = myTurn
-          busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start' })
+          const turnIdentity = trackedTurnIdentity(myTurn, tracked)
+          busy = true; turnOutput = 0; turnLogOffset = engineLogSize(); broadcast({ type: 'turn-start', ...turnIdentity })
           // The engine can swallow a provider failure (e.g. a 401 from a bad API key) and
           // resolve the turn with NO output at all — the user would see pure silence. A
           // completed turn with zero meaningful updates is that case: say so.
@@ -1180,7 +1193,7 @@ wss.on('connection', (ws) => {
           finally {
             if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) busy = false
             try { if (myTurn === currentTurn && sessionLeaseCurrent(tracked.lease)) await afterSetupTurn(tracked.lease, tracked) }
-            finally { tracked.finish() }
+            finally { finishTrackedTurn(turnIdentity, tracked) }
           }
           break
         }

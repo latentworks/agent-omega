@@ -56,6 +56,30 @@ other traffic cannot evict it mid-task. A model swap during an agent turn looks 
 timeout. In llama-swap terms: put the agent models in a group with `swap: false`,
 `exclusive: false`, `persistent: true`.
 
+### Qwen3-Coder-Next 80B on AMD Vulkan/RADV
+
+On the affected llama.cpp Vulkan/RADV path we tested, speculative decoding could stop generation
+while leaving the provider stream open. Remove this complete draft-decoding group from the
+Qwen3-Coder-Next 80B server command:
+
+```text
+--spec-type draft-dflash
+-md <draft-model.gguf>
+-ngld 999
+--spec-draft-n-max 16
+--spec-draft-p-min 0.5
+```
+
+Do **not** remove `-ngl 999`: that flag offloads the main model and is independent of the
+problematic `-ngld 999` draft-model flag. The tested stable configuration also retained
+`--cache-ram 0`.
+
+With the app, engine, 32K context, 4K output budget, and thinking-off case held fixed, the same
+full lifecycle completed three consecutive times after those five flags were removed. That makes
+speculative decoding the evidence-backed suspect on this serving path; it does not prove that
+every flag is independently defective or that all AMD systems are affected. The reproducible
+campaign is published at [`test/live/task-quality-campaign.mjs`](test/live/task-quality-campaign.mjs).
+
 **Evidence behind this tune:**
 
 - Behavior battery across **8 failure-mode categories** (verification, root-cause debugging,

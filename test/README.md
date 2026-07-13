@@ -23,18 +23,58 @@ This is an optional paid/API end-to-end suite, not a release gate. The v2.6 rele
 record lists the exact checks that were run and the surfaces that remain unverified:
 [`docs/releases/v2.6.2.md`](../docs/releases/v2.6.2.md).
 
-## v2.7.2 candidate evidence
+## v2.7.3 release evidence
 
-`npm test` passed 179/179 on the v2.7.2 candidate. The paired engine full
-typecheck passed, and its focused terminal processor, loader attestation, and
-direct-dispatch suites passed 22/22. Those deterministic checks prove the
-held-terminal contract: ordinary plugins cannot receive terminal evidence;
-raw approval-bound text never persists or streams before the loader-attested
-lifecycle hook explicitly releases a safe replacement; and a missing release
-fails closed as fixed lifecycle feedback. A fresh Windows Release output
-contained exactly one bundled engine executable and no ignored local backups.
-The optional paid suite above and the retained Qwen3.6-35B campaign remain
-required before claiming live desktop or live-model proof.
+The v2.7.3 gate covers the exact-turn `turn-settled` handshake, bounded CRAP
+recovery continuation, local-only Qwen reasoning override, and the provider
+transport watchdog. `npm test` passed 196/196. The paired engine full typecheck
+passed, and its focused attestation, HTTP API, reviewer-selection, and reviewer
+suites passed 44/44.
+
+The frozen 32K-context/4K-output, thinking-off Qwen3-Coder-Next 80B lifecycle
+completed three consecutive times after the five speculative-decoding flags in
+[Model Tunes](../TUNES.md#qwen3-coder-next-80b-on-amd-vulkanradv) were removed.
+All three reached `artifact-reviewed`, had zero pending executions, settled
+every provider request, and recorded no stream stall. This proves the tested
+non-speculative path; it identifies speculative decoding as the suspect for
+the prior serving stalls without claiming a universal AMD root cause.
+
+## Reproducible live task-quality campaign
+
+The retained campaign is now source-controlled in `test/live/`. It runs the
+packaged Windows sidecar and paired engine, serializes provider traffic, writes
+full request/SSE evidence as append-only NDJSON, uses token-bearing frames—not
+transport keepalives—for its 90-second stream watchdog, bounds abandoned
+upstream drains to 30 seconds, verifies `/metrics` timings with at least eight
+generated tokens, records remote clock/NTP state, and waits for the exact
+`turn-settled` identity before advancing.
+
+The transport policy has a deterministic no-provider gate:
+
+```powershell
+npm run test:transport
+```
+
+For a frozen single-lane live run, configure the provider/model already present
+in your Agent Omega config and a remote telemetry target, then run:
+
+```powershell
+$env:AGENT_OMEGA_TEST_LANES = 'local-provider'
+$env:AGENT_OMEGA_TEST_MODEL = 'qwen3-coder-80b'
+$env:AGENT_OMEGA_TEST_ENGINE_REPO = 'D:\src\opencode-omega'
+$env:AGENT_OMEGA_TEST_REMOTE_SSH = 'inference-user@inference-host'
+$env:AGENT_OMEGA_TEST_SSH_KEY = "$HOME\.ssh\id_ed25519"
+$env:AGENT_OMEGA_TEST_REMOTE_MODEL_MATCH = 'Qwen3-Coder-Next-80B'
+$env:AGENT_OMEGA_TEST_CASES = '3'
+$env:AGENT_OMEGA_TEST_THINKING_PATTERN = 'off,off,off'
+npm run test:live-task-quality -- release-proof
+```
+
+`AGENT_OMEGA_TEST_APP`, `AGENT_OMEGA_TEST_ENGINE`, and
+`AGENT_OMEGA_TEST_CONFIG` override their derived defaults.
+`AGENT_OMEGA_TEST_OUTPUT_DIR` controls the artifact root; otherwise evidence
+goes to ignored `.omega-test-runs/`. Captures include full prompts and response
+chunks, so never commit or publish them without a separate privacy review.
 
 ## v2.6 lifecycle and router logic checks
 

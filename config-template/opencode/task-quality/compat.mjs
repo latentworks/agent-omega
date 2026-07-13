@@ -56,5 +56,5 @@ export function assessTaskQualityHealth(payload) {
 }
 
 export function incompatibleEngineMessage(reason) {
-  return 'Task-quality safety update required: ' + reason + '. Install the Agent Omega v2.7.2 engine, then restart. Task work is blocked until this is fixed.'
+  return 'Task-quality safety update required: ' + reason + '. Install the engine matching this Agent Omega release, then restart. Task work is blocked until this is fixed.'
 }

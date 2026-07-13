@@ -17,9 +17,11 @@ function fakeClient() {
   let beforeUpdate = null;
   let reviewHandler = null;
   const reviews = [];
+  const continuations = [];
   const deliveries = [];
   const deliveryByReview = new Map();
   let failResumeAfterDelivery = false;
+  let failNextContinuation = false;
   return {
     reviews,
     client: {
@@ -147,6 +149,15 @@ function fakeClient() {
         return parentID;
       },
     },
+    automation: {
+      async continue(input) {
+        continuations.push(input);
+        if (failNextContinuation) {
+          failNextContinuation = false;
+          throw new Error("internal continuation unavailable");
+        }
+      },
+    },
     state: (sessionID) =>
       sessionID ? states.get(sessionID) || null : lastState,
     grantDirectTaskChild: (childID, parentID, parentTaskCallID = "parent-task") =>
@@ -160,7 +171,11 @@ function fakeClient() {
     failNextResumeAfterDelivery: () => {
       failResumeAfterDelivery = true;
     },
+    failNextContinuation: () => {
+      failNextContinuation = true;
+    },
     deliveries,
+    continuations,
   };
 }
 
@@ -358,6 +373,126 @@ test("persisted artifact follow-up survives qualifying router transform and bloc
   assert.match(premature.text, /artifact review is still required/i);
   assert.doesNotMatch(premature.text, /everything is complete/i);
   clearRouteHandoff(sessionID);
+});
+
+test("a prose-only CRAP repair stays pending, receives one corrective continuation, and still needs a new receipt", async () => {
+  const sessionID = "ses-crap-artifact-recovery";
+  clearRouteHandoff(sessionID);
+  recordRouteHandoff(buildRouteHandoff({ sessionID, messageID: "msg-task", messages: ["Build it"], skillNames: ["brainstorming"] }));
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({
+    client: fake.client,
+    experimental_task_quality: fake.internal,
+    experimental_internal_automation: fake.automation,
+  });
+  await hooks["experimental.chat.system.transform"]({ sessionID }, { system: [] });
+  await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Change it.\n2. Prove it.", acceptance_criteria: ["Proof passes."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  await hooks["chat.message.persisted"](
+    { sessionID, messageID: "msg-go", origin: "external-user" },
+    { parts: [{ type: "text", text: "go" }] },
+  );
+  await hooks["tool.execute.preexecute"]({ sessionID, tool: "bash", callID: "call-initial-proof", capability: "mutate" }, {});
+  await hooks["tool.execute.persisted"](
+    { sessionID, tool: "bash", callID: "call-initial-proof", completedAt: 50 },
+    { output: "initial proof passed" },
+  );
+  const report = "Re-run the relevant verification after reviewing this artifact.";
+  fake.setReview(async (input) => ({
+    route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
+    submission: { kind: input.submission.kind, digest: input.submission.digest },
+    review: {
+      status: "complete",
+      report,
+      reportDigest: digestText(report),
+      reviewID: "review-crap-artifact-recovery",
+      completedAt: 60,
+      toolCalls: 0,
+    },
+  }));
+  const delivered = await hooks.tool.task_quality_artifact_checkpoint.execute(
+    { artifact: "Implemented the approved change and observed the initial proof pass." },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(delivered.title, "Artifact review delivered");
+  const pending = fake.state(sessionID).data.pendingReview;
+  assert.equal(pending.kind, "artifact");
+  assert.ok(pending.delivery?.messageID);
+
+  const terminalStart = {};
+  await hooks["experimental.task_quality.terminal.start"](
+    { sessionID, messageID: "msg-crap-reply", parentMessageID: pending.delivery.messageID },
+    terminalStart,
+  );
+  assert.equal(terminalStart.hold, true);
+  const terminal = { text: "I understand the report and will handle it." };
+  await hooks["experimental.task_quality.terminal"](
+    { sessionID, messageID: "msg-crap-reply", parentMessageID: pending.delivery.messageID, text: terminal.text },
+    terminal,
+  );
+  assert.equal(fake.state(sessionID).data.phase, "approved");
+  assert.equal(fake.state(sessionID).data.pendingReview.reviewID, "review-crap-artifact-recovery");
+  assert.match(terminal.text, /still pending/i);
+
+  const completedText = { text: "Everything is complete and verified." };
+  await hooks["experimental.text.complete"]({ sessionID, messageID: "msg-crap-reply", partID: "part-final" }, completedText);
+  assert.match(completedText.text, /pending repair/i);
+  assert.doesNotMatch(completedText.text, /Everything is complete/i);
+
+  await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
+  await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
+  assert.equal(fake.continuations.length, 1);
+  assert.equal(fake.continuations[0].sessionID, sessionID);
+  assert.match(fake.continuations[0].text, /Do not answer it in prose/i);
+
+  await hooks["tool.execute.preexecute"]({ sessionID, tool: "bash", callID: "call-post-report-proof", capability: "mutate" }, {});
+  await hooks["tool.execute.persisted"](
+    { sessionID, tool: "bash", callID: "call-post-report-proof", completedAt: 70 },
+    { output: "post-report proof passed" },
+  );
+  const addressed = await hooks.tool.task_quality_artifact_checkpoint.execute(
+    { artifact: "Implemented the approved change and observed the post-report proof pass." },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(addressed.title, "Artifact review addressed");
+  assert.equal(fake.state(sessionID).data.phase, "artifact-reviewed");
+  assert.equal(fake.state(sessionID).data.addressReceipt.postReportReceiptCount, 1);
+  clearRouteHandoff(sessionID);
+});
+
+test("a failed CRAP recovery continuation stays capped and leaves the review pending", async () => {
+  const sessionID = "ses-crap-recovery-fails-closed";
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({
+    client: fake.client,
+    experimental_task_quality: fake.internal,
+    experimental_internal_automation: fake.automation,
+  });
+  await fake.internal.update({
+    sessionID,
+    expectedRevision: 0,
+    expectedGeneration: 0,
+    generation: 1,
+    data: {
+      phase: "approved",
+      pendingReview: {
+        kind: "artifact",
+        reviewID: "review-crap-recovery-fails-closed",
+        delivery: { messageID: "msg-crap-recovery-report" },
+      },
+    },
+  });
+  fake.failNextContinuation();
+
+  await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
+  await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
+
+  assert.equal(fake.continuations.length, 1);
+  assert.equal(fake.state(sessionID).data.phase, "approved");
+  assert.equal(fake.state(sessionID).data.pendingReview.reviewID, "review-crap-recovery-fails-closed");
+  assert.equal(fake.state(sessionID).data.addressReceipt, undefined);
 });
 
 test("scope transition survives router order while an execution settles and never revives mutation", async () => {

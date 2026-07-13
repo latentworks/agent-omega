@@ -136,7 +136,7 @@ async function main() {
   const engineFound = existsSync(engine)
   console.log(engineFound
     ? '  engine found -> ' + engine
-    : '  engine NOT found - ' + (isWin ? 'download the matching v2.7.2 opencode.exe release asset into ./engine/ (see SETUP.md step 5)' : 'use a matching macOS engine release (see SETUP.md, macOS section)'))
+    : '  engine NOT found - ' + (isWin ? 'download the matching Agent Omega opencode.exe release asset into ./engine/ (see SETUP.md step 5)' : 'use a matching macOS engine release (see SETUP.md, macOS section)'))
 
   // 4) model + key. On an UPGRADE, leave opencode.json (incl. its model) untouched unless the
   // user explicitly opts in — either an explicit --source, or a 'y' at the reconfigure prompt.
@@ -194,7 +194,7 @@ async function main() {
   }
   if (!engineFound) {
     console.log('\nConfig is ready, but setup is NOT complete: the engine binary is still missing.')
-    console.log(isWin ? 'Finish SETUP.md step 5 (download the matching v2.7.2 opencode.exe into ./engine/), then build + launch:'
+    console.log(isWin ? 'Finish SETUP.md step 5 (download the matching Agent Omega opencode.exe into ./engine/), then build + launch:'
                       : 'Use a matching macOS engine release (SETUP.md, macOS section), then build + launch:')
   } else {
     console.log('\nSetup complete. Build + launch:')

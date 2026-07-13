@@ -220,6 +220,45 @@ test('a selector received after a turn starts is refused without an ACP config c
   await h.wait(() => h.messages.slice(messageMark).some((m) => m.type === 'turn-end'))
 })
 
+test('turn settlement waits for the exact aborted ACP turn to physically finish', { concurrency: false }, async (t) => {
+  const h = await harness(t)
+  const mark = h.messages.length
+  h.send({ type: 'prompt', text: 'old-prompt' })
+  await h.event('waiting', (e) => e.name === 'oldPrompt')
+  const started = await h.wait(() => h.messages.slice(mark).find((m) => m.type === 'turn-start'))
+  assert.equal(h.messages.slice(mark).some((m) => m.type === 'turn-settled'), false)
+
+  h.send({ type: 'abort' })
+  await h.wait(() => h.messages.slice(mark).some((m) => m.type === 'turn-end' && m.stopReason === 'aborted'))
+  assert.equal(h.messages.slice(mark).some((m) => m.type === 'turn-settled'), false)
+
+  h.release('oldPrompt')
+  const settled = await h.wait(() => h.messages.slice(mark).find((m) => m.type === 'turn-settled'))
+  assert.deepEqual(
+    { turnId: settled.turnId, sessionId: settled.sessionId, engineGeneration: settled.engineGeneration, sessionLease: settled.sessionLease },
+    { turnId: started.turnId, sessionId: started.sessionId, engineGeneration: started.engineGeneration, sessionLease: started.sessionLease },
+  )
+  assert.equal(h.messages.slice(mark).filter((m) => m.type === 'turn-settled' && m.turnId === started.turnId).length, 1)
+})
+
+test('a successful prompt emits one identity-matched settlement after its terminal event', { concurrency: false }, async (t) => {
+  const h = await harness(t)
+  const mark = h.messages.length
+  h.send({ type: 'prompt', text: 'normal' })
+  await h.event('prompt', (e) => e.text === 'normal')
+  const settled = await h.wait(() => h.messages.slice(mark).find((m) => m.type === 'turn-settled'))
+  const lifecycle = h.messages.slice(mark).filter((m) => ['turn-start', 'turn-end', 'turn-settled'].includes(m.type))
+
+  assert.deepEqual(lifecycle.map((m) => m.type), ['turn-start', 'turn-end', 'turn-settled'])
+  assert.deepEqual(
+    { turnId: lifecycle[0].turnId, sessionId: lifecycle[0].sessionId, engineGeneration: lifecycle[0].engineGeneration, sessionLease: lifecycle[0].sessionLease },
+    { turnId: settled.turnId, sessionId: settled.sessionId, engineGeneration: settled.engineGeneration, sessionLease: settled.sessionLease },
+  )
+  assert.equal(h.messages.slice(mark).filter((m) => m.type === 'turn-start' && m.turnId === settled.turnId).length, 1)
+  assert.equal(h.messages.slice(mark).filter((m) => m.type === 'turn-end').length, 1)
+  assert.equal(h.messages.slice(mark).filter((m) => m.type === 'turn-settled' && m.turnId === settled.turnId).length, 1)
+})
+
 test('fake ACP engine bypasses missing sidecar-engine preflight in an isolated checkout', { concurrency: false }, async (t) => {
   const h = await harness(t, { engine: path.join(os.tmpdir(), 'definitely-missing-agent-omega-engine') })
   assert.equal(h.messages.filter((m) => m.type === 'ready').at(-1)?.sessionId, 'new-1')
@@ -306,6 +345,7 @@ test('busy crash emits exactly one terminal engine-down turn-end', { concurrency
   await h.wait(() => h.messages.slice(mark).some((m) => m.type === 'engine-down'))
   await h.wait(() => h.messages.slice(mark).filter((m) => m.type === 'turn-end' && m.stopReason === 'engine-down').length === 1)
   assert.equal(h.messages.slice(mark).filter((m) => m.type === 'turn-end' && m.stopReason === 'engine-down').length, 1)
+  await h.wait(() => h.messages.slice(mark).filter((m) => m.type === 'turn-settled').length === 1)
 })
 
 test('new sent before recovery connection exists waits for the one resurrection then wins', { concurrency: false }, async (t) => {
@@ -389,10 +429,17 @@ test('real sidecar emits terminal command error and bars stale afterSetup work',
   h.release('commands:new-1')
   await h.event('commandsAdvertised', (e) => e.sessionId === 'new-1')
   await h.wait(() => h.messages.some((m) => (m.type === 'commands' || m.type === 'ready') && m.commands.some((c) => c.name === 'command-death')))
-  h.send({ type: 'command', name: 'command-death' }); await h.event('prompt', (e) => e.text === '/command-death'); await h.wait(() => h.messages.some((m) => m.type === 'turn-end' && m.stopReason === 'error'))
+  const commandMark = h.messages.length
+  h.send({ type: 'command', name: 'command-death' }); await h.event('prompt', (e) => e.text === '/command-death'); await h.wait(() => h.messages.slice(commandMark).some((m) => m.type === 'turn-end' && m.stopReason === 'error'))
+  await h.wait(() => h.messages.slice(commandMark).filter((m) => m.type === 'turn-settled').length === 1)
   h.send({ type: 'setAgent', agent: 'setup' }); await h.event('setConfig', (e) => e.value === 'setup')
+  const setupMark = h.messages.length
   h.send({ type: 'prompt', text: 'setup' }); await h.event('prompt', (e) => e.text === 'setup'); await h.event('setConfig', (e) => e.configId === 'mode' && e.value === 'build')
-  const before = count(h.messages, 'agent'); h.send({ type: 'new' }); h.release('setupFlip'); await h.event('newSession', (e) => e.sessionId === 'new-2')
+  await h.wait(() => h.messages.slice(setupMark).some((m) => m.type === 'turn-end'))
+  assert.equal(h.messages.slice(setupMark).some((m) => m.type === 'turn-settled'), false)
+  const before = count(h.messages, 'agent'); h.send({ type: 'new' }); h.release('setupFlip');
+  await h.wait(() => h.messages.slice(setupMark).some((m) => m.type === 'turn-settled'))
+  await h.event('newSession', (e) => e.sessionId === 'new-2')
   assert.equal(h.messages.slice(before).some((m) => m.type === 'agent' && m.agent === 'build'), false)
 })
 

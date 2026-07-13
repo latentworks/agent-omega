@@ -1,6 +1,7 @@
 // task-quality: the durable Slice 1 plan/approval gate. Existing skills still
 // own planning and review procedure; this plugin owns only lifecycle state and
-// engine admission. There is intentionally no session.idle hook here.
+// engine admission. Its one idle hook is a bounded recovery for a CRAP report
+// that was delivered but answered in prose without post-report proof.
 import { readFileSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +52,14 @@ const MAX_SUBMISSION_CHARS = 24000;
 const MAX_ACCEPTANCE_CRITERIA = 32;
 const MAX_CRITERION_CHARS = 2000;
 const APPROVAL_REVOCATION_CAS_ATTEMPTS = PENDING_EXECUTION_LIMIT + 2;
+const POST_REPORT_RECEIPT_REQUIRED =
+  "at least one newly settled post-report execution or verification receipt is required";
+const CRAP_ARTIFACT_RECOVERY_PROMPT = [
+  "[task-quality CRAP recovery]",
+  "The preceding synthetic user message is the C.R.A.P. artifact-review report.",
+  "Do not answer it in prose. Stay within the already approved task scope: address each concrete defect it identifies, run at least one relevant verification so a new post-report receipt settles, then call task_quality_artifact_checkpoint again with the updated artifact and exact evidence.",
+  "Engine-attested lifecycle facts override stale plan-only or pre-GO wording in the original objective. Do not make a completion claim unless that checkpoint returns title 'Artifact review recorded' with taskQuality.completionAuthorized=true.",
+].join(" ");
 function log(message) {
   try {
     appendFileSync(LOG, `[${new Date().toISOString()}] ${message}\n`);
@@ -641,6 +650,7 @@ async function captureTerminalArtifact(adapter, input) {
 export const TaskQualityPlugin = async ({
   client,
   experimental_task_quality,
+  experimental_internal_automation: internalAutomation,
 }) => {
   const adapter = createLifecycleAdapter(
     client,
@@ -663,6 +673,10 @@ export const TaskQualityPlugin = async ({
   // into a false "checkpoint recorded" claim. A later external user turn
   // clears it and can retry routing/checkpointing normally.
   const planCheckpointDenied = new Set();
+  // One recovery continuation per durable CRAP report. If the engine restarts,
+  // the in-memory cap resets and the still-pending durable review can be
+  // safely retried; it never authorizes completion on its own.
+  const artifactRecoveryContinuation = new Map();
   log(
     `engine lifecycle bridge=${Boolean(experimental_task_quality)} router-decision bridge=${typeof experimental_task_quality?.awaitRouteDecision === "function"} active=${active}`,
   );
@@ -733,6 +747,45 @@ export const TaskQualityPlugin = async ({
       }
     },
 
+    event: async (input) => {
+      try {
+        if (!active || input?.event?.type !== "session.idle") return;
+        const sessionID = input.event.properties?.sessionID;
+        if (typeof sessionID !== "string" || !sessionID) return;
+        const lifecycle = normalizeSnapshot(await adapter.get(sessionID)).data;
+        const pending = lifecycle?.pendingReview;
+        if (
+          pending?.kind !== "artifact" ||
+          typeof pending.reviewID !== "string" ||
+          !pending.delivery?.messageID
+        ) {
+          artifactRecoveryContinuation.delete(sessionID);
+          return;
+        }
+        if (artifactRecoveryContinuation.get(sessionID) === pending.reviewID)
+          return;
+        if (typeof internalAutomation?.continue !== "function") {
+          log(`artifact CRAP recovery unavailable for ${sessionID}: engine internal automation bridge is missing`);
+          return;
+        }
+        artifactRecoveryContinuation.set(sessionID, pending.reviewID);
+        try {
+          await internalAutomation.continue({
+            sessionID,
+            text: CRAP_ARTIFACT_RECOVERY_PROMPT,
+          });
+          log(`artifact CRAP recovery continuation queued for ${sessionID}`);
+        } catch (error) {
+          // The durable review remains pending and the cap remains set. Retrying
+          // on every idle event would create an unbounded internal loop; a later
+          // lifecycle change is required before another continuation can run.
+          throw error;
+        }
+      } catch (error) {
+        log(`artifact CRAP recovery error: ${error?.message || error}`);
+      }
+    },
+
     "experimental.task_quality.terminal.start": async (input, output) => {
       if (!active || !input?.sessionID || !input?.parentMessageID || !output)
         return;
@@ -795,6 +848,20 @@ export const TaskQualityPlugin = async ({
           output.release = true;
         }
       } catch (error) {
+        if (String(error?.message || error).includes(POST_REPORT_RECEIPT_REQUIRED)) {
+          // A plain-language CRAP report is meant to be actionable. Preserve
+          // its pending lifecycle state when the builder merely narrated a
+          // response, then let the bounded idle continuation request real
+          // post-report proof. The explicit checkpoint path already has this
+          // behavior; terminal capture must not close the generation first.
+          completionDenied.delete(input.sessionID);
+          if (output && typeof output.text === "string")
+            output.text =
+              "Artifact review feedback is still pending a concrete repair or fresh verification receipt. No completion claim is authorized.";
+          if (held && output && typeof output.text === "string") output.release = true;
+          log(`terminal artifact repair remains pending: ${error?.message || error}`);
+          return;
+        }
         completionDenied.add(input.sessionID);
         if (output && typeof output.text === "string")
           output.text =
@@ -868,7 +935,7 @@ export const TaskQualityPlugin = async ({
             Object.assign(output, {
               decision: "deny",
               reason:
-                "Task quality requires an Agent Omega v2.7.2 engine lifecycle surface before mutating tools may run.",
+                "Task quality requires the engine matching this Agent Omega release before mutating tools may run.",
               policyVersion: "agent-omega/task-quality@1",
             });
           return;
@@ -1006,7 +1073,7 @@ export const TaskQualityPlugin = async ({
             return {
               title: "Task-quality blocked",
               output:
-                "The installed engine cannot run and persist an isolated task-quality review. Update Agent Omega v2.7.2 before continuing a qualifying change.",
+                "The installed engine cannot run and persist an isolated task-quality review. Install the engine matching this Agent Omega release before continuing a qualifying change.",
             };
           try {
             const plan = boundedText(args.repaired_plan, "repaired plan");
@@ -1123,7 +1190,7 @@ export const TaskQualityPlugin = async ({
             return {
               title: "Task-quality blocked",
               output:
-                "The installed engine cannot run and persist an isolated artifact review. Update Agent Omega v2.7.2 before continuing.",
+                "The installed engine cannot run and persist an isolated artifact review. Install the engine matching this Agent Omega release before continuing.",
             };
           try {
             const artifact = boundedText(args.artifact, "artifact");
