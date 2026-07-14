@@ -9,6 +9,7 @@ export const PHASE = Object.freeze({
   AWAITING_APPROVAL: 'awaiting-approval',
   APPROVED: 'approved',
   AWAITING_ARTIFACT_REVIEW: 'awaiting-artifact-review',
+  AWAITING_ARTIFACT_REREVIEW: 'awaiting-artifact-rereview',
   DECLINED: 'declined',
   ARTIFACT_REVIEWED: 'artifact-reviewed',
   ARTIFACT_REVIEW_FAILED: 'artifact-review-failed',
@@ -16,6 +17,60 @@ export const PHASE = Object.freeze({
 
 function nowValue(now) {
   return Number.isSafeInteger(now) && now > 0 ? now : Date.now()
+}
+
+// FIX-6 observability: bounded review-report and submission excerpts are retained
+// in the durable blob so plan/artifact review text survives past the pending
+// window for forensics. This is additive persistence only — the state machine's
+// phase transitions and authorization checks are unchanged.
+export const REVIEW_HISTORY_LIMIT = 8
+export const REVIEW_REPORT_EXCERPT_BYTES = 8192
+const SUBMISSION_EXCERPT_BYTES = 8192
+
+// FIX-2: an addressed artifact must survive a real isolated re-review before
+// any terminal verdict exists. Repair rounds are bounded so an artifact the
+// reviewer keeps rejecting ends as an honest DECLINED instead of looping.
+export const REVIEW_ROUNDS_CAP = 3
+
+// UTF-8 byte-bounded head excerpt. Never splits a multi-byte sequence, and the
+// retained text (head + marker) never exceeds maxBytes. The digest kept beside
+// the excerpt is always over the full text, so truncation is detectable.
+function boundedExcerpt(text, maxBytes) {
+  const source = typeof text === 'string' ? text : ''
+  const full = Buffer.from(source, 'utf8')
+  if (full.length <= maxBytes) return Object.freeze({ text: source, truncated: false, fullBytes: full.length })
+  let end = Math.max(0, maxBytes - 64)
+  while (end > 0 && (full[end] & 0xc0) === 0x80) end--
+  const head = full.subarray(0, end).toString('utf8')
+  const elided = full.length - end
+  return Object.freeze({ text: `${head}\n[...${elided} bytes elided...]`, truncated: true, fullBytes: full.length })
+}
+
+function buildSubmissionExcerpt(text) {
+  const excerpt = boundedExcerpt(text, SUBMISSION_EXCERPT_BYTES)
+  return Object.freeze({ text: excerpt.text, truncated: excerpt.truncated, bytes: excerpt.fullBytes })
+}
+
+function reviewHistoryEntry(pending, now, extra = {}) {
+  const excerpt = boundedExcerpt(pending?.report, REVIEW_REPORT_EXCERPT_BYTES)
+  return Object.freeze({
+    kind: pending.kind,
+    route: pending.route,
+    reviewID: pending.reviewID,
+    reviewedDigest: pending.reviewedDigest,
+    report: excerpt.text,
+    reportTruncated: excerpt.truncated,
+    reportBytes: excerpt.fullBytes,
+    reportDigest: pending.reportDigest,
+    generation: pending.generation,
+    ...extra,
+    recordedAt: nowValue(now),
+  })
+}
+
+function appendReviewHistory(existing, entry) {
+  const prior = Array.isArray(existing) ? existing : []
+  return Object.freeze([...prior, entry].slice(-REVIEW_HISTORY_LIMIT))
 }
 
 export function digestPlan(plan) {
@@ -47,6 +102,10 @@ export function createLifecycle(handoff, { generation = 1, now = Date.now() } = 
     artifactReview: null,
     artifactReviewFailure: null,
     reviewedArtifact: null,
+    reviewHistory: Object.freeze([]),
+    rereview: null,
+    reviewRounds: 0,
+    reviewDecline: null,
     createdAt: nowValue(now),
     updatedAt: nowValue(now),
   })
@@ -65,7 +124,7 @@ export function reconstructLifecycle(existing, handoff, { now = Date.now() } = {
   // approval and receipts it is meant to audit; later routed turns are new work.
   if (
     existing?.version === 1 &&
-    existing.phase === PHASE.AWAITING_ARTIFACT_REVIEW &&
+    (existing.phase === PHASE.AWAITING_ARTIFACT_REVIEW || existing.phase === PHASE.AWAITING_ARTIFACT_REREVIEW) &&
     existing.artifactReviewMessageID &&
     existing.artifactReviewMessageID === handoff?.messageID
   ) return existing
@@ -116,7 +175,7 @@ export function recordRepairedPlan(lifecycle, plan, { review, acceptanceCriteria
   if (typeof reviewedDigest !== 'string' || !reviewedDigest) throw new Error('an engine-calculated reviewed-plan digest is required before recording the repaired plan')
   if (reviewedDigest !== digestPlan(plan)) throw new Error('the reviewed-plan digest does not match the exact repaired plan content')
   const generation = lifecycle.generation + 1
-  const repairedPlan = Object.freeze({ digest: reviewedDigest, generation, recordedAt: nowValue(now) })
+  const repairedPlan = Object.freeze({ digest: reviewedDigest, generation, recordedAt: nowValue(now), submissionExcerpt: buildSubmissionExcerpt(plan) })
   return Object.freeze({
     ...lifecycle,
     generation,
@@ -210,10 +269,13 @@ export function recordAddressedPlan(lifecycle, plan, { acceptanceCriteria, now =
     generation,
     phase: PHASE.AWAITING_APPROVAL,
     planReview: null,
+    // FIX-6: the addressed report is no longer discarded — it is preserved as a
+    // bounded forensic excerpt in reviewHistory before pendingReview clears.
     pendingReview: null,
+    reviewHistory: appendReviewHistory(lifecycle.reviewHistory, reviewHistoryEntry(pending, now)),
     addressReceipt,
     acceptanceCriteria: normalizeCriteria(acceptanceCriteria),
-    repairedPlan: Object.freeze({ digest: addressedDigest, generation, recordedAt: nowValue(now) }),
+    repairedPlan: Object.freeze({ digest: addressedDigest, generation, recordedAt: nowValue(now), submissionExcerpt: buildSubmissionExcerpt(plan) }),
     approval: null,
     artifactReviewMessageID: null,
     revocationPending: null,
@@ -230,9 +292,14 @@ export function recordPendingArtifactReview(lifecycle, artifact, { review, revie
     ...lifecycle,
     phase: PHASE.APPROVED,
     pendingReview: Object.freeze({ ...pendingReview, generation: lifecycle.generation, receivedAt: nowValue(now) }),
+    // FIX-6: if a prior report was still pending (e.g. after a scope
+    // revocation), preserve its bounded excerpt before overwriting it.
+    reviewHistory: lifecycle.pendingReview ? appendReviewHistory(lifecycle.reviewHistory, reviewHistoryEntry(lifecycle.pendingReview, now, { disposition: 'superseded-by-fresh-review' })) : lifecycle.reviewHistory,
     addressReceipt: null,
     artifactReview: null,
+    artifactReviewFailure: null,
     reviewedArtifact: null,
+    rereview: null,
     updatedAt: nowValue(now),
   })
 }
@@ -243,18 +310,92 @@ export function recordAddressedArtifact(lifecycle, artifact, { now = Date.now() 
   const oldIDs = new Set(pending.receiptWatermark?.callIDs || [])
   const newReceipts = (Array.isArray(lifecycle.receipts) ? lifecycle.receipts : []).filter((item) => !oldIDs.has(item.callID))
   if (newReceipts.length < 1) throw new Error('at least one newly settled post-report execution or verification receipt is required')
-  const generation = lifecycle.generation + 1
   const addressedDigest = digestPlan(artifact)
-  const addressReceipt = Object.freeze({ reviewID: pending.reviewID, reportDigest: pending.reportDigest, reviewedDigest: pending.reviewedDigest, addressedDigest, deliveryMessageID: pending.delivery.messageID, addressedAt: nowValue(now), route: pending.route, postReportReceiptCount: newReceipts.length })
+  if (addressedDigest === pending.reviewedDigest && !newReceipts.some((item) => item.kind === 'verification')) throw new Error('a byte-identical resubmission needs at least one new verification receipt proving the findings were addressed')
+  // FIX-2: addressing findings is a claim, not a verdict. The addressed
+  // artifact parks in AWAITING_ARTIFACT_REREVIEW until a real isolated
+  // re-review returns a bound verdict — the builder can never self-terminate
+  // the review by resubmitting. pendingReview (the findings lock) is kept
+  // byte-intact so the re-reviewer judges against the original findings.
   return Object.freeze({
     ...lifecycle,
-    generation,
-    phase: PHASE.ARTIFACT_REVIEWED,
+    phase: PHASE.AWAITING_ARTIFACT_REREVIEW,
+    rereview: Object.freeze({ reviewID: pending.reviewID, addressedDigest, addressedAt: nowValue(now), postReportReceiptCount: newReceipts.length, newReceiptCallIDs: Object.freeze(newReceipts.map((item) => item.callID)), submissionExcerpt: buildSubmissionExcerpt(artifact) }),
+    updatedAt: nowValue(now),
+  })
+}
+
+// FIX-2: the only exit from AWAITING_ARTIFACT_REREVIEW. A bound 'pass' mints
+// the terminal ARTIFACT_REVIEWED verdict; anything else — explicit non-pass,
+// digest-unbound result, or an unreadable/failed re-review (failureReason) —
+// fails closed and consumes a bounded repair round. Rounds below the cap land
+// in repairable ARTIFACT_REVIEW_FAILED (no generation bump, binding intact);
+// exhausting the cap ends as an honest terminal DECLINED.
+export function recordArtifactRereview(lifecycle, artifact, { review, reviewedDigest, failureReason, roundsCap = REVIEW_ROUNDS_CAP, now = Date.now() } = {}) {
+  if (!lifecycle || lifecycle.version !== 1 || lifecycle.phase !== PHASE.AWAITING_ARTIFACT_REREVIEW) throw new Error('no addressed artifact is awaiting re-review')
+  if (hasUnsettledExecution(lifecycle)) throw new Error('unresolved execution evidence blocks artifact re-review')
+  const pending = lifecycle.pendingReview
+  if (!pending || pending.kind !== 'artifact' || pending.generation !== lifecycle.generation || !pending.delivery?.messageID) throw new Error('the addressed artifact has no bound delivered review to re-review against')
+  const rr = lifecycle.rereview
+  if (!rr || rr.reviewID !== pending.reviewID) throw new Error('the addressed-resubmission record does not match the pending review')
+  if (typeof artifact !== 'string' || !artifact.trim()) throw new TypeError('artifact text is required')
+  const digest = digestPlan(artifact)
+  if (typeof reviewedDigest !== 'string' || reviewedDigest !== digest || digest !== rr.addressedDigest) throw new Error('the re-reviewed digest does not match the exact addressed artifact content')
+  const cap = Number.isSafeInteger(roundsCap) && roundsCap > 0 ? roundsCap : REVIEW_ROUNDS_CAP
+  const priorRounds = Number.isSafeInteger(lifecycle.reviewRounds) && lifecycle.reviewRounds >= 0 ? lifecycle.reviewRounds : 0
+  const round = priorRounds + 1
+  const rereviewRecord = completedArtifactReview(review)
+  const bound = rereviewRecord && review.submission.digest === digest ? rereviewRecord : null
+  if (bound?.verdict === 'pass') {
+    const generation = lifecycle.generation + 1
+    const addressReceipt = Object.freeze({ reviewID: pending.reviewID, reportDigest: pending.reportDigest, reviewedDigest: pending.reviewedDigest, addressedDigest: rr.addressedDigest, deliveryMessageID: pending.delivery.messageID, addressedAt: rr.addressedAt, route: pending.route, postReportReceiptCount: rr.postReportReceiptCount })
+    return Object.freeze({
+      ...lifecycle,
+      generation,
+      phase: PHASE.ARTIFACT_REVIEWED,
+      pendingReview: null,
+      reviewHistory: appendReviewHistory(lifecycle.reviewHistory, reviewHistoryEntry(pending, now, { disposition: 'rereview-pass', addressedDigest: rr.addressedDigest, round })),
+      addressReceipt,
+      artifactReview: bound,
+      artifactReviewFailure: null,
+      reviewedArtifact: Object.freeze({ digest, generation, receiptCount: Array.isArray(lifecycle.receipts) ? lifecycle.receipts.length : 0, recordedAt: nowValue(now), causallyAddressed: true, rereviewed: true, submissionExcerpt: buildSubmissionExcerpt(artifact) }),
+      rereview: null,
+      reviewRounds: round,
+      updatedAt: nowValue(now),
+    })
+  }
+  const reason = bound
+    ? `the isolated re-review returned ${bound.verdict}${bound.summary ? `: ${bound.summary}` : ''}`
+    : String(failureReason || 'the isolated re-review did not return a readable bound verdict').replace(/\s+/g, ' ').trim()
+  if (round >= cap) {
+    const generation = lifecycle.generation + 1
+    return Object.freeze({
+      ...lifecycle,
+      generation,
+      phase: PHASE.DECLINED,
+      pendingReview: null,
+      reviewHistory: appendReviewHistory(lifecycle.reviewHistory, reviewHistoryEntry(pending, now, { disposition: 'rereview-declined', addressedDigest: rr.addressedDigest, round })),
+      addressReceipt: null,
+      artifactReview: null,
+      artifactReviewFailure: null,
+      reviewedArtifact: null,
+      rereview: null,
+      reviewRounds: round,
+      reviewDecline: Object.freeze({ reason: 'review-rounds-exhausted', detail: reason.slice(0, 6000), rounds: round, recordedAt: nowValue(now) }),
+      updatedAt: nowValue(now),
+    })
+  }
+  return Object.freeze({
+    ...lifecycle,
+    phase: PHASE.ARTIFACT_REVIEW_FAILED,
     pendingReview: null,
-    addressReceipt,
+    reviewHistory: appendReviewHistory(lifecycle.reviewHistory, reviewHistoryEntry(pending, now, { disposition: 'rereview-non-pass', addressedDigest: rr.addressedDigest, round })),
+    addressReceipt: null,
     artifactReview: null,
-    reviewedArtifact: Object.freeze({ digest: addressedDigest, generation, receiptCount: lifecycle.receipts.length, recordedAt: nowValue(now), causallyAddressed: true }),
-    artifactReviewFailure: null,
+    artifactReviewFailure: Object.freeze({ kind: 'rereview-non-pass', digest, reason: reason.slice(0, 6000), round, generation: lifecycle.generation, recordedAt: nowValue(now) }),
+    reviewedArtifact: null,
+    rereview: null,
+    reviewRounds: round,
     updatedAt: nowValue(now),
   })
 }
@@ -333,6 +474,9 @@ export function revokeApprovalForSubstantiveTurn(lifecycle, { origin, messageID,
         phase: PHASE.AWAITING_ARTIFACT_REVIEW,
         artifactReviewMessageID: messageID,
         revocationPending: null,
+        artifactReviewFailure: null,
+        rereview: null,
+        reviewRounds: 0,
         updatedAt: nowValue(now),
       }),
     }
@@ -356,15 +500,23 @@ export function revokeApprovalForSubstantiveTurn(lifecycle, { origin, messageID,
       artifactReview: null,
       artifactReviewFailure: null,
       reviewedArtifact: null,
+      rereview: null,
+      reviewRounds: 0,
+      reviewDecline: null,
       updatedAt: nowValue(now),
     }),
   }
 }
 
+// FIX-2: ARTIFACT_REVIEW_FAILED joins these predicates ONLY while the
+// generation binding is intact — a repairable non-pass re-review round never
+// bumps the generation, so the original approval still covers the repair.
+// Every terminal failure path bumps the generation, which breaks the binding
+// conjuncts below, so old terminal FAILED states stay locked out unchanged.
 export function hasArtifactReviewAuthorization(lifecycle) {
   return Boolean(
     lifecycle?.version === 1 &&
-      (lifecycle.phase === PHASE.APPROVED || lifecycle.phase === PHASE.AWAITING_ARTIFACT_REVIEW) &&
+      (lifecycle.phase === PHASE.APPROVED || lifecycle.phase === PHASE.AWAITING_ARTIFACT_REVIEW || lifecycle.phase === PHASE.ARTIFACT_REVIEW_FAILED) &&
       lifecycle.repairedPlan?.generation === lifecycle.generation &&
       lifecycle.approval?.generation === lifecycle.generation &&
       lifecycle.approval?.planDigest === lifecycle.repairedPlan?.digest,
@@ -374,7 +526,7 @@ export function hasArtifactReviewAuthorization(lifecycle) {
 export function hasCurrentApproval(lifecycle) {
   return Boolean(
     lifecycle?.version === 1 &&
-      lifecycle.phase === PHASE.APPROVED &&
+      (lifecycle.phase === PHASE.APPROVED || lifecycle.phase === PHASE.ARTIFACT_REVIEW_FAILED) &&
       !lifecycle.revocationPending &&
       lifecycle.repairedPlan?.generation === lifecycle.generation &&
       lifecycle.approval?.generation === lifecycle.generation &&
@@ -389,7 +541,7 @@ export function hasUnsettledExecution(lifecycle) {
 function hasSettlementAuthorization(lifecycle) {
   return Boolean(
     lifecycle?.version === 1 &&
-      lifecycle.phase === PHASE.APPROVED &&
+      (lifecycle.phase === PHASE.APPROVED || lifecycle.phase === PHASE.ARTIFACT_REVIEW_FAILED) &&
       lifecycle.repairedPlan?.generation === lifecycle.generation &&
       lifecycle.approval?.generation === lifecycle.generation &&
       lifecycle.approval?.planDigest === lifecycle.repairedPlan?.digest,
@@ -404,6 +556,9 @@ function finishPendingScopeTransition(lifecycle, { now = Date.now() } = {}) {
       phase: PHASE.AWAITING_ARTIFACT_REVIEW,
       artifactReviewMessageID: lifecycle.revocationPending.messageID,
       revocationPending: null,
+      artifactReviewFailure: null,
+      rereview: null,
+      reviewRounds: 0,
       updatedAt: nowValue(now),
     })
   }
@@ -422,6 +577,9 @@ function finishPendingScopeTransition(lifecycle, { now = Date.now() } = {}) {
     artifactReview: null,
     artifactReviewFailure: null,
     reviewedArtifact: null,
+    rereview: null,
+    reviewRounds: 0,
+    reviewDecline: null,
     updatedAt: nowValue(now),
   })
 }
@@ -547,14 +705,17 @@ export function recordArtifactReview(lifecycle, artifact, { review, reviewedDige
   if (typeof reviewedDigest !== 'string' || reviewedDigest !== digest) throw new Error('the reviewed-artifact digest does not match the exact artifact content')
   const generation = lifecycle.generation + 1
   const reviewedArtifact = artifactReview.verdict === 'pass'
-    ? Object.freeze({ digest, generation, receiptCount: lifecycle.receipts.length, recordedAt: nowValue(now) })
+    ? Object.freeze({ digest, generation, receiptCount: lifecycle.receipts.length, recordedAt: nowValue(now), submissionExcerpt: buildSubmissionExcerpt(artifact) })
     : null
   return Object.freeze({
     ...lifecycle,
     generation,
     phase: artifactReview.verdict === 'pass' ? PHASE.ARTIFACT_REVIEWED : PHASE.ARTIFACT_REVIEW_FAILED,
     artifactReview,
+    // FIX-2/FIX-6: a still-pending report must not vanish when a terminal
+    // structured review lands over it — preserve its bounded excerpt first.
     pendingReview: null,
+    reviewHistory: lifecycle.pendingReview ? appendReviewHistory(lifecycle.reviewHistory, reviewHistoryEntry(lifecycle.pendingReview, now, { disposition: 'superseded-by-terminal-review' })) : lifecycle.reviewHistory,
     addressReceipt: null,
     artifactReviewFailure: null,
     reviewedArtifact,
@@ -580,6 +741,7 @@ export function recordArtifactReviewDenied(lifecycle, artifact, { reason, now = 
     phase: PHASE.ARTIFACT_REVIEW_FAILED,
     artifactReview: null,
     pendingReview: null,
+    reviewHistory: lifecycle.pendingReview ? appendReviewHistory(lifecycle.reviewHistory, reviewHistoryEntry(lifecycle.pendingReview, now, { disposition: 'superseded-by-denial' })) : lifecycle.reviewHistory,
     addressReceipt: null,
     artifactReviewFailure: Object.freeze({
       digest: digestPlan(artifact),

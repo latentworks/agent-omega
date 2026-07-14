@@ -106,6 +106,11 @@ function fakeClient() {
           },
           review: {
             status: "complete",
+            // A current engine binds a re-review verdict to the exact
+            // requested review identity; the adapter fails closed without it.
+            ...(input.rereview
+              ? { rereview: { reviewID: input.rereview.reviewID } }
+              : {}),
             result: {
               verdict: "pass",
               summary: "checked",
@@ -400,18 +405,31 @@ test("a prose-only CRAP repair stays pending, receives one corrective continuati
     { output: "initial proof passed" },
   );
   const report = "Re-run the relevant verification after reviewing this artifact.";
-  fake.setReview(async (input) => ({
-    route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
-    submission: { kind: input.submission.kind, digest: input.submission.digest },
-    review: {
-      status: "complete",
-      report,
-      reportDigest: digestText(report),
-      reviewID: "review-crap-artifact-recovery",
-      completedAt: 60,
-      toolCalls: 0,
-    },
-  }));
+  fake.setReview(async (input) => {
+    if (input.rereview) {
+      return {
+        route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
+        submission: { kind: input.submission.kind, digest: input.submission.digest },
+        review: {
+          status: "complete",
+          rereview: { reviewID: input.rereview.reviewID },
+          result: { verdict: "pass", summary: "findings addressed", findings: [], dispositions: [] },
+        },
+      };
+    }
+    return {
+      route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
+      submission: { kind: input.submission.kind, digest: input.submission.digest },
+      review: {
+        status: "complete",
+        report,
+        reportDigest: digestText(report),
+        reviewID: "review-crap-artifact-recovery",
+        completedAt: 60,
+        toolCalls: 0,
+      },
+    };
+  });
   const delivered = await hooks.tool.task_quality_artifact_checkpoint.execute(
     { artifact: "Implemented the approved change and observed the initial proof pass." },
     { sessionID, directory: ".", worktree: ".", metadata() {} },
@@ -456,9 +474,13 @@ test("a prose-only CRAP repair stays pending, receives one corrective continuati
     { artifact: "Implemented the approved change and observed the post-report proof pass." },
     { sessionID, directory: ".", worktree: ".", metadata() {} },
   );
-  assert.equal(addressed.title, "Artifact review addressed");
+  assert.equal(addressed.title, "Artifact review recorded");
+  assert.equal(addressed.metadata.taskQuality.completionAuthorized, true);
+  assert.equal(fake.reviews.at(-1).rereview?.reviewID, "review-crap-artifact-recovery");
   assert.equal(fake.state(sessionID).data.phase, "artifact-reviewed");
   assert.equal(fake.state(sessionID).data.addressReceipt.postReportReceiptCount, 1);
+  assert.equal(fake.state(sessionID).data.reviewedArtifact.rereviewed, true);
+  assert.equal(fake.state(sessionID).data.reviewRounds, 1);
   clearRouteHandoff(sessionID);
 });
 
@@ -493,6 +515,172 @@ test("a failed CRAP recovery continuation stays capped and leaves the review pen
   assert.equal(fake.state(sessionID).data.phase, "approved");
   assert.equal(fake.state(sessionID).data.pendingReview.reviewID, "review-crap-recovery-fails-closed");
   assert.equal(fake.state(sessionID).data.addressReceipt, undefined);
+});
+
+test("a byte-identical terminal resubmission during pending repair preserves the review instead of closing the generation", async () => {
+  const sessionID = "ses-terminal-byte-identical-repair";
+  clearRouteHandoff(sessionID);
+  recordRouteHandoff(buildRouteHandoff({ sessionID, messageID: "msg-task", messages: ["Build it"], skillNames: ["brainstorming"] }));
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({
+    client: fake.client,
+    experimental_task_quality: fake.internal,
+    experimental_internal_automation: fake.automation,
+  });
+  await hooks["experimental.chat.system.transform"]({ sessionID }, { system: [] });
+  await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Change it.\n2. Prove it.", acceptance_criteria: ["Proof passes."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  await hooks["chat.message.persisted"](
+    { sessionID, messageID: "msg-go", origin: "external-user" },
+    { parts: [{ type: "text", text: "go" }] },
+  );
+  await hooks["tool.execute.preexecute"]({ sessionID, tool: "bash", callID: "call-initial-proof", capability: "mutate" }, {});
+  await hooks["tool.execute.persisted"](
+    { sessionID, tool: "bash", callID: "call-initial-proof", completedAt: 50 },
+    { output: "initial proof passed" },
+  );
+  const report = "Re-run the relevant verification after reviewing this artifact.";
+  fake.setReview(async (input) => {
+    if (input.rereview) {
+      return {
+        route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
+        submission: { kind: input.submission.kind, digest: input.submission.digest },
+        review: {
+          status: "complete",
+          rereview: { reviewID: input.rereview.reviewID },
+          result: { verdict: "pass", summary: "findings addressed", findings: [], dispositions: [] },
+        },
+      };
+    }
+    return {
+      route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
+      submission: { kind: input.submission.kind, digest: input.submission.digest },
+      review: {
+        status: "complete",
+        report,
+        reportDigest: digestText(report),
+        reviewID: "review-byte-identical-repair",
+        completedAt: 60,
+        toolCalls: 0,
+      },
+    };
+  });
+  const artifactText = "Implemented the approved change and observed the initial proof pass.";
+  const delivered = await hooks.tool.task_quality_artifact_checkpoint.execute(
+    { artifact: artifactText },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(delivered.title, "Artifact review delivered");
+  const pending = fake.state(sessionID).data.pendingReview;
+  assert.equal(pending.kind, "artifact");
+
+  // A post-report receipt from a non-verification tool passes the receipt
+  // gate, so the byte-identical guard is the one that throws.
+  await hooks["tool.execute.preexecute"]({ sessionID, tool: "edit", callID: "call-post-report-edit", capability: "mutate" }, {});
+  await hooks["tool.execute.persisted"](
+    { sessionID, tool: "edit", callID: "call-post-report-edit", completedAt: 70 },
+    { output: "edited the artifact source" },
+  );
+  const generationBefore = fake.state(sessionID).generation;
+  const terminalStart = {};
+  await hooks["experimental.task_quality.terminal.start"](
+    { sessionID, messageID: "msg-identical-reply", parentMessageID: pending.delivery.messageID },
+    terminalStart,
+  );
+  assert.equal(terminalStart.hold, true);
+  const terminal = { text: artifactText };
+  await hooks["experimental.task_quality.terminal"](
+    { sessionID, messageID: "msg-identical-reply", parentMessageID: pending.delivery.messageID, text: artifactText },
+    terminal,
+  );
+  assert.equal(fake.state(sessionID).data.phase, "approved");
+  assert.equal(fake.state(sessionID).data.pendingReview.reviewID, "review-byte-identical-repair");
+  assert.equal(fake.state(sessionID).data.artifactReviewFailure ?? null, null);
+  assert.equal(fake.state(sessionID).generation, generationBefore);
+  assert.match(terminal.text, /pending artifact review remains open/i);
+  assert.match(terminal.text, /byte-identical/i);
+  assert.doesNotMatch(terminal.text, /could not be recorded/i);
+  const completedText = { text: "Everything is complete and verified." };
+  await hooks["experimental.text.complete"]({ sessionID, messageID: "msg-identical-reply", partID: "part-final" }, completedText);
+  assert.match(completedText.text, /pending repair/i);
+  assert.doesNotMatch(completedText.text, /artifact review was denied/i);
+
+  // The preserved state must remain genuinely repairable: with a fresh
+  // verification receipt the same bytes settle through the re-review.
+  await hooks["tool.execute.preexecute"]({ sessionID, tool: "test", callID: "call-post-report-verify", capability: "mutate" }, {});
+  await hooks["tool.execute.persisted"](
+    { sessionID, tool: "test", callID: "call-post-report-verify", completedAt: 80 },
+    { output: "verification passed against the unchanged artifact" },
+  );
+  const retryStart = {};
+  await hooks["experimental.task_quality.terminal.start"](
+    { sessionID, messageID: "msg-identical-retry", parentMessageID: pending.delivery.messageID },
+    retryStart,
+  );
+  const retry = { text: artifactText };
+  await hooks["experimental.task_quality.terminal"](
+    { sessionID, messageID: "msg-identical-retry", parentMessageID: pending.delivery.messageID, text: artifactText },
+    retry,
+  );
+  assert.equal(fake.state(sessionID).data.phase, "artifact-reviewed");
+  assert.equal(fake.reviews.at(-1).rereview?.reviewID, "review-byte-identical-repair");
+  assert.equal(fake.state(sessionID).data.reviewedArtifact.rereviewed, true);
+  assert.equal(fake.state(sessionID).data.reviewRounds, 1);
+  clearRouteHandoff(sessionID);
+});
+
+test("idle recovery in the parked re-review phase issues the byte-exact resubmission prompt", async () => {
+  const sessionID = "ses-parked-rereview-recovery";
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({
+    client: fake.client,
+    experimental_task_quality: fake.internal,
+    experimental_internal_automation: fake.automation,
+  });
+  await fake.internal.update({
+    sessionID,
+    expectedRevision: 0,
+    expectedGeneration: 0,
+    generation: 1,
+    data: {
+      phase: "approved",
+      pendingReview: {
+        kind: "artifact",
+        reviewID: "review-parked-recovery",
+        delivery: { messageID: "msg-parked-report" },
+      },
+    },
+  });
+  await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
+  await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
+  assert.equal(fake.continuations.length, 1);
+  assert.match(fake.continuations[0].text, /Do not answer it in prose/i);
+
+  // The same pending review parking for its re-review is a new posture: the
+  // prompt must switch to the truthful byte-exact instruction and fire once.
+  await fake.internal.update({
+    sessionID,
+    expectedRevision: 1,
+    expectedGeneration: 1,
+    generation: 1,
+    data: {
+      phase: "awaiting-artifact-rereview",
+      pendingReview: {
+        kind: "artifact",
+        reviewID: "review-parked-recovery",
+        delivery: { messageID: "msg-parked-report" },
+      },
+      rereview: { addressedDigest: "digest-addressed" },
+    },
+  });
+  await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
+  await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
+  assert.equal(fake.continuations.length, 2);
+  assert.match(fake.continuations[1].text, /awaiting-artifact-rereview/);
+  assert.match(fake.continuations[1].text, /exact same addressed artifact bytes/i);
+  assert.doesNotMatch(fake.continuations[1].text, /updated artifact/i);
 });
 
 test("scope transition survives router order while an execution settles and never revives mutation", async () => {
@@ -1402,11 +1590,24 @@ test("plain CRAP artifact review closes only after delivered feedback causes new
     { parts: [{ type: "text", text: "Run final artifact review now." }] },
   );
   const report = "Repair the overflow branch and rerun the proof.";
-  fake.setReview(async (input) => ({
-    route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
-    submission: { kind: input.submission.kind, digest: digestText(input.submission.content) },
-    review: { status: "complete", report, reportDigest: digestText(report), reviewID: "review-artifact-1", completedAt: 30, toolCalls: 0 },
-  }));
+  fake.setReview(async (input) => {
+    if (input.rereview) {
+      return {
+        route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
+        submission: { kind: input.submission.kind, digest: input.submission.digest },
+        review: {
+          status: "complete",
+          rereview: { reviewID: input.rereview.reviewID },
+          result: { verdict: "pass", summary: "overflow repair verified", findings: [], dispositions: [] },
+        },
+      };
+    }
+    return {
+      route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
+      submission: { kind: input.submission.kind, digest: digestText(input.submission.content) },
+      review: { status: "complete", report, reportDigest: digestText(report), reviewID: "review-artifact-1", completedAt: 30, toolCalls: 0 },
+    };
+  });
   const artifactText = "Implemented the approved change and observed the focused proof pass.";
   const first = await hooks.tool.task_quality_artifact_checkpoint.execute(
     { artifact: artifactText },
@@ -1427,13 +1628,28 @@ test("plain CRAP artifact review closes only after delivered feedback causes new
     { sessionID, tool: "edit", callID: "call-repair", completedAt: 40 },
     { output: "overflow branch repaired" },
   );
+  const identicalWithoutProof = await hooks.tool.task_quality_artifact_checkpoint.execute(
+    { artifact: artifactText },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(identicalWithoutProof.title, "Artifact repair not recorded");
+  assert.match(identicalWithoutProof.output, /byte-identical resubmission needs at least one new verification receipt/);
+
+  await hooks["tool.execute.preexecute"]({ sessionID, tool: "vitest", callID: "call-verify", capability: "mutate" }, {});
+  await hooks["tool.execute.persisted"](
+    { sessionID, tool: "vitest", callID: "call-verify", completedAt: 50 },
+    { output: "proof rerun passed" },
+  );
   const closed = await hooks.tool.task_quality_artifact_checkpoint.execute(
     { artifact: artifactText },
     { sessionID, directory: ".", worktree: ".", metadata() {} },
   );
-  assert.equal(closed.title, "Artifact review addressed");
+  assert.equal(closed.title, "Artifact review recorded");
+  assert.equal(closed.metadata.taskQuality.completionAuthorized, true);
+  assert.equal(fake.reviews.at(-1).rereview?.reviewID, "review-artifact-1");
   assert.equal(fake.state(sessionID).data.phase, "artifact-reviewed");
-  assert.equal(fake.state(sessionID).data.addressReceipt.postReportReceiptCount, 1);
+  assert.equal(fake.state(sessionID).data.addressReceipt.postReportReceiptCount, 2);
+  assert.equal(fake.state(sessionID).data.reviewRounds, 1);
   clearRouteHandoff(sessionID);
 });
 
@@ -1576,11 +1792,24 @@ test("engine terminal artifact hold routes CRAP repair back through a new receip
   assert.equal(approvalBound.hold, true);
 
   const report = "Repair the overflow branch and rerun the proof.";
-  fake.setReview(async (input) => ({
-    route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
-    submission: { kind: input.submission.kind, digest: digestText(input.submission.content) },
-    review: { status: "complete", report, reportDigest: digestText(report), reviewID: "review-terminal-artifact-1", completedAt: 30, toolCalls: 0 },
-  }));
+  fake.setReview(async (input) => {
+    if (input.rereview) {
+      return {
+        route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
+        submission: { kind: input.submission.kind, digest: input.submission.digest },
+        review: {
+          status: "complete",
+          rereview: { reviewID: input.rereview.reviewID },
+          result: { verdict: "pass", summary: "overflow repair verified", findings: [], dispositions: [] },
+        },
+      };
+    }
+    return {
+      route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
+      submission: { kind: input.submission.kind, digest: digestText(input.submission.content) },
+      review: { status: "complete", report, reportDigest: digestText(report), reviewID: "review-terminal-artifact-1", completedAt: 30, toolCalls: 0 },
+    };
+  });
   const firstOutput = { text: "Implemented the approved change and the focused proof passed." };
   await hooks["experimental.task_quality.terminal"](
     { sessionID, messageID: "msg-artifact", parentMessageID: "msg-go", text: firstOutput.text },
@@ -1607,6 +1836,222 @@ test("engine terminal artifact hold routes CRAP repair back through a new receip
   );
   assert.equal(fake.state(sessionID).data.phase, "artifact-reviewed");
   assert.equal(fake.state(sessionID).data.addressReceipt.postReportReceiptCount, 1);
-  assert.match(repairedOutput.text, /reran the proof successfully/i);
+  assert.equal(fake.reviews.at(-1).rereview?.reviewID, "review-terminal-artifact-1");
+  assert.match(repairedOutput.text, /passed an independent re-review/i);
   clearRouteHandoff(sessionID);
+});
+
+// ---------------------------------------------------------------------------
+// FIX-3: the completion gate's actionable interceptions must be legible - each
+// must tell the builder the true STATE, the exact NEXT ACTION (literal
+// checkpoint tool + its receipt/resubmission precondition), and the pending
+// REVIEW FINDINGS - and must escalate to imperative numbered steps when the
+// same phase intercepts a third consecutive time.
+// ---------------------------------------------------------------------------
+
+async function runCompletionGate(fake, hooks, sessionID, data, { generation = 1 } = {}) {
+  const current = fake.state(sessionID);
+  await fake.internal.update({
+    sessionID,
+    expectedRevision: current ? current.revision : 0,
+    expectedGeneration: current ? current.generation : 0,
+    generation,
+    data,
+  });
+  const out = { text: "Everything is complete and verified; nothing is pending." };
+  await hooks["experimental.text.complete"](
+    { sessionID, messageID: `${sessionID}-assistant`, partID: "part-final" },
+    out,
+  );
+  return out.text;
+}
+
+test("FIX-3/A3.1: each actionable interception names its checkpoint tool and receipt/state requirement, and pending-artifact round-trips the findings excerpt", async () => {
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({
+    client: fake.client,
+    experimental_task_quality: fake.internal,
+    experimental_internal_automation: fake.automation,
+  });
+
+  const artifactReport =
+    "Finding 1: parsePort returns null for the zero-padded input '003000'.\n" +
+    "Finding 2: formatEndpoint drops the port when the port equals 1.\n" +
+    "Required: repair both and re-run the port probes before re-review.";
+
+  // 1) pendingArtifact - approved with an open artifact-review report pending repair.
+  const pendingArtifactText = await runCompletionGate(fake, hooks, "ses-a31-pending-artifact", {
+    version: 1,
+    phase: "approved",
+    pendingReview: { kind: "artifact", reviewID: "r-pa", report: artifactReport, delivery: { messageID: "m-pa" } },
+  });
+  assert.match(pendingArtifactText, /task_quality_artifact_checkpoint/);
+  assert.match(pendingArtifactText, /new/i);
+  assert.match(pendingArtifactText, /receipt/i);
+  assert.match(pendingArtifactText, /pending repair/i);
+  // Round-trip: the exact synthetic findings surface inside the interception.
+  assert.ok(
+    pendingArtifactText.includes(artifactReport),
+    "pending-artifact interception must echo the review findings",
+  );
+
+  // 2) repairableFailed - artifact-review-failed with the approval still intact.
+  const repairableReport = "Re-review gap: the lower-bound port case is still unhandled.";
+  const repairableFailedText = await runCompletionGate(fake, hooks, "ses-a31-repairable", {
+    version: 1,
+    phase: "artifact-review-failed",
+    generation: 1,
+    repairedPlan: { generation: 1, digest: "plan-digest-a31" },
+    approval: { generation: 1, planDigest: "plan-digest-a31" },
+    reviewHistory: [{ report: repairableReport, disposition: "rereview-non-pass" }],
+  });
+  assert.match(repairableFailedText, /task_quality_artifact_checkpoint/);
+  assert.match(repairableFailedText, /new/i);
+  assert.match(repairableFailedText, /receipt/i);
+  assert.ok(
+    repairableFailedText.includes(repairableReport),
+    "repairable interception must echo the last review findings from history",
+  );
+
+  // 3) rereviewParked - awaiting-artifact-rereview: no new receipt, byte-exact resubmit only.
+  const parkedReport = "Parked findings: the re-review verdict never persisted for the addressed submission.";
+  const rereviewParkedText = await runCompletionGate(fake, hooks, "ses-a31-parked", {
+    version: 1,
+    phase: "awaiting-artifact-rereview",
+    pendingReview: { kind: "artifact", reviewID: "r-rp", report: parkedReport, delivery: { messageID: "m-rp" } },
+    rereview: { addressedDigest: "digest-addressed" },
+  });
+  assert.match(rereviewParkedText, /task_quality_artifact_checkpoint/);
+  assert.match(rereviewParkedText, /awaiting-artifact-rereview/);
+  assert.match(rereviewParkedText, /exact same addressed artifact bytes/i);
+  assert.ok(rereviewParkedText.includes(parkedReport));
+
+  // 4) pendingPlan - awaiting-plan-repair: the PLAN checkpoint tool, not the artifact one.
+  const planReport = "Plan finding: step 3 declares no acceptance check.";
+  const pendingPlanText = await runCompletionGate(fake, hooks, "ses-a31-plan", {
+    version: 1,
+    phase: "awaiting-plan-repair",
+    pendingReview: { kind: "plan", reviewID: "r-pp", report: planReport, delivery: { messageID: "m-pp" } },
+  });
+  assert.match(pendingPlanText, /task_quality_checkpoint/);
+  assert.doesNotMatch(pendingPlanText, /task_quality_artifact_checkpoint/);
+  assert.match(pendingPlanText, /repaired plan/i);
+  assert.ok(pendingPlanText.includes(planReport));
+
+  // 5) awaiting - approved task still needs its first independent review.
+  const awaitingText = await runCompletionGate(fake, hooks, "ses-a31-awaiting", {
+    version: 1,
+    phase: "awaiting-artifact-review",
+  });
+  assert.match(awaitingText, /task_quality_artifact_checkpoint/);
+  assert.match(awaitingText, /artifact review is still required/i);
+  assert.match(awaitingText, /receipt/i);
+
+  // While non-escalated (a single interception each), every actionable message
+  // opens with STATE: and offers a single NEXT ACTION:, never numbered steps.
+  for (const text of [pendingArtifactText, repairableFailedText, rereviewParkedText, pendingPlanText, awaitingText]) {
+    assert.match(text, /^STATE:/);
+    assert.match(text, /NEXT ACTION:/);
+    assert.doesNotMatch(text, /Do exactly this, in order/);
+  }
+});
+
+test("FIX-3/A3.1: the review-findings excerpt is byte-bounded to 1 KB and marks truncation", async () => {
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({
+    client: fake.client,
+    experimental_task_quality: fake.internal,
+    experimental_internal_automation: fake.automation,
+  });
+  const longReport = "HEAD-MARK " + "x".repeat(4000);
+  const text = await runCompletionGate(fake, hooks, "ses-a31-bounded", {
+    version: 1,
+    phase: "approved",
+    pendingReview: { kind: "artifact", reviewID: "r-long", report: longReport, delivery: { messageID: "m-long" } },
+  });
+  const marker = "REVIEW FINDINGS (excerpt): ";
+  const idx = text.indexOf(marker);
+  assert.ok(idx >= 0, "the interception must include a findings excerpt");
+  const excerpt = text.slice(idx + marker.length);
+  assert.match(excerpt, /HEAD-MARK/);
+  assert.match(excerpt, /\[\.\.\.\]$/);
+  assert.ok(Buffer.byteLength(excerpt, "utf8") <= 1024, "excerpt must not exceed the 1 KB byte bound");
+  assert.ok(
+    Buffer.byteLength(excerpt, "utf8") < Buffer.byteLength(longReport, "utf8"),
+    "a long report must actually be truncated",
+  );
+});
+
+test("FIX-3/A3.2: a third consecutive same-phase interception escalates to numbered steps, and a phase change resets escalation", async () => {
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({
+    client: fake.client,
+    experimental_task_quality: fake.internal,
+    experimental_internal_automation: fake.automation,
+  });
+  const sessionID = "ses-a32-escalation";
+  const report = "Finding: the retry path still swallows the zero-padded port.";
+  const pendingArtifactData = {
+    version: 1,
+    phase: "approved",
+    pendingReview: { kind: "artifact", reviewID: "r-esc", report, delivery: { messageID: "m-esc" } },
+  };
+  await fake.internal.update({
+    sessionID,
+    expectedRevision: 0,
+    expectedGeneration: 0,
+    generation: 1,
+    data: pendingArtifactData,
+  });
+
+  async function gate(messageID) {
+    const out = { text: "Everything is complete and verified." };
+    await hooks["experimental.text.complete"]({ sessionID, messageID, partID: "p" }, out);
+    return out.text;
+  }
+
+  const first = await gate("m1");
+  const second = await gate("m2");
+  const third = await gate("m3");
+
+  // The first two same-phase interceptions stay in the legible NEXT ACTION form.
+  for (const text of [first, second]) {
+    assert.match(text, /NEXT ACTION:/);
+    assert.doesNotMatch(text, /Do exactly this, in order/);
+  }
+  // The third consecutive interception in the same phase escalates to steps.
+  assert.doesNotMatch(third, /NEXT ACTION:/);
+  assert.match(third, /Do exactly this, in order/);
+  assert.match(third, /\n1\. /);
+  assert.match(third, /\n2\. /);
+  assert.match(third, /\n3\. /);
+  assert.match(third, /task_quality_artifact_checkpoint/);
+
+  // A genuine phase change resets escalation: the next interception in a
+  // different phase is back to the non-escalated NEXT ACTION form.
+  const afterState = fake.state(sessionID);
+  await fake.internal.update({
+    sessionID,
+    expectedRevision: afterState.revision,
+    expectedGeneration: afterState.generation,
+    generation: 1,
+    data: { version: 1, phase: "awaiting-artifact-review" },
+  });
+  const afterPhaseChange = await gate("m4");
+  assert.match(afterPhaseChange, /NEXT ACTION:/);
+  assert.doesNotMatch(afterPhaseChange, /Do exactly this, in order/);
+
+  // Returning to the original phase starts a fresh count, so it is not
+  // immediately re-escalated - the counter tracked only the same-phase stall.
+  const backState = fake.state(sessionID);
+  await fake.internal.update({
+    sessionID,
+    expectedRevision: backState.revision,
+    expectedGeneration: backState.generation,
+    generation: 1,
+    data: pendingArtifactData,
+  });
+  const backToPending = await gate("m5");
+  assert.match(backToPending, /NEXT ACTION:/);
+  assert.doesNotMatch(backToPending, /Do exactly this, in order/);
 });

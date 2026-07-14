@@ -55,10 +55,14 @@ export function createLifecycleAdapter(_client, internal, reviewers = []) {
         const identity = [failure.providerID, failure.modelID].filter((value) => typeof value === 'string' && value).join('/')
         throw new Error(`isolated review ${String(payload.review.status || 'failed')}${identity ? ` on ${identity}` : ''}${parts.length ? `: ${parts.join(': ')}` : ''}`)
       }
+      const rereviewID = typeof input?.rereview?.reviewID === 'string' && input.rereview.reviewID ? input.rereview.reviewID : null
       // A healthy HSS structured pass retains the established one-call path.
       // Same-model CRAP deliberately uses an ordinary final text report so
       // thinking providers are not forced through an incompatible tool_choice.
-      if (!payload.review.result && payload.route.kind === 'crap') {
+      // A re-review never takes this branch: its CRAP report is parsed into a
+      // bound verdict by the engine, and an engine that cannot do that must
+      // fail closed below instead of restarting the findings cycle.
+      if (!rereviewID && !payload.review.result && payload.route.kind === 'crap') {
         const reportValue = typeof payload.review.report === 'string' ? payload.review.report : payload.review.report?.text
         if (typeof reportValue !== 'string' || !reportValue.trim() || Buffer.byteLength(reportValue, 'utf8') > 24 * 1024) throw new Error('the engine returned a completed CRAP review without a bounded plain-language report')
         const reviewID = payload.review.reviewID ?? payload.review.id ?? payload.reviewID
@@ -75,7 +79,24 @@ export function createLifecycleAdapter(_client, internal, reviewers = []) {
           plainReport: Object.freeze({ reviewID, text: reportValue, reportDigest, completedAt, toolCount, model: routeModel }),
         }
       }
-      if (!payload.review.result) throw new Error('the engine returned an incomplete isolated review result')
+      if (!payload.review.result) {
+        throw new Error(rereviewID
+          ? 'the engine did not return a bound re-review verdict for the addressed artifact; install the engine matching this release'
+          : 'the engine returned an incomplete isolated review result')
+      }
+      if (rereviewID) {
+        // The verdict must be engine-attested against the exact requested
+        // re-review. An engine that ignored the rereview input (or an older
+        // engine) would return an unbound fresh review here; fail closed so a
+        // stand-in review can never settle the locked findings.
+        if (payload.review.rereview?.reviewID !== rereviewID) throw new Error('the engine review result is not bound to the requested re-review identity')
+        const verdict = payload.review.result.verdict
+        if (verdict !== 'pass' && verdict !== 'needs_changes' && verdict !== 'blocked') throw new Error('the engine returned a re-review without a readable verdict')
+        // A non-pass re-review is an expected bounded outcome the lifecycle
+        // classifies into repair rounds — return it, never flatten it into
+        // the transport-failure throw below.
+        return { route: payload.route, submission: payload.submission, result: payload.review.result }
+      }
       // Do not flatten a non-passing result into the generic lifecycle error
       // below. It is an expected adversarial outcome, not an infrastructure
       // failure, and the builder needs to repair the submitted plan instead

@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { tool } from "@opencode-ai/plugin";
 import { createLifecycleAdapter, normalizeSnapshot } from "./adapter.mjs";
+import { warnOnce } from "./observability.mjs";
 import { configuredReviewerCandidates } from "./reviewer.mjs";
 import { getRouteHandoff, digestText } from "./handoff.mjs";
 import {
@@ -26,6 +27,7 @@ import {
   recordArtifactReviewDenied,
   recordPendingArtifactReview,
   recordAddressedArtifact,
+  recordArtifactRereview,
   recordReviewDelivered,
   recordExecutionPermissionRejected,
   recordExecutionStarted,
@@ -51,7 +53,28 @@ const LOG = process.env.TASK_QUALITY_LOG || join(tmpdir(), "task-quality.log");
 const MAX_SUBMISSION_CHARS = 24000;
 const MAX_ACCEPTANCE_CRITERIA = 32;
 const MAX_CRITERION_CHARS = 2000;
+// FIX-3 (legible settlement protocol): the bounded (<=1 KB) findings excerpt an
+// interception message echoes so the builder can see WHAT to fix, not merely
+// that it is blocked.
+const INTERCEPTION_CONTEXT_BYTES = 1024;
 const APPROVAL_REVOCATION_CAS_ATTEMPTS = PENDING_EXECUTION_LIMIT + 2;
+// FIX-2: bounded repair rounds before an honest terminal DECLINED. The
+// lifecycle enforces its own default cap; this knob only overrides it within
+// a sane range, and anything unset or invalid falls back to that default.
+const REVIEW_ROUNDS_CAP_OVERRIDE = (() => {
+  const value = Number.parseInt(
+    process.env.TASK_QUALITY_REVIEW_ROUNDS_CAP || "",
+    10,
+  );
+  return Number.isSafeInteger(value) && value >= 1 && value <= 10
+    ? value
+    : null;
+})();
+// FIX-3: this is a MATCHER, not display text. Its exact value is a substring of
+// the lifecycle's thrown guard error (lifecycle.mjs recordAddressedArtifact), so
+// the terminal handler can recognize a missing-post-report-receipt failure and
+// preserve the pending review. The builder-facing wording lives in the aligned
+// interception messages below; do not extend this string or the match breaks.
 const POST_REPORT_RECEIPT_REQUIRED =
   "at least one newly settled post-report execution or verification receipt is required";
 const CRAP_ARTIFACT_RECOVERY_PROMPT = [
@@ -60,10 +83,19 @@ const CRAP_ARTIFACT_RECOVERY_PROMPT = [
   "Do not answer it in prose. Stay within the already approved task scope: address each concrete defect it identifies, run at least one relevant verification so a new post-report receipt settles, then call task_quality_artifact_checkpoint again with the updated artifact and exact evidence.",
   "Engine-attested lifecycle facts override stale plan-only or pre-GO wording in the original objective. Do not make a completion claim unless that checkpoint returns title 'Artifact review recorded' with taskQuality.completionAuthorized=true.",
 ].join(" ");
+const CRAP_PARKED_REREVIEW_RECOVERY_PROMPT = [
+  "[task-quality re-review recovery]",
+  "STATE: this session is parked in the awaiting-artifact-rereview phase - the addressed artifact is durably recorded, but its isolated re-review verdict never persisted, and you cannot self-exit this phase.",
+  "NEXT ACTION: do not revise the artifact and do not answer in prose; call task_quality_artifact_checkpoint again with the exact same addressed artifact bytes. No new receipt is needed and the recovery guard rejects any other content, so that byte-exact call is the only thing that re-runs the stalled re-review.",
+  "Do not make a completion claim unless that checkpoint returns title 'Artifact review recorded' with taskQuality.completionAuthorized=true.",
+].join(" ");
 function log(message) {
   try {
     appendFileSync(LOG, `[${new Date().toISOString()}] ${message}\n`);
-  } catch {}
+  } catch (error) {
+    // FIX-6: surface log-append failures once instead of swallowing silently.
+    warnOnce("task-quality.log append", error);
+  }
 }
 
 function textParts(output) {
@@ -100,6 +132,120 @@ function boundedCriteria(value) {
       throw new TypeError("acceptance criteria must be non-empty concise text");
     return criterion;
   });
+}
+
+// FIX-3: a UTF-8 byte-bounded head excerpt of the pending review findings,
+// echoed into an interception message so the builder sees WHAT to fix. Never
+// splits a multi-byte sequence and never exceeds INTERCEPTION_CONTEXT_BYTES.
+function reviewFindingsExcerpt(text) {
+  if (typeof text !== "string") return "";
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  const full = Buffer.from(trimmed, "utf8");
+  if (full.length <= INTERCEPTION_CONTEXT_BYTES) return trimmed;
+  let end = INTERCEPTION_CONTEXT_BYTES - 16;
+  while (end > 0 && (full[end] & 0xc0) === 0x80) end--;
+  return `${full.subarray(0, end).toString("utf8")}\n[...]`;
+}
+
+// The findings for a state: the open pending review when one exists, else the
+// most recent bounded reviewHistory entry. A repairable non-pass round clears
+// pendingReview but preserves the findings in history, so this stays truthful
+// across the artifact-review-failed phase too.
+function interceptionFindings(lifecycle) {
+  if (typeof lifecycle?.pendingReview?.report === "string")
+    return lifecycle.pendingReview.report;
+  const history = Array.isArray(lifecycle?.reviewHistory)
+    ? lifecycle.reviewHistory
+    : [];
+  const last = history.length ? history[history.length - 1] : null;
+  return typeof last?.report === "string" ? last.report : "";
+}
+
+// FIX-3: the five actionable completion-gate interceptions share one fixed
+// three-part shape - (1) STATE: the true lifecycle posture, (2) NEXT ACTION:
+// the literal checkpoint tool plus its precondition, (3) REVIEW FINDINGS: a
+// bounded excerpt of the pending report. On the third consecutive interception
+// in the same phase (noteInterception) the NEXT ACTION collapses to imperative
+// numbered steps that name the missing receipt kind outright.
+const INTERCEPTIONS = {
+  pendingArtifact: {
+    phaseName: "approved - artifact-review report open and pending repair",
+    meaning:
+      "an independent artifact-review report is open and pending repair; completion stays closed until an addressed re-submission re-reviews as pass.",
+    action:
+      "First make the change that addresses the findings, then run your verification so a NEW post-report execution or verification receipt is captured - re-sending text without a new receipt will be rejected - then call task_quality_artifact_checkpoint with the addressed artifact.",
+    steps: [
+      "Make the concrete change that addresses each finding listed below.",
+      "Run the relevant verification so a new post-report execution or verification receipt settles; re-sending text without a new receipt will be rejected.",
+      "Call task_quality_artifact_checkpoint with the addressed artifact and that new receipt.",
+    ],
+  },
+  repairableFailed: {
+    phaseName: "artifact-review-failed - approval still valid for repair",
+    meaning:
+      "the last independent re-review found gaps, and your existing approval still covers repairing them in place.",
+    action:
+      "Fix the identified gaps within the approved scope, run your verification so a NEW verification receipt settles, then call task_quality_artifact_checkpoint with the repaired artifact.",
+    steps: [
+      "Fix each gap listed below, staying inside the already approved scope.",
+      "Run the relevant verification so a new verification receipt settles.",
+      "Call task_quality_artifact_checkpoint with the repaired artifact and that new receipt.",
+    ],
+  },
+  rereviewParked: {
+    phaseName: "awaiting-artifact-rereview - parked pending a bound verdict",
+    meaning:
+      "the addressed artifact is durably recorded but its isolated re-review verdict never persisted; you cannot self-exit this phase and no new receipt is needed - only a byte-exact resubmission re-runs the stalled re-review.",
+    action:
+      "Call task_quality_artifact_checkpoint again with the exact same addressed artifact bytes; the recovery guard rejects any other content, so do not revise the artifact and do not resend prose.",
+    steps: [
+      "Do not edit the artifact and do not answer in prose.",
+      "Call task_quality_artifact_checkpoint with the exact same addressed artifact bytes you already submitted.",
+      "Wait for the re-review verdict; only completionAuthorized=true authorizes a completion claim.",
+    ],
+  },
+  pendingPlan: {
+    phaseName: "awaiting-plan-repair - plan review open",
+    meaning:
+      "a plain-language plan review is open; no plan, GO, mutation, or completion is authorized until the repaired plan is recorded.",
+    action:
+      "Address the findings and call task_quality_checkpoint with the repaired plan; that new checkpoint must record the repaired plan before you ask for GO.",
+    steps: [
+      "Address each plan finding listed below.",
+      "Call task_quality_checkpoint with the repaired plan and concrete acceptance criteria.",
+      "Wait for a fresh external GO before any mutation.",
+    ],
+  },
+  awaiting: {
+    phaseName: "awaiting-artifact-review - approved task still unreviewed",
+    meaning:
+      "artifact review is still required for the approved task; it still needs its first independent review, and no completion is authorized until that review passes.",
+    action:
+      "Call task_quality_artifact_checkpoint with the completed artifact and its exact acceptance evidence, including the settled execution receipts; no completion is authorized until it records a passing review.",
+    steps: [
+      "Finish the artifact so it satisfies every acceptance criterion.",
+      "Run verification so the required execution receipts settle.",
+      "Call task_quality_artifact_checkpoint with the artifact and its exact acceptance evidence.",
+    ],
+  },
+};
+
+function interceptionMessage(key, lifecycle, escalated) {
+  const spec = INTERCEPTIONS[key];
+  if (!spec) return "";
+  const excerpt = reviewFindingsExcerpt(interceptionFindings(lifecycle));
+  const lines = [`STATE: ${spec.phaseName}. ${spec.meaning}`];
+  if (escalated) {
+    lines.push(
+      "You have been intercepted here repeatedly. Do exactly this, in order:",
+    );
+    spec.steps.forEach((step, index) => lines.push(`${index + 1}. ${step}`));
+  } else {
+    lines.push(`NEXT ACTION: ${spec.action}`);
+  }
+  if (excerpt) lines.push(`REVIEW FINDINGS (excerpt): ${excerpt}`);
+  return lines.join("\n");
 }
 
 function policyIsValid() {
@@ -581,19 +727,99 @@ async function captureTerminalPlan(adapter, input) {
   return false;
 }
 
+// FIX-2: the addressed artifact is a claim parked in awaiting-artifact-rereview.
+// This runs the one exit: a real isolated re-review bound to the exact
+// addressed bytes and judged against the preserved original findings. A
+// reviewer transport or contract failure is recorded fail-closed as a consumed
+// repair round rather than thrown, so the parked state can never silently pass
+// or leave the generation dangling on an infrastructure error.
+async function runArtifactRereview(adapter, sessionID, expected, lifecycle, artifact) {
+  const digest = digestPlan(artifact);
+  let review = null;
+  let failureReason = null;
+  try {
+    review = await adapter.review({
+      sessionID,
+      contract: lifecycle.taskContract || "",
+      acceptanceCriteria: lifecycle.acceptanceCriteria || [],
+      submission: { kind: "artifact", content: artifact, digest },
+      rereview: { reviewID: lifecycle.pendingReview.reviewID },
+    });
+  } catch (error) {
+    failureReason = error?.message || String(error);
+  }
+  return await persistCurrentTransition(adapter, sessionID, expected, (current) =>
+    recordArtifactRereview(current, artifact, {
+      ...(review ? { review } : { failureReason }),
+      reviewedDigest: digest,
+      ...(REVIEW_ROUNDS_CAP_OVERRIDE
+        ? { roundsCap: REVIEW_ROUNDS_CAP_OVERRIDE }
+        : {}),
+    }),
+  );
+}
+
+function rereviewOutcomeText(recorded) {
+  if (recorded.phase === "artifact-reviewed")
+    return "The addressed artifact passed an independent re-review against the original findings. This task generation is closed; begin a new routed task before further implementation.";
+  if (recorded.phase === "declined")
+    return `No completion claim is authorized. The bounded repair rounds are exhausted without a passing re-review and this task is durably declined: ${recorded.reviewDecline?.detail || "the re-review did not pass"}. Report the failure honestly instead of retrying.`;
+  return `No completion claim is authorized. The independent re-review did not pass: ${recorded.artifactReviewFailure?.reason || "the re-review found unresolved gaps"}. Repair within the approved scope, record fresh verification evidence, and call task_quality_artifact_checkpoint again.`;
+}
+
+function rereviewToolResult(recorded) {
+  // The exact pass title is load-bearing: the completion-claim gates authorize
+  // a completion only on "Artifact review recorded" + completionAuthorized.
+  if (recorded.phase === "artifact-reviewed") {
+    return {
+      title: "Artifact review recorded",
+      output: rereviewOutcomeText(recorded),
+      metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, artifactDigest: recorded.reviewedArtifact.digest, completionAuthorized: true, reviewID: recorded.addressReceipt.reviewID, reportDigest: recorded.addressReceipt.reportDigest, deliveryMessageID: recorded.addressReceipt.deliveryMessageID, reviewRounds: recorded.reviewRounds } },
+    };
+  }
+  if (recorded.phase === "declined") {
+    return {
+      title: "Artifact review declined",
+      output: rereviewOutcomeText(recorded),
+      metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, completionAuthorized: false, reviewRounds: recorded.reviewRounds, declineReason: recorded.reviewDecline?.reason || null } },
+    };
+  }
+  return {
+    title: "Artifact re-review found gaps",
+    output: rereviewOutcomeText(recorded),
+    metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, completionAuthorized: false, reviewRounds: recorded.reviewRounds } },
+  };
+}
+
 async function captureTerminalArtifact(adapter, input) {
   const snapshot = normalizeSnapshot(await adapter.get(input.sessionID));
   const lifecycle = snapshot.data;
+  if (
+    lifecycle?.phase === "awaiting-artifact-rereview" &&
+    lifecycle.pendingReview?.kind === "artifact"
+  ) {
+    // FIX-2: a parked re-review is recovered through the checkpoint tool with
+    // the exact addressed artifact; a fresh prose turn must not double-address
+    // or stand in for the missing verdict.
+    return {
+      handled: true,
+      visibleText:
+        "The addressed artifact is parked awaiting its independent re-review. Call task_quality_artifact_checkpoint again with the exact addressed artifact so the re-review can run. No completion claim is authorized yet.",
+    };
+  }
   const isPendingRepair =
     lifecycle?.pendingReview?.kind === "artifact" &&
     lifecycle.pendingReview.delivery?.messageID === input.parentMessageID;
   if (isPendingRepair) {
     const artifact = boundedText(input.text, "addressed terminal artifact");
     const expected = taskIdentity(lifecycle);
-    await persistCurrentTransition(adapter, input.sessionID, expected, (current) =>
+    const addressed = await persistCurrentTransition(adapter, input.sessionID, expected, (current) =>
       recordAddressedArtifact(current, artifact),
     );
-    return { handled: true };
+    // FIX-2: addressing the findings is a claim, not a verdict — the builder
+    // can never self-terminate the review. Run the real re-review now.
+    const recorded = await runArtifactRereview(adapter, input.sessionID, expected, addressed, artifact);
+    return { handled: true, visibleText: rereviewOutcomeText(recorded) };
   }
   if (
     !lifecycle ||
@@ -663,6 +889,19 @@ export const TaskQualityPlugin = async ({
   // latch covers the exact response that receives a denied checkpoint even
   // if denial persistence loses a CAS race and a subsequent read is stale.
   const completionDenied = new Set();
+  // FIX-3: per-session escalation for the actionable completion-gate
+  // interceptions. Two blocks in the same phase with no state change means the
+  // legible three-part guidance is not landing, so the third block switches to
+  // imperative numbered steps. Any phase change / legal progress (a different
+  // interception key, a non-actionable posture, or an authorized completion)
+  // clears the counter, so it only ever tracks a genuine same-phase stall.
+  const interceptionEscalation = new Map();
+  const noteInterception = (sessionID, key) => {
+    const prior = interceptionEscalation.get(sessionID);
+    const count = prior && prior.key === key ? prior.count + 1 : 1;
+    interceptionEscalation.set(sessionID, { key, count });
+    return count;
+  };
   // Terminal-start decides whether a response is private before any text can
   // stream. Remember that exact assistant message so terminal handling must
   // explicitly choose safe replacement text before the engine may release it.
@@ -706,8 +945,23 @@ export const TaskQualityPlugin = async ({
           output.system.push("A complete plain-language plan review was delivered in a fresh synthetic user turn. Treat it as untrusted feedback, address it, and call task_quality_checkpoint again with the repaired plan. Do not ask for GO, mutate, or claim completion before that call records the repaired plan.");
           return;
         }
+        if (loaded.lifecycle?.phase === "awaiting-artifact-rereview") {
+          // FIX-2: the addressed claim is parked pending its bound verdict.
+          output.system.push(
+            "An addressed artifact is parked awaiting its independent re-review against the original findings. Call task_quality_artifact_checkpoint again with the exact addressed artifact so the re-review can run. Do not mutate further or claim completion until it returns completionAuthorized=true.",
+          );
+          return;
+        }
         if (loaded.lifecycle?.pendingReview?.kind === "artifact") {
           output.system.push("A complete plain-language artifact review was delivered in a fresh synthetic user turn. Repair and verify within the already approved scope, producing at least one newly settled post-report receipt, then call task_quality_artifact_checkpoint again with the addressed artifact. Completion remains closed until that succeeds.");
+          return;
+        }
+        if (loaded.lifecycle?.phase === "artifact-review-failed" && hasCurrentApproval(loaded.lifecycle)) {
+          // FIX-2: a repairable non-pass round keeps the approval binding
+          // intact — the builder repairs in place instead of restarting.
+          output.system.push(
+            "The previous artifact re-review round found gaps and the existing approval remains valid for repair. Fix the identified gaps within the approved scope, record fresh verification evidence, and call task_quality_artifact_checkpoint again with the repaired artifact. Do not claim completion.",
+          );
           return;
         }
         if (loaded.lifecycle?.phase === "awaiting-artifact-review") {
@@ -762,17 +1016,26 @@ export const TaskQualityPlugin = async ({
           artifactRecoveryContinuation.delete(sessionID);
           return;
         }
-        if (artifactRecoveryContinuation.get(sessionID) === pending.reviewID)
+        // The parked re-review phase has a different legal exit than an open
+        // repair (a byte-exact resubmission of the addressed artifact, not an
+        // updated one), so both the prompt and the dedup key are phase-aware:
+        // one continuation per review posture, still bounded because posture
+        // changes require real durable lifecycle transitions.
+        const parked = lifecycle?.phase === "awaiting-artifact-rereview";
+        const continuationKey = `${pending.reviewID}:${parked ? "rereview" : "repair"}`;
+        if (artifactRecoveryContinuation.get(sessionID) === continuationKey)
           return;
         if (typeof internalAutomation?.continue !== "function") {
           log(`artifact CRAP recovery unavailable for ${sessionID}: engine internal automation bridge is missing`);
           return;
         }
-        artifactRecoveryContinuation.set(sessionID, pending.reviewID);
+        artifactRecoveryContinuation.set(sessionID, continuationKey);
         try {
           await internalAutomation.continue({
             sessionID,
-            text: CRAP_ARTIFACT_RECOVERY_PROMPT,
+            text: parked
+              ? CRAP_PARKED_REREVIEW_RECOVERY_PROMPT
+              : CRAP_ARTIFACT_RECOVERY_PROMPT,
           });
           log(`artifact CRAP recovery continuation queued for ${sessionID}`);
         } catch (error) {
@@ -857,10 +1120,29 @@ export const TaskQualityPlugin = async ({
           completionDenied.delete(input.sessionID);
           if (output && typeof output.text === "string")
             output.text =
-              "Artifact review feedback is still pending a concrete repair or fresh verification receipt. No completion claim is authorized.";
+              "Artifact review feedback is still pending repair. Run your verification so a NEW post-report execution or verification receipt settles - re-sending text without a new receipt will be rejected - then call task_quality_artifact_checkpoint with the addressed artifact. No completion claim is authorized yet.";
           if (held && output && typeof output.text === "string") output.release = true;
           log(`terminal artifact repair remains pending: ${error?.message || error}`);
           return;
+        }
+        // Every repair-precondition guard (unresolved execution, missing
+        // post-report receipt, byte-identical resubmission without a fresh
+        // verification receipt) throws before any lifecycle transition
+        // persists, so the pending artifact review survives intact. Mirror
+        // the explicit checkpoint path: a still-open pending review is a
+        // repairable omission, never grounds for closing the generation.
+        try {
+          const current = normalizeSnapshot(await adapter.get(input.sessionID)).data;
+          if (current?.pendingReview?.kind === "artifact") {
+            completionDenied.delete(input.sessionID);
+            if (output && typeof output.text === "string")
+              output.text = `No completion claim is authorized; the pending artifact review remains open: ${error?.message || error}`;
+            if (held && output && typeof output.text === "string") output.release = true;
+            log(`terminal artifact repair remains pending: ${error?.message || error}`);
+            return;
+          }
+        } catch (recheckError) {
+          log(`terminal artifact pending recheck error: ${recheckError?.message || recheckError}`);
         }
         completionDenied.add(input.sessionID);
         if (output && typeof output.text === "string")
@@ -885,6 +1167,7 @@ export const TaskQualityPlugin = async ({
     "experimental.text.complete": async (input, output) => {
       if (!active || !input?.sessionID || !output || typeof output.text !== "string") return;
       if (planCheckpointDenied.has(input.sessionID)) {
+        interceptionEscalation.delete(input.sessionID);
         output.text = "The plan checkpoint was not recorded, so no implementation or approval is authorized. Resolve the routing or lifecycle failure and checkpoint the plan successfully before asking for GO.";
         return;
       }
@@ -893,9 +1176,23 @@ export const TaskQualityPlugin = async ({
       let settling = false;
       let pendingPlan = false;
       let pendingArtifact = false;
+      let repairableFailed = false;
+      let rereviewParked = false;
+      let roundsExhausted = false;
+      // FIX-3: hoisted so the actionable branches below can read the pending
+      // review report / reviewHistory that feeds the interception excerpt.
+      let lifecycle = null;
       try {
-        const lifecycle = normalizeSnapshot(await adapter.get(input.sessionID)).data;
-        if (lifecycle?.phase === "artifact-review-failed") denied = true;
+        lifecycle = normalizeSnapshot(await adapter.get(input.sessionID)).data;
+        if (lifecycle?.phase === "artifact-review-failed") {
+          // FIX-2: an intact approval binding means a repairable re-review
+          // round, not a closed generation — the messages must not conflate
+          // the two or the builder restarts work the approval still covers.
+          if (hasCurrentApproval(lifecycle)) repairableFailed = true;
+          else denied = true;
+        }
+        if (lifecycle?.phase === "awaiting-artifact-rereview") rereviewParked = true;
+        if (lifecycle?.phase === "declined" && lifecycle.reviewDecline) roundsExhausted = true;
         if (lifecycle?.phase === "awaiting-artifact-review") awaiting = true;
         if (lifecycle?.revocationPending) settling = true;
         if (lifecycle?.pendingReview?.kind === "plan") pendingPlan = true;
@@ -905,26 +1202,69 @@ export const TaskQualityPlugin = async ({
         // never replace unrelated text merely because a later read failed.
         log(`completion gate state read error: ${error?.message || error}`);
       }
+      // FIX-3: the five actionable postures below share one legible three-part
+      // interception (STATE / NEXT ACTION / REVIEW FINDINGS) and an escalation
+      // counter (noteInterception): a third consecutive block in the same phase
+      // collapses NEXT ACTION into imperative numbered steps. The three
+      // non-actionable postures (roundsExhausted, denied, settling) and the
+      // clean pass-through clear the counter so it only tracks a same-phase
+      // stall. Branch precedence is preserved exactly.
+      if (rereviewParked) {
+        output.text = interceptionMessage(
+          "rereviewParked",
+          lifecycle,
+          noteInterception(input.sessionID, "rereviewParked") >= 3,
+        );
+        return;
+      }
+      if (repairableFailed) {
+        output.text = interceptionMessage(
+          "repairableFailed",
+          lifecycle,
+          noteInterception(input.sessionID, "repairableFailed") >= 3,
+        );
+        return;
+      }
+      if (roundsExhausted) {
+        interceptionEscalation.delete(input.sessionID);
+        output.text = "The bounded artifact repair rounds are exhausted without a passing re-review, and this task is durably declined. No completion claim is authorized; report the failure honestly and escalate to the user.";
+        return;
+      }
       if (denied) {
+        interceptionEscalation.delete(input.sessionID);
         output.text = "Artifact review was denied or found gaps. No completion claim is authorized. This task generation is closed; route a repaired follow-up as a new task.";
         return;
       }
       if (settling) {
+        interceptionEscalation.delete(input.sessionID);
         output.text = "An earlier execution is still settling under the durable task-quality lifecycle. No new mutation or completion claim is authorized until its exact receipt or permission rejection is recorded.";
         return;
       }
       if (pendingPlan) {
-        output.text = "The plain-language plan review is pending an addressed follow-up checkpoint. No plan, GO, mutation, or completion is authorized yet.";
+        output.text = interceptionMessage(
+          "pendingPlan",
+          lifecycle,
+          noteInterception(input.sessionID, "pendingPlan") >= 3,
+        );
         return;
       }
       if (pendingArtifact) {
-        output.text = "The artifact review report is pending repair and newly settled post-report proof. Work may continue only within the approved scope; no completion claim is authorized yet.";
+        output.text = interceptionMessage(
+          "pendingArtifact",
+          lifecycle,
+          noteInterception(input.sessionID, "pendingArtifact") >= 3,
+        );
         return;
       }
       if (awaiting) {
-        output.text = "Artifact review is still required for the approved task. No completion claim is authorized until task_quality_artifact_checkpoint records a passing review.";
+        output.text = interceptionMessage(
+          "awaiting",
+          lifecycle,
+          noteInterception(input.sessionID, "awaiting") >= 3,
+        );
         return;
       }
+      interceptionEscalation.delete(input.sessionID);
       return;
     },
 
@@ -1198,6 +1538,25 @@ export const TaskQualityPlugin = async ({
               await adapter.get(context.sessionID),
             ).data;
             if (
+              lifecycle?.phase === "awaiting-artifact-rereview" &&
+              lifecycle.pendingReview?.kind === "artifact"
+            ) {
+              // FIX-2 recovery: the artifact was durably addressed but its
+              // re-review verdict never persisted (e.g. a crash between the
+              // two transitions). Re-run the re-review idempotently against
+              // the exact addressed bytes; different bytes must not slip in
+              // under the parked round.
+              if (hasUnsettledExecution(lifecycle))
+                throw new Error("unresolved execution evidence blocks artifact re-review");
+              if (digestPlan(artifact) !== lifecycle.rereview?.addressedDigest)
+                throw new Error("re-review recovery requires resubmitting the exact addressed artifact");
+              const expected = taskIdentity(lifecycle);
+              const recorded = await runArtifactRereview(adapter, context.sessionID, expected, lifecycle, artifact);
+              if (recorded.phase === "artifact-reviewed") completionDenied.delete(context.sessionID);
+              else completionDenied.add(context.sessionID);
+              return rereviewToolResult(recorded);
+            }
+            if (
               !hasArtifactReviewAuthorization(lifecycle) ||
               hasUnsettledExecution(lifecycle)
             )
@@ -1223,13 +1582,13 @@ export const TaskQualityPlugin = async ({
                   metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, completionAuthorized: false, reviewID: delivery.reviewID, reportDigest: delivery.reportDigest, deliveryMessageID: delivery.messageID } },
                 };
               }
-              const recorded = await persistCurrentTransition(adapter, context.sessionID, expected, (current) => recordAddressedArtifact(current, artifact));
-              completionDenied.delete(context.sessionID);
-              return {
-                title: "Artifact review addressed",
-                output: "The plain-language artifact report is durably and causally addressed with newly settled post-report proof. This task generation is closed; begin a new routed task before further implementation.",
-                metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, artifactDigest: recorded.reviewedArtifact.digest, completionAuthorized: true, reviewID: recorded.addressReceipt.reviewID, reportDigest: recorded.addressReceipt.reportDigest, deliveryMessageID: recorded.addressReceipt.deliveryMessageID } },
-              };
+              const addressed = await persistCurrentTransition(adapter, context.sessionID, expected, (current) => recordAddressedArtifact(current, artifact));
+              // FIX-2: addressing the findings is a claim, not a verdict. The
+              // parked claim closes only through a real bound re-review.
+              const recorded = await runArtifactRereview(adapter, context.sessionID, expected, addressed, artifact);
+              if (recorded.phase === "artifact-reviewed") completionDenied.delete(context.sessionID);
+              else completionDenied.add(context.sessionID);
+              return rereviewToolResult(recorded);
             }
             const review = await adapter.review({
               sessionID: context.sessionID,
