@@ -208,9 +208,13 @@ export async function verifyEngineBinaryIdentity(engineBinary, expectedRevision,
       // pipe buffer and wedge before announcing its port.
       child.stderr.on('data', (chunk) => { stderrText += String(chunk) })
       child.on('exit', (code) => { clearTimeout(timer); reject(new Error(`engine exited (${code}) before announcing a port: ${(stdoutText + stderrText).slice(-400)}`)) })
+      // a binary that cannot launch at all ('error', no 'exit') must reject,
+      // not crash the harness with an unhandled ChildProcess error event.
+      child.on('error', (error) => { clearTimeout(timer); reject(new Error(`engine binary failed to launch: ${error.message}`)) })
     })
     const response = await fetch(`http://127.0.0.1:${port}/global/health`, {
       headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}` },
+      signal: AbortSignal.timeout(30_000),
     })
     if (!response.ok) return { ok: false, reason: `health returned ${response.status}` }
     const health = await response.json()
@@ -224,7 +228,21 @@ export async function verifyEngineBinaryIdentity(engineBinary, expectedRevision,
     }
     return { ok: true, build, binaryVersion: health.version }
   } finally {
-    child.kill()
+    // On Windows child.kill() stops only the top PID, and rm would race the
+    // engine's still-open file handles — kill the whole tree and wait for the
+    // engine to exit before removing its temp XDG root (same order as the
+    // engine's own script/verify-omega-build.ts: kill, await exit, then rm).
+    if (child.pid !== undefined && child.exitCode === null) {
+      await new Promise((resolve) => {
+        const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' })
+        killer.once('exit', resolve)
+        killer.once('error', resolve)
+      })
+      await Promise.race([
+        new Promise((resolve) => child.once('exit', resolve)),
+        pause(5000),
+      ])
+    }
     await fs.promises.rm(configRoot, { recursive: true, force: true }).catch(() => {})
   }
 }
@@ -2239,6 +2257,9 @@ function readCaptureRecords(capturePath) {
 // real changed-file evidence. Standalone on purpose: unlike core(), no
 // preflight gate binds this mode, because it asserts on one case's captured
 // bytes rather than scoring arms; the manifest still records both fingerprints.
+// It DOES pay the binary-identity preflight below: the engine is booted once
+// and the run aborts on a dirty engine tree or a stale binary, so even a
+// smoke's captured bytes are provably from the code the fingerprint names.
 async function smoke(runID = 'camera-smoke') {
   const release = await verifiedReleaseIdentity()
   const live = liveLanes()
