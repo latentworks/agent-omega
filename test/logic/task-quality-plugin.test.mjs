@@ -1956,6 +1956,78 @@ test("FIX-3/A3.1: each actionable interception names its checkpoint tool and rec
   }
 });
 
+// ---------------------------------------------------------------------------
+// FIX-C (smoke3 wedge): the completion gate must NOT rewrite the one response
+// that answers the delivered plan review. That response's terminal parent
+// (stashed at terminal-start) is the review-delivery message, and
+// captureTerminalPlan records its text as the addressed plan - so an
+// interception there replaces the model's actual repaired plan with
+// boilerplate in both the transcript and the durable record.
+// ---------------------------------------------------------------------------
+
+test("FIX-C: the addressed-plan response passes through the completion gate untouched, while unrelated responses in the same phase are still intercepted", async () => {
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({
+    client: fake.client,
+    experimental_task_quality: fake.internal,
+    experimental_internal_automation: fake.automation,
+  });
+  const sessionID = "ses-fixc-addressed";
+  await fake.internal.update({
+    sessionID,
+    expectedRevision: 0,
+    expectedGeneration: 0,
+    generation: 1,
+    data: {
+      version: 1,
+      phase: "awaiting-plan-repair",
+      pendingReview: { kind: "plan", reviewID: "r-fixc", report: "Plan finding: trim the input.", delivery: { messageID: "m-fixc-delivery" } },
+    },
+  });
+
+  // The addressed-plan response: its terminal parent IS the review delivery.
+  await hooks["experimental.task_quality.terminal.start"](
+    { sessionID, messageID: "msg-fixc-addressed", parentMessageID: "m-fixc-delivery" },
+    {},
+  );
+  const repairedPlan =
+    "Repaired plan: trim the port input, validate with /^\\d+$/, accept only 1-65535, and prove it with a live probe round-trip.";
+  const addressedOut = { text: repairedPlan };
+  await hooks["experimental.text.complete"](
+    { sessionID, messageID: "msg-fixc-addressed", partID: "part-final" },
+    addressedOut,
+  );
+  assert.equal(
+    addressedOut.text,
+    repairedPlan,
+    "the addressed-plan response must reach captureTerminalPlan unrewritten",
+  );
+
+  // Control 1: a response whose terminal parent is NOT the review delivery is
+  // an unrelated completion claim and must still be intercepted.
+  await hooks["experimental.task_quality.terminal.start"](
+    { sessionID, messageID: "msg-fixc-unrelated", parentMessageID: "m-some-other-turn" },
+    {},
+  );
+  const unrelatedOut = { text: "All done; nothing is pending." };
+  await hooks["experimental.text.complete"](
+    { sessionID, messageID: "msg-fixc-unrelated", partID: "part-final" },
+    unrelatedOut,
+  );
+  assert.match(unrelatedOut.text, /^STATE:/);
+  assert.match(unrelatedOut.text, /task_quality_checkpoint/);
+
+  // Control 2: with no terminal-start stash at all (no parent linkage), the
+  // gate keeps its existing fail-closed interception behavior.
+  const unstashedOut = { text: "Everything is complete and verified; nothing is pending." };
+  await hooks["experimental.text.complete"](
+    { sessionID, messageID: "msg-fixc-unstashed", partID: "part-final" },
+    unstashedOut,
+  );
+  assert.match(unstashedOut.text, /^STATE:/);
+  assert.match(unstashedOut.text, /task_quality_checkpoint/);
+});
+
 test("FIX-3/A3.1: the review-findings excerpt is byte-bounded to 1 KB and marks truncation", async () => {
   const fake = fakeClient();
   const hooks = await TaskQualityPlugin({

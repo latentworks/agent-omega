@@ -907,6 +907,23 @@ export const TaskQualityPlugin = async ({
   // explicitly choose safe replacement text before the engine may release it.
   const heldTerminalCandidates = new Set();
   const heldTerminalKey = (input) => `${input.sessionID}\u0000${input.messageID}`;
+  // The engine gives experimental.text.complete no parent linkage, but
+  // terminal-start (which precedes text completion for the same assistant
+  // message) does. Remember each assistant message's parent so the completion
+  // gate can recognize the one response that IS the addressed plan
+  // captureTerminalPlan is about to record: rewriting that response would
+  // destroy the plan in both the transcript and the durable record.
+  const terminalParentByMessage = new Map();
+  const rememberTerminalParent = (input) => {
+    if (!input?.messageID) return;
+    const key = heldTerminalKey(input);
+    terminalParentByMessage.delete(key);
+    terminalParentByMessage.set(key, input.parentMessageID);
+    if (terminalParentByMessage.size > 512)
+      terminalParentByMessage.delete(
+        terminalParentByMessage.keys().next().value,
+      );
+  };
   // A failed plan checkpoint has no durable lifecycle phase to inspect. Keep
   // a response-local denial so the model cannot turn the failed tool result
   // into a false "checkpoint recorded" claim. A later external user turn
@@ -1052,6 +1069,7 @@ export const TaskQualityPlugin = async ({
     "experimental.task_quality.terminal.start": async (input, output) => {
       if (!active || !input?.sessionID || !input?.parentMessageID || !output)
         return;
+      rememberTerminalParent(input);
       try {
         const lifecycle = normalizeSnapshot(await adapter.get(input.sessionID)).data;
         const approvalBound =
@@ -1195,7 +1213,24 @@ export const TaskQualityPlugin = async ({
         if (lifecycle?.phase === "declined" && lifecycle.reviewDecline) roundsExhausted = true;
         if (lifecycle?.phase === "awaiting-artifact-review") awaiting = true;
         if (lifecycle?.revocationPending) settling = true;
-        if (lifecycle?.pendingReview?.kind === "plan") pendingPlan = true;
+        if (lifecycle?.pendingReview?.kind === "plan") {
+          // FIX-C (smoke3 wedge): when this exact response is the one that
+          // answers the delivered plan review — its terminal parent (stashed
+          // at terminal-start; text.complete itself carries no parent) is the
+          // review-delivery message — captureTerminalPlan is about to record
+          // this text as the addressed plan. Rewriting it here would replace
+          // the model's actual repaired plan with interception boilerplate in
+          // both the transcript and the durable record, and the checkpoint
+          // would then approve the boilerplate. Pass it through untouched.
+          const terminalParent = terminalParentByMessage.get(
+            heldTerminalKey(input),
+          );
+          const addressedPlanResponse =
+            lifecycle.phase === "awaiting-plan-repair" &&
+            Boolean(terminalParent) &&
+            terminalParent === lifecycle.pendingReview.delivery?.messageID;
+          if (!addressedPlanResponse) pendingPlan = true;
+        }
         if (lifecycle?.pendingReview?.kind === "artifact") pendingArtifact = true;
       } catch (error) {
         // The per-turn latch is enough for an immediately preceding denial;
