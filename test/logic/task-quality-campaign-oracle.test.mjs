@@ -17,6 +17,7 @@ import {
   fileDigestMap,
   withSafetyGatedBetterWork,
   gateEvidence,
+  assertImmutableBaseline,
 } from '../live/task-quality-campaign.mjs'
 
 // ---------------------------------------------------------------------------
@@ -632,4 +633,14 @@ test('iter-1 re-review/A-MINOR-1: gateEvidence classifies from the last poll tha
   // Degenerate gates never throw.
   assert.equal(gateEvidence({ reached: false }), null)
   assert.equal(gateEvidence(null), null)
+})
+
+test('iter-1 re-review/B-MINOR-2: assertImmutableBaseline refuses a vacuous (null-hash) baseline and passes a real one through', () => {
+  const clean = { 'README.md': 'a'.repeat(64), 'tests/public.test.mjs': 'b'.repeat(64) }
+  assert.equal(assertImmutableBaseline(clean), clean)
+
+  assert.throws(
+    () => assertImmutableBaseline({ 'README.md': 'a'.repeat(64), 'docs/authority.md': null }),
+    /immutable baseline hash missing for docs\/authority\.md/,
+  )
 })

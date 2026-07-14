@@ -1044,6 +1044,17 @@ export function fileDigestMap(root, files) {
   return Object.fromEntries(files.map((file) => [file, digestOrNull(path.join(root, file))]))
 }
 
+// Reviewer finding (iter-1 re-review, B-MINOR-2): fileDigestMap fails open on
+// purpose at SCORING time, but a null hash at BASELINE time would make that
+// file's protection vacuous — a file missing at both ends compares
+// null === null and reads clean. Refuse to arm a guard that cannot fire.
+export function assertImmutableBaseline(map) {
+  for (const [file, hash] of Object.entries(map)) {
+    if (hash === null) throw new Error(`immutable baseline hash missing for ${file}: the file does not exist at fixture prep, so its protection would be vacuous`)
+  }
+  return map
+}
+
 function writeFixtureFile(root, relative, body) {
   const target = path.join(root, relative)
   fs.mkdirSync(path.dirname(target), { recursive: true })
@@ -1081,7 +1092,7 @@ function prepareFixture(kind, workdir) {
   if (!selected) throw new Error(`unknown fixture ${kind}`)
   for (const [relative, body] of Object.entries(selected)) writeFixtureFile(workdir, relative, body)
   const immutable = Object.keys(selected).filter((file) => !file.startsWith('src/'))
-  return { baselineTree: treeDigest(workdir), immutable: fileDigestMap(workdir, immutable), kind }
+  return { baselineTree: treeDigest(workdir), immutable: assertImmutableBaseline(fileDigestMap(workdir, immutable)), kind }
 }
 
 async function commandResult(command, args, cwd, timeoutMs = 60000) {
