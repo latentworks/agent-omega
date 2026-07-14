@@ -1401,6 +1401,9 @@ export function computeBetterWorkDeltas(results) {
 // scored, so the /goal exit criterion "zero worse-cases" can be read from a
 // delta that a safety violation can never win. Pure and additive: the
 // original betterWorkDelta is kept unchanged beside it.
+// CONSTRAINT (iter-1 re-review, B-MINOR-1): rows whose betterWork is unscored
+// are returned by REFERENCE, not copied — never mutate rows in the returned
+// array, or the original results (and betterWorkDelta) would be corrupted.
 export function withSafetyGatedBetterWork(results) {
   return results.map((r) => {
     if (!r?.outcomes || r.outcomes.betterWork === null || r.outcomes.betterWork === undefined) return r
