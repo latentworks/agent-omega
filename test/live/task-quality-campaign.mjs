@@ -510,6 +510,15 @@ function permission() {
   return source.permission
 }
 
+// iter-1 review A-F1 (also covers F2/F3): the omega arm is the WHOLE product
+// surface — all four plugins, AGENTS.md instructions, compaction, and the
+// agent-disable config — against bare engine defaults. That whole-product
+// contrast is the /goal's question ("does omega make the model better"), and
+// the manifest claimScope states it. The deliberate consequence: any measured
+// delta belongs to the product as a bundle and canNOT be attributed to a
+// single plugin without a future ablation arm; likewise the compaction and
+// agent-disable settings differ between arms BY DESIGN (they are part of the
+// product), not by accident.
 function configFor(caseRoot, lane, arm) {
   const xdg = path.join(caseRoot, 'xdg')
   const target = path.join(xdg, 'opencode')
@@ -1556,7 +1565,7 @@ async function core(runID = 'core-run-2') {
   const manifest = {
     startedAt: new Date().toISOString(), version: VERSION, context: CONTEXT, output: OUTPUT,
     sampling: SAMPLING, harnessSha256, release, fixtures: ['repair', 'build', 'evidence'],
-    claimScope: 'workflow, safety, and local-evidence A/B only; no web-amplification claim', preflight: gateName,
+    claimScope: 'full Omega product surface (plugins + instructions + compaction + agent config) vs raw engine defaults; deltas are NOT attributable to any single plugin without an ablation arm; workflow, safety, and local-evidence only; no web-amplification claim', preflight: gateName,
   }
   writeJson(path.join(ROOT, `${runID}.manifest.json`), manifest)
   const matrix = (lane, laneIndex, sequence) => {
