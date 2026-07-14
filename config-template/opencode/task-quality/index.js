@@ -1199,11 +1199,6 @@ export const TaskQualityPlugin = async ({
 
     "experimental.text.complete": async (input, output) => {
       if (!active || !input?.sessionID || !output || typeof output.text !== "string") return;
-      if (planCheckpointDenied.has(input.sessionID)) {
-        interceptionEscalation.delete(input.sessionID);
-        output.text = "The plan checkpoint was not recorded, so no implementation or approval is authorized. Resolve the routing or lifecycle failure and checkpoint the plan successfully before asking for GO.";
-        return;
-      }
       let denied = completionDenied.has(input.sessionID);
       let awaiting = false;
       let settling = false;
@@ -1215,6 +1210,12 @@ export const TaskQualityPlugin = async ({
       // FIX-3: hoisted so the actionable branches below can read the pending
       // review report / reviewHistory that feeds the interception excerpt.
       let lifecycle = null;
+      // FIX-C2 (review finding on FIX-C): decided here, applied BEFORE every
+      // rewrite branch below - including both denial latches. A latched
+      // denial (completionDenied from an artifact mis-call during plan
+      // repair, or planCheckpointDenied from a failed plan checkpoint) must
+      // not destroy the one response captureTerminalPlan is about to record.
+      let addressedPlanResponse = false;
       try {
         lifecycle = normalizeSnapshot(await adapter.get(input.sessionID)).data;
         if (lifecycle?.phase === "artifact-review-failed") {
@@ -1229,18 +1230,19 @@ export const TaskQualityPlugin = async ({
         if (lifecycle?.phase === "awaiting-artifact-review") awaiting = true;
         if (lifecycle?.revocationPending) settling = true;
         if (lifecycle?.pendingReview?.kind === "plan") {
-          // FIX-C (smoke3 wedge): when this exact response is the one that
-          // answers the delivered plan review — its terminal parent (stashed
-          // at terminal-start; text.complete itself carries no parent) is the
-          // review-delivery message — captureTerminalPlan is about to record
-          // this text as the addressed plan. Rewriting it here would replace
-          // the model's actual repaired plan with interception boilerplate in
-          // both the transcript and the durable record, and the checkpoint
-          // would then approve the boilerplate. Pass it through untouched.
+          // FIX-C (smoke3 wedge): when this response is part of the message
+          // that answers the delivered plan review — its terminal parent
+          // (stashed at terminal-start; text.complete itself carries no
+          // parent) is the review-delivery message — captureTerminalPlan is
+          // about to record that message's text as the addressed plan.
+          // Rewriting any of its text parts here would replace the model's
+          // actual repaired plan with interception boilerplate in both the
+          // transcript and the durable record, and the checkpoint would then
+          // approve the boilerplate. Pass every part through untouched.
           const terminalParent = terminalParentByMessage.get(
             heldTerminalKey(input),
           );
-          const addressedPlanResponse =
+          addressedPlanResponse =
             lifecycle.phase === "awaiting-plan-repair" &&
             Boolean(terminalParent) &&
             terminalParent === lifecycle.pendingReview.delivery?.messageID;
@@ -1251,6 +1253,21 @@ export const TaskQualityPlugin = async ({
         // The per-turn latch is enough for an immediately preceding denial;
         // never replace unrelated text merely because a later read failed.
         log(`completion gate state read error: ${error?.message || error}`);
+      }
+      // FIX-C2: the addressed-plan pass-through outranks EVERY rewrite,
+      // latched or lifecycle-derived. Fail-closed is preserved: reaching here
+      // requires a successful state read plus an exact engine-assigned
+      // parent match to the durably recorded review delivery, so a failed
+      // read or a non-addressed response still falls through to the latch
+      // and cascade branches below unchanged.
+      if (addressedPlanResponse) {
+        interceptionEscalation.delete(input.sessionID);
+        return;
+      }
+      if (planCheckpointDenied.has(input.sessionID)) {
+        interceptionEscalation.delete(input.sessionID);
+        output.text = "The plan checkpoint was not recorded, so no implementation or approval is authorized. Resolve the routing or lifecycle failure and checkpoint the plan successfully before asking for GO.";
+        return;
       }
       // FIX-3: the five actionable postures below share one legible three-part
       // interception (STATE / NEXT ACTION / REVIEW FINDINGS) and an escalation

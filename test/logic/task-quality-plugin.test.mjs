@@ -2029,6 +2029,106 @@ test("FIX-C: the addressed-plan response passes through the completion gate unto
 });
 
 // ---------------------------------------------------------------------------
+// FIX-C2 (review finding on FIX-C): the pass-through must outrank the latched
+// denial rewrites too. A completionDenied latch (an artifact checkpoint
+// mis-called during plan repair leaves it set - the catch only releases it
+// when the pending review is an artifact) and a planCheckpointDenied latch (a
+// failed plan checkpoint) both rewrote the addressed-plan response ahead of
+// the FIX-C guard, recreating the exact smoke3 corruption through a sibling
+// branch. The latches must still deny every UNRELATED response.
+// ---------------------------------------------------------------------------
+
+test("FIX-C2: latched denials must not rewrite the addressed-plan response, and still deny unrelated responses", async () => {
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({
+    client: fake.client,
+    experimental_task_quality: fake.internal,
+    experimental_internal_automation: fake.automation,
+  });
+  const sessionID = "ses-fixc2-latched";
+  await fake.internal.update({
+    sessionID,
+    expectedRevision: 0,
+    expectedGeneration: 0,
+    generation: 1,
+    data: {
+      version: 1,
+      phase: "awaiting-plan-repair",
+      pendingReview: { kind: "plan", reviewID: "r-fixc2", report: "Plan finding: trim the input.", delivery: { messageID: "m-fixc2-delivery" } },
+    },
+  });
+
+  // Door 1 - completionDenied: mis-call the ARTIFACT checkpoint while a plan
+  // repair is owed. The eligibility throw latches the denial, and because the
+  // pending review is a plan (not an artifact) the catch does not release it.
+  const misCall = await hooks.tool.task_quality_artifact_checkpoint.execute(
+    { artifact: "Premature completion claim during plan repair." },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.match(misCall.output, /No completion claim is authorized/);
+  assert.equal(fake.state(sessionID).data.phase, "awaiting-plan-repair");
+
+  const repairedPlan =
+    "Repaired plan: trim the port input, validate with /^\\d+$/, accept only 1-65535, and prove it with a live probe round-trip.";
+  await hooks["experimental.task_quality.terminal.start"](
+    { sessionID, messageID: "msg-fixc2-addressed", parentMessageID: "m-fixc2-delivery" },
+    {},
+  );
+  const addressedOut = { text: repairedPlan };
+  await hooks["experimental.text.complete"](
+    { sessionID, messageID: "msg-fixc2-addressed", partID: "part-final" },
+    addressedOut,
+  );
+  assert.equal(
+    addressedOut.text,
+    repairedPlan,
+    "a latched completionDenied must not replace the addressed plan with denial boilerplate",
+  );
+
+  // Control: an unrelated response under the same latch is still denied.
+  await hooks["experimental.task_quality.terminal.start"](
+    { sessionID, messageID: "msg-fixc2-unrelated", parentMessageID: "m-some-other-turn" },
+    {},
+  );
+  const unrelatedOut = { text: "All done; nothing else is pending." };
+  await hooks["experimental.text.complete"](
+    { sessionID, messageID: "msg-fixc2-unrelated", partID: "part-final" },
+    unrelatedOut,
+  );
+  assert.match(unrelatedOut.text, /No completion claim is authorized/);
+
+  // Door 2 - planCheckpointDenied: a failed plan checkpoint latches the plan
+  // denial; the addressed-plan response must outrank that latch too.
+  const failed = await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "Plan", acceptance_criteria: [] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.match(failed.output, /No implementation is authorized/);
+  await hooks["experimental.task_quality.terminal.start"](
+    { sessionID, messageID: "msg-fixc2-addressed-2", parentMessageID: "m-fixc2-delivery" },
+    {},
+  );
+  const addressedOut2 = { text: repairedPlan };
+  await hooks["experimental.text.complete"](
+    { sessionID, messageID: "msg-fixc2-addressed-2", partID: "part-final" },
+    addressedOut2,
+  );
+  assert.equal(
+    addressedOut2.text,
+    repairedPlan,
+    "a latched planCheckpointDenied must not replace the addressed plan with checkpoint boilerplate",
+  );
+
+  // Control: unrelated text with the plan latch set still gets its message.
+  const unrelatedOut2 = { text: "Proceeding to implement now." };
+  await hooks["experimental.text.complete"](
+    { sessionID, messageID: "msg-fixc2-unrelated-2", partID: "part-final" },
+    unrelatedOut2,
+  );
+  assert.match(unrelatedOut2.text, /plan checkpoint was not recorded/);
+});
+
+// ---------------------------------------------------------------------------
 // FIX-A/FIX-B (smoke3 wedge): once the plan is recorded (awaiting-approval) or
 // approved, the system guidance must describe the actual phase - not the
 // planning-era "repair the plan" text - and a redundant plan checkpoint must
