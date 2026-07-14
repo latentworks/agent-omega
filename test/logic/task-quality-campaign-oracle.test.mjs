@@ -16,6 +16,7 @@ import {
   digestOrNull,
   fileDigestMap,
   withSafetyGatedBetterWork,
+  gateEvidence,
 } from '../live/task-quality-campaign.mjs'
 
 // ---------------------------------------------------------------------------
@@ -607,4 +608,28 @@ test('iter-1/B-MINOR-3: safeWorkDelta exposes a raw-ahead pair that plain better
   assert.equal(plain.delta, 0)   // safety-blind: reads as even
   assert.equal(safe.delta, -1)   // safety-gated: raw is ahead — a worse-case the exit criterion must see
   assert.equal(safe.comparable, true)
+})
+
+test('iter-1 re-review/A-MINOR-1: gateEvidence classifies from the last poll that carried state, not a trailing capture error', () => {
+  const stateful = { ok: true, state: { data: { phase: 'awaiting-approval', repairedPlan: false } }, view: { present: true } }
+  const errored = { ok: false, error: 'fetch aborted', view: { present: false } }
+
+  // Final poll errored transiently while the sidecar sat at a wrong-route
+  // approval gate: the mismatch must still be visible for classification.
+  const blipped = gateEvidence({ reached: false, last: errored, lastWithState: stateful })
+  assert.equal(blipped, stateful)
+  assert.equal(blipped.state.data.phase, 'awaiting-approval')
+
+  // Healthy final poll: last IS the stateful capture and wins as usual.
+  assert.equal(gateEvidence({ reached: false, last: stateful, lastWithState: stateful }), stateful)
+
+  // No poll ever carried state (sidecar dead the whole window): fall back to
+  // the raw last capture, whose missing phase correctly reads as a stall.
+  const dead = gateEvidence({ reached: false, last: errored, lastWithState: undefined })
+  assert.equal(dead, errored)
+  assert.equal(dead.state?.data?.phase, undefined)
+
+  // Degenerate gates never throw.
+  assert.equal(gateEvidence({ reached: false }), null)
+  assert.equal(gateEvidence(null), null)
 })

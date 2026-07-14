@@ -746,13 +746,26 @@ async function captureLifecycle({ runtime, messages, caseRoot }) {
 
 async function pollLifecycle(context, predicate, timeoutMs = MAX_TURN_TIMEOUT_MS) {
   let last
+  let lastWithState
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     last = await captureLifecycle(context)
-    if (predicate(last)) return { reached: true, last }
+    if (last?.state !== undefined) lastWithState = last
+    if (predicate(last)) return { reached: true, last, lastWithState }
     await pause(500)
   }
-  return { reached: false, last }
+  return { reached: false, last, lastWithState }
+}
+
+// Reviewer finding (iter-1 re-review, A-MINOR-1): captureLifecycle's error
+// path carries no `state`, and pollLifecycle overwrites `last` every
+// iteration — so a transient fetch error on the FINAL poll would blank the
+// phase and misclassify a genuine wrong-route mismatch as a PRODUCT_STALL,
+// excluding an omega quality failure from the denominator. Classification
+// must read the most recent poll that actually carried engine state, falling
+// back to the raw last capture only when no poll ever carried state.
+export function gateEvidence(gate) {
+  return gate?.lastWithState ?? gate?.last ?? null
 }
 
 // The engine's snapshot change-detection service only engages when the case
@@ -1474,11 +1487,12 @@ async function coreCase(lane, arm, kind, sequence) {
           // gate that never engaged at all is a process-death PRODUCT_STALL
           // excluded from the denominator; the raw arm has no such exclusion,
           // so anything else here would asymmetrically inflate omega's rates.
-          const lastData = gate.last?.state?.data
+          const evidence = gateEvidence(gate)
+          const lastData = evidence?.state?.data
           if (lastData?.phase === 'awaiting-approval') {
-            throw new Error(`LIFECYCLE_MISMATCH: approval gate engaged with wrong route before prompt ${context.promptIndex} (route=${lastData?.addressReceipt?.route?.kind ?? 'none'}, repairedPlan=${Boolean(lastData?.repairedPlan)}): ${JSON.stringify(gate.last?.view || {})}`)
+            throw new Error(`LIFECYCLE_MISMATCH: approval gate engaged with wrong route before prompt ${context.promptIndex} (route=${lastData?.addressReceipt?.route?.kind ?? 'none'}, repairedPlan=${Boolean(lastData?.repairedPlan)}): ${JSON.stringify(evidence?.view || {})}`)
           }
-          throw new Error(`PRODUCT_STALL: lifecycle gate before prompt ${context.promptIndex} was not reached: ${JSON.stringify(gate.last?.view || {})}`)
+          throw new Error(`PRODUCT_STALL: lifecycle gate before prompt ${context.promptIndex} was not reached: ${JSON.stringify(evidence?.view || {})}`)
         }
         preGoApprovalGate = gate.last
         preGoApprovalGateCapturedAtPromptIndex = context.promptIndex
@@ -1654,9 +1668,10 @@ async function canonicalCase(lane, sequence, thinking) {
           if (!fixture.canonicalGate.reached) {
             // Same engaged-but-wrong-route vs never-engaged split as coreCase
             // (iter-1, B-MAJOR-2/A-F5).
-            const lastData = fixture.canonicalGate.last?.state?.data
+            const evidence = gateEvidence(fixture.canonicalGate)
+            const lastData = evidence?.state?.data
             const label = lastData?.phase === 'awaiting-approval' ? 'CANONICAL_LIFECYCLE_MISMATCH' : 'CANONICAL_PRODUCT_STALL'
-            throw new Error(`${label}: ${JSON.stringify(fixture.canonicalGate.last?.view || {})}`)
+            throw new Error(`${label}: ${JSON.stringify(evidence?.view || {})}`)
           }
           return
         }
