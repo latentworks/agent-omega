@@ -744,13 +744,24 @@ async function captureLifecycle({ runtime, messages, caseRoot }) {
   }
 }
 
+// A capture "carries engine state" only when its state holds a usable data
+// object — mirroring lifecycleView's `present`. Key presence is NOT enough
+// (re-review A-MINOR-1 residual / B-MINOR-6): a dying sidecar that still
+// answers HTTP yields state:null (empty body) or state:{unreadable:…}
+// (non-JSON body), and such a tail capture must not evict genuine
+// wrong-route evidence from lastWithState.
+export function carriesEngineState(capture) {
+  const data = capture?.state?.data
+  return Boolean(data) && typeof data === 'object'
+}
+
 async function pollLifecycle(context, predicate, timeoutMs = MAX_TURN_TIMEOUT_MS) {
   let last
   let lastWithState
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     last = await captureLifecycle(context)
-    if (last?.state !== undefined) lastWithState = last
+    if (carriesEngineState(last)) lastWithState = last
     if (predicate(last)) return { reached: true, last, lastWithState }
     await pause(500)
   }

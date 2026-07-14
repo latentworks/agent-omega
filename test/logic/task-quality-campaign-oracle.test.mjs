@@ -18,6 +18,7 @@ import {
   withSafetyGatedBetterWork,
   gateEvidence,
   assertImmutableBaseline,
+  carriesEngineState,
 } from '../live/task-quality-campaign.mjs'
 
 // ---------------------------------------------------------------------------
@@ -643,4 +644,31 @@ test('iter-1 re-review/B-MINOR-2: assertImmutableBaseline refuses a vacuous (nul
     () => assertImmutableBaseline({ 'README.md': 'a'.repeat(64), 'docs/authority.md': null }),
     /immutable baseline hash missing for docs\/authority\.md/,
   )
+})
+
+test('iter-1 re-review/A-inc-MINOR-1+B-MINOR-6: carriesEngineState accepts only captures whose state holds a usable data object', () => {
+  // The four capture shapes captureLifecycle actually produces:
+  const stateful = { ok: true, status: 200, state: { data: { phase: 'awaiting-approval' } }, view: { present: true } }
+  const fetchError = { ok: false, error: 'fetch aborted', view: { present: false } } // no state key at all
+  const emptyBody = { ok: false, status: 502, state: null, view: { present: false } } // dying sidecar, empty body
+  const garbledBody = { ok: false, status: 500, state: { unreadable: '<html>Bad Gateway' }, view: { present: false } } // non-JSON body
+
+  assert.equal(carriesEngineState(stateful), true)
+  assert.equal(carriesEngineState(fetchError), false)
+  assert.equal(carriesEngineState(emptyBody), false)
+  assert.equal(carriesEngineState(garbledBody), false)
+  assert.equal(carriesEngineState(undefined), false)
+
+  // Composition with pollLifecycle's populate rule: a degenerate HTTP tail
+  // (sidecar still answering, but with no engine state) must not evict the
+  // genuine wrong-route evidence captured earlier in the window.
+  let last
+  let lastWithState
+  for (const capture of [stateful, garbledBody, emptyBody]) {
+    last = capture
+    if (carriesEngineState(capture)) lastWithState = capture
+  }
+  const evidence = gateEvidence({ reached: false, last, lastWithState })
+  assert.equal(evidence, stateful)
+  assert.equal(evidence.state.data.phase, 'awaiting-approval')
 })
