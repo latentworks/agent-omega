@@ -1882,6 +1882,200 @@ async function singleSeries(runID = 'single-series') {
   console.log(JSON.stringify(summary))
 }
 
+// ---------------------------------------------------------------------------
+// Task #3 (smoke-prove camera). Exact engine-side marker strings, mirrored from
+// the engine repo's src/session/reviewer.ts. The fence and per-file delimiter
+// carry an unforgeable per-review 32-hex token; the two degrade sentences are
+// what a reviewer is told when change detection never ran or saw nothing. If
+// either repo drifts, a marker stops matching and the smoke fails LOUDLY — it
+// can never drift into a silent pass.
+// ---------------------------------------------------------------------------
+const ENGINE_EVIDENCE_BEGIN_RE = /\[BEGIN-ENGINE-EVIDENCE ([0-9a-f]{32})\]/
+const CHANGE_DETECTION_UNAVAILABLE = 'Change detection is unavailable for this session'
+const NO_CHANGED_FILES = 'No changed files were detected since the plan baseline'
+
+// Flattens one captured provider-request body into the prompt text the model
+// actually received. Returns null when the body is not JSON. String content and
+// content-part arrays are both real shapes on the OpenAI-compatible route.
+export function extractPromptText(bodyUtf8) {
+  let body
+  try { body = JSON.parse(bodyUtf8) } catch { return null }
+  const parts = []
+  for (const message of Array.isArray(body?.messages) ? body.messages : []) {
+    const content = message?.content
+    if (typeof content === 'string') parts.push(content)
+    else if (Array.isArray(content)) for (const part of content) if (typeof part?.text === 'string') parts.push(part.text)
+  }
+  return parts.join('\n')
+}
+
+// The genuine fence is `[BEGIN…]\n<body>\n[END…]` (engine fenceEvidence). The
+// marker+newline pairing matters: the reviewer's system instructions quote the
+// SAME markers inline mid-sentence when disclosing the token, and matching the
+// bare marker would land on that quotation and read the words between the two
+// quoted markers as the evidence body.
+function auditFinalEvidence(request, readFile) {
+  const failures = []
+  const nonce = request.text.match(ENGINE_EVIDENCE_BEGIN_RE)[1]
+  const open = `[BEGIN-ENGINE-EVIDENCE ${nonce}]\n`
+  const close = `\n[END-ENGINE-EVIDENCE ${nonce}]`
+  const start = request.text.indexOf(open)
+  const end = start === -1 ? -1 : request.text.indexOf(close, start + open.length)
+  if (start === -1 || end === -1) {
+    failures.push('final evidence request has no genuine fenced block (its markers only appear quoted inline, or the END fence is missing)')
+    return { nonce, files: null, roundTrip: null, failures }
+  }
+  const body = request.text.slice(start + open.length, end)
+  if (body.includes(NO_CHANGED_FILES)) {
+    failures.push(`final review evidence claims "${NO_CHANGED_FILES}" although the GO turn changed files`)
+  }
+  const delimiterRe = /^--- \[ENGINE-FILE ([0-9a-f]{32})\] (.+?)(?: \(([^)]*)\))? ---$/gm
+  const boundaries = [...body.matchAll(delimiterRe)].map((match) => ({
+    token: match[1], path: match[2], status: match[3] ?? null,
+    contentStart: match.index + match[0].length,
+    delimiterStart: match.index,
+  }))
+  for (let index = 0; index < boundaries.length; index++) {
+    boundaries[index].contentEnd = index + 1 < boundaries.length ? boundaries[index + 1].delimiterStart : body.length
+    if (boundaries[index].token !== nonce) {
+      failures.push(`an ENGINE-FILE delimiter inside the fence carries a foreign token (${boundaries[index].token})`)
+    }
+  }
+  const files = boundaries.filter((boundary) => boundary.token === nonce)
+  if (files.length === 0) failures.push('the final review evidence carries no nonce-bound ENGINE-FILE delimiter')
+  const roundTrip = { attempted: 0, matched: 0, details: [] }
+  for (const file of files) {
+    const block = body.slice(file.contentStart, file.contentEnd)
+    const trimmed = block.trim()
+    // A single-line bracketed note is the engine's explicit withheld reason
+    // (deleted / binary / read error / budget exhausted / no contents) — there
+    // is nothing to round-trip, and the omission is already non-silent.
+    if (file.status === 'deleted' || /^\[[^\n]*\]$/.test(trimmed)) {
+      roundTrip.details.push({ path: file.path, status: file.status, outcome: 'withheld', note: trimmed.slice(0, 160) })
+      continue
+    }
+    roundTrip.attempted += 1
+    const real = readFile(file.path)
+    if (real === null || real === undefined) {
+      roundTrip.details.push({ path: file.path, status: file.status, outcome: 'workspace-file-unreadable' })
+      continue
+    }
+    // A trimmed line is always a substring of its original line, so verbatim
+    // containment survives indentation and CRLF; requiring length >= 12 keeps a
+    // bare brace or `})` from matching anywhere and faking the round-trip.
+    const lines = real.split('\n').map((line) => line.trim()).filter((line) => line.length > 0)
+    const candidates = lines.filter((line) => line.length >= 12)
+    const matched = (candidates.length ? candidates : lines).find((line) => block.includes(line)) ?? null
+    if (matched !== null) {
+      roundTrip.matched += 1
+      roundTrip.details.push({ path: file.path, status: file.status, outcome: 'matched', line: matched.slice(0, 200) })
+    } else {
+      roundTrip.details.push({ path: file.path, status: file.status, outcome: 'no-line-matched' })
+    }
+  }
+  if (files.length > 0 && roundTrip.matched === 0) {
+    failures.push('no inlined evidence file round-trips: not one substantial line of any named file matches the real workspace file')
+  }
+  return { nonce, files: files.map((file) => ({ path: file.path, status: file.status })), roundTrip, failures }
+}
+
+// Audits a smoke case's provider capture for the review camera end-to-end: at
+// least one reviewer request must carry a fenced Engine-gathered Evidence
+// block, and the LAST such request (the post-GO artifact review — the only one
+// guaranteed to sit after real file changes) must name at least one nonce-bound
+// changed file whose inlined contents round-trip against the real workspace
+// file. Scoping: an EARLIER review (the plan-phase CRAP route) may truthfully
+// report "no changed files" — the pre-GO tree is asserted unchanged elsewhere —
+// so the no-changes sentence only fails the audit on the final review. The
+// unavailable sentence fails it ANYWHERE: in this git-initialized workspace,
+// snapshot change detection must always run.
+export function auditCameraCapture({ records, readFile, parseFailures = [] }) {
+  const failures = parseFailures.map((line) => `capture line ${line} is not valid JSON`)
+  const sorted = (Array.isArray(records) ? records : [])
+    .filter((record) => record?.type === 'provider-request' && typeof record.bodyUtf8 === 'string')
+    .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))
+  const evidenceRequests = []
+  for (const request of sorted) {
+    const text = extractPromptText(request.bodyUtf8)
+    if (typeof text !== 'string' || !ENGINE_EVIDENCE_BEGIN_RE.test(text)) continue
+    evidenceRequests.push({ sequence: request.sequence ?? null, text })
+    if (text.includes(CHANGE_DETECTION_UNAVAILABLE)) {
+      failures.push(`evidence request sequence ${request.sequence ?? 'unknown'} degraded to "${CHANGE_DETECTION_UNAVAILABLE}"`)
+    }
+  }
+  if (evidenceRequests.length === 0) failures.push('no provider request carried a BEGIN-ENGINE-EVIDENCE fence')
+  const final = evidenceRequests.length ? evidenceRequests[evidenceRequests.length - 1] : null
+  const audit = final ? auditFinalEvidence(final, readFile) : null
+  if (audit) failures.push(...audit.failures)
+  return {
+    passed: failures.length === 0,
+    evidenceRequestCount: evidenceRequests.length,
+    finalSequence: final ? final.sequence : null,
+    nonce: audit ? audit.nonce : null,
+    files: audit ? audit.files : null,
+    roundTrip: audit ? audit.roundTrip : null,
+    failures,
+  }
+}
+
+function readCaptureRecords(capturePath) {
+  const lines = fs.readFileSync(capturePath, 'utf8').split('\n')
+  const records = []
+  const parseFailures = []
+  for (let index = 0; index < lines.length; index++) {
+    if (!lines[index].trim()) continue
+    try { records.push(JSON.parse(lines[index])) } catch { parseFailures.push(index + 1) }
+  }
+  return { records, parseFailures }
+}
+
+// Task #3: one live omega repair case, then prove the camera on the wire — the
+// reviewer request itself, read from the transport shim's provider capture
+// (bytes the sidecar under test cannot edit), must carry fenced, nonce-bound,
+// real changed-file evidence. Standalone on purpose: unlike core(), no
+// preflight gate binds this mode, because it asserts on one case's captured
+// bytes rather than scoring arms; the manifest still records both fingerprints.
+async function smoke(runID = 'camera-smoke') {
+  const release = releasedIdentity()
+  const live = liveLanes()
+  if (live.length !== 1) throw new Error('smoke requires exactly one selected model lane')
+  const advertised = await endpointAdvertises(live[0])
+  if (!advertised.advertised) throw new Error('smoke blocked: selected model is no longer advertised')
+  const manifest = {
+    startedAt: new Date().toISOString(), version: VERSION, context: CONTEXT, output: OUTPUT, sampling: SAMPLING,
+    release,
+    harnessSha256: digest(path.join(SCRIPT_ROOT, 'task-quality-campaign.mjs')),
+    transportShimSha256: digest(path.join(SCRIPT_ROOT, 'settled-provider-shim.mjs')),
+    selectedLane: live[0].label, selectedModel: live[0].modelID, advertised,
+    perTurnTimeoutMs: canonicalTurnTimeoutMs(live[0]),
+    purpose: 'single live omega repair case proving the review camera end-to-end: the final reviewer request on the wire must carry fenced nonce-bound engine-gathered changed-file evidence that round-trips against the real workspace files',
+  }
+  writeJson(path.join(ROOT, `${runID}.manifest.json`), manifest)
+  const result = await canonicalCase(live[0], runID, false)
+  const capturePath = result?.transport?.capturePath ?? null
+  let camera
+  if (capturePath && fs.existsSync(capturePath)) {
+    const workdir = path.join(path.dirname(capturePath), 'workspace')
+    const { records, parseFailures } = readCaptureRecords(capturePath)
+    camera = auditCameraCapture({
+      records,
+      parseFailures,
+      readFile: (relPath) => readTextOrNull(path.resolve(workdir, relPath)),
+    })
+  } else {
+    camera = { passed: false, failures: ['the smoke case produced no provider capture to audit'] }
+  }
+  const summary = {
+    ...manifest, finishedAt: new Date().toISOString(), result, camera,
+    passed: result.passed === true && camera.passed === true,
+  }
+  writeJson(path.join(ROOT, `${runID}.summary.json`), summary)
+  console.log(JSON.stringify(summary))
+  if (!summary.passed) {
+    throw new Error(`camera smoke failed: ${JSON.stringify({ casePassed: result.passed === true, cameraFailures: camera.failures })}`)
+  }
+}
+
 // Only dispatch the CLI when this module is the process entry point. Importing it
 // (e.g. from a unit test that exercises the pure helpers below) must NOT trigger a
 // live campaign or the usage/exit-2 branch, which would poison `node --test`.
@@ -1907,12 +2101,16 @@ if (isDirectRun) {
     singleSeries(process.argv[3] || 'single-series')
       .then(() => process.exit(0))
       .catch((error) => { console.error(error.stack || error); process.exit(1) })
+  } else if (process.argv[2] === 'smoke') {
+    smoke(process.argv[3] || 'camera-smoke')
+      .then(() => process.exit(0))
+      .catch((error) => { console.error(error.stack || error); process.exit(1) })
   } else if (process.argv[2] === 'shim-settlement-self-test') {
     shimSettlementSelfTest()
       .then(() => process.exit(0))
       .catch((error) => { console.error(error.stack || error); process.exit(1) })
   } else {
-    console.error('usage: node test/live/task-quality-campaign.mjs preflight|core|thinking-ab|single-series|shim-settlement-self-test')
+    console.error('usage: node test/live/task-quality-campaign.mjs preflight|core|thinking-ab|single-series|smoke|shim-settlement-self-test')
     process.exitCode = 2
   }
 }
