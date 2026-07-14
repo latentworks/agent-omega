@@ -134,7 +134,10 @@ function hashValue(value) {
 }
 
 function git(repo, args) {
-  return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', windowsHide: true }).trim()
+  // iter-1 review A-F6: bound every git subprocess — a wedged git (fsmonitor,
+  // credential prompt, network remote) would otherwise hang the campaign
+  // silently instead of failing the case.
+  return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', windowsHide: true, timeout: 30_000 }).trim()
 }
 
 function releasedIdentity() {
@@ -742,7 +745,7 @@ async function pollLifecycle(context, predicate, timeoutMs = MAX_TURN_TIMEOUT_MS
 // identity. The snapshot tracker keeps its object database under XDG data, so
 // this workspace repo receives no further commits during the run.
 function initWorkspaceGit(workdir) {
-  const git = (...args) => execFileSync('git', args, { cwd: workdir, stdio: 'pipe', windowsHide: true })
+  const git = (...args) => execFileSync('git', args, { cwd: workdir, stdio: 'pipe', windowsHide: true, timeout: 30_000 })
   git('init')
   git('config', 'core.fsmonitor', 'false')
   git('config', 'commit.gpgsign', 'false')
