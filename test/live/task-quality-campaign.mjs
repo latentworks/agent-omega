@@ -5,7 +5,8 @@ import net from 'node:net'
 import crypto from 'node:crypto'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
+import { promisify } from 'node:util'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { startSettledThinkingShim } from './settled-provider-shim.mjs'
@@ -267,8 +268,15 @@ export async function verifiedReleaseIdentity() {
   }
 }
 
-function copyTree(from, to) {
-  fs.cpSync(from, to, { recursive: true, force: true })
+// The omega config template is ~7k files (plugin node_modules). Copying it
+// synchronously blocks the event loop for the whole copy — measured 75s under
+// disk/AV contention — which starves every timer and fetch owned by the OTHER
+// concurrent lane: preflight's 10s /v1/models abort fires late-but-first on
+// unblock and falsely kills a healthy endpoint probe, and during core it can
+// starve lifecycle-capture fetches into silent ok:false captures. The copy
+// must yield to the event loop.
+async function copyTree(from, to) {
+  await fs.promises.cp(from, to, { recursive: true, force: true })
 }
 
 function liveLanes() {
@@ -619,13 +627,13 @@ function permission() {
 // single plugin without a future ablation arm; likewise the compaction and
 // agent-disable settings differ between arms BY DESIGN (they are part of the
 // product), not by accident.
-function configFor(caseRoot, lane, arm) {
+async function configFor(caseRoot, lane, arm) {
   const xdg = path.join(caseRoot, 'xdg')
   const target = path.join(xdg, 'opencode')
   if (arm === 'omega') {
-    copyTree(TEMPLATE, target)
+    await copyTree(TEMPLATE, target)
     fs.rmSync(path.join(target, 'task-quality'), { recursive: true, force: true })
-    copyTree(MANAGED_TASK_QUALITY_TEMPLATE, path.join(target, 'task-quality'))
+    await copyTree(MANAGED_TASK_QUALITY_TEMPLATE, path.join(target, 'task-quality'))
     const cfgPath = path.join(target, 'opencode.json')
     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
     cfg.enabled_providers = ['local']
@@ -657,7 +665,7 @@ function configFor(caseRoot, lane, arm) {
     // immutable modules, but replace the executable configuration with raw
     // engine-only tooling and no Omega instruction/plugin surface.
     fs.mkdirSync(target, { recursive: true })
-    copyTree(path.join(TEMPLATE, 'task-quality'), path.join(target, 'task-quality'))
+    await copyTree(path.join(TEMPLATE, 'task-quality'), path.join(target, 'task-quality'))
     writeJson(path.join(target, 'opencode.json'), {
       $schema: 'https://opencode.ai/config.json',
       share: 'disabled', autoupdate: false,
@@ -888,14 +896,18 @@ export function gateEvidence(gate) {
 // including the empty root commit that gives each workspace a unique project
 // identity. The snapshot tracker keeps its object database under XDG data, so
 // this workspace repo receives no further commits during the run.
-function initWorkspaceGit(workdir) {
-  const git = (...args) => execFileSync('git', args, { cwd: workdir, stdio: 'pipe', windowsHide: true, timeout: 30_000 })
-  git('init')
-  git('config', 'core.fsmonitor', 'false')
-  git('config', 'commit.gpgsign', 'false')
-  git('config', 'user.email', 'harness@task-quality.test')
-  git('config', 'user.name', 'Task Quality Harness')
-  git('commit', '--allow-empty', '-m', `workspace root ${path.basename(path.dirname(workdir))}`)
+// The spawns must yield to the event loop: cases run concurrently across
+// lanes, and a sync spawn stall here would starve the other lane's 10s abort
+// timers the same way the sync template copy did.
+const execFileAsync = promisify(execFile)
+async function initWorkspaceGit(workdir) {
+  const git = (...args) => execFileAsync('git', args, { cwd: workdir, windowsHide: true, timeout: 30_000 })
+  await git('init')
+  await git('config', 'core.fsmonitor', 'false')
+  await git('config', 'commit.gpgsign', 'false')
+  await git('config', 'user.email', 'harness@task-quality.test')
+  await git('config', 'user.name', 'Task Quality Harness')
+  await git('commit', '--allow-empty', '-m', `workspace root ${path.basename(path.dirname(workdir))}`)
 }
 
 async function runCase({ id, lane, arm, thinking, prompts, timeoutMs = 300000, prepare, beforePrompt, afterPrompt, beforeStop }) {
@@ -914,16 +926,16 @@ async function runCase({ id, lane, arm, thinking, prompts, timeoutMs = 300000, p
     // iter-1 review A-F7: a rerun with the same run ROOT (crash recovery,
     // manual replay) would otherwise inherit the previous attempt's workspace
     // files and git history and score them as this attempt's work.
-    fs.rmSync(caseRoot, { recursive: true, force: true })
+    await fs.promises.rm(caseRoot, { recursive: true, force: true })
     fs.mkdirSync(workdir, { recursive: true })
-    initWorkspaceGit(workdir)
+    await initWorkspaceGit(workdir)
     fixture = prepare ? await prepare(workdir) : null
     shim = typeof thinking === 'boolean' ? await startSettledThinkingShim(lane, thinking, {
       capturePath: path.join(caseRoot, 'provider-capture.ndjson'),
       caseId: id,
     }) : null
     const effectiveLane = shim ? { ...lane, baseURL: shim.baseURL } : lane
-    const xdg = configFor(caseRoot, effectiveLane, arm)
+    const xdg = await configFor(caseRoot, effectiveLane, arm)
     portPair = await reservePortPair()
     const port = portPair.wsPort
     const token = crypto.randomUUID()
