@@ -63,7 +63,6 @@ test('guard kill path tears down a live engine tree promptly and cleans its temp
   // expected listening line for dead port 1 and then stays alive: the health
   // probe is refused, and the finally teardown meets a LIVE child — the
   // taskkill -> await-exit -> rm ordering that no launch-free arm reaches.
-  const before = new Set(tempDirNames())
   const stubRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-killpath-'))
   const pidFile = path.join(stubRoot, 'stub.pid')
   fs.writeFileSync(path.join(stubRoot, 'serve'), [
@@ -75,22 +74,85 @@ test('guard kill path tears down a live engine tree promptly and cleans its temp
   const cwdBefore = process.cwd()
   process.env.GUARD_KILLPATH_PID_FILE = pidFile
   process.chdir(stubRoot)
-  const startedAt = Date.now()
   try {
-    await assert.rejects(
-      () => verifyEngineBinaryIdentity(process.execPath, 'f'.repeat(40), true),
-      /fetch failed|ECONNREFUSED/i,
-    )
-    // Regression tripwire: if the exit listener is attached only after the
-    // taskkill await, the child's exit has already fired by then and the
-    // teardown pays its full 5s race timeout on every call.
-    const elapsed = Date.now() - startedAt
-    assert.ok(elapsed < 4500, `guard call took ${elapsed}ms — teardown paid the dead 5s exit wait`)
-    const pid = Number(fs.readFileSync(pidFile, 'utf8'))
-    assert.ok(Number.isInteger(pid) && pid > 0, 'stub never reported its pid')
-    assert.ok(await deadWithin(pid, 3000), `stub pid ${pid} survived the tree kill`)
-    // the temp XDG root from this launch must be gone (no NEW dirs by name)
-    assert.deepEqual(tempDirNames().filter((name) => !before.has(name)), [])
+    // Timing guard, honest scope: the exit-listener-after-taskkill race loses
+    // at an ENVIRONMENT-DEPENDENT rate (~1-in-6 teardowns with the real
+    // engine, ~0 with this fast stub — measured both ways), so this loop is
+    // only an opportunistic catch for that race; the DETERMINISTIC regression
+    // tripwire for it is the dying-child test below. What this loop does pin
+    // hard, six times over: the live-child teardown stays fast, the tree kill
+    // lands, and no temp root leaks. The aggregate assertions stay robust
+    // under CPU load: the FASTEST call bounds the machine baseline (an
+    // always-slow regression fails it), and the SPREAD catches any single
+    // call that paid the ~+5s dead wait without punishing uniform slowness.
+    const elapsed = []
+    for (let round = 0; round < 6; round++) {
+      const before = new Set(tempDirNames())
+      const startedAt = Date.now()
+      await assert.rejects(
+        () => verifyEngineBinaryIdentity(process.execPath, 'f'.repeat(40), true),
+        /fetch failed|ECONNREFUSED/i,
+      )
+      elapsed.push(Date.now() - startedAt)
+      const pid = Number(fs.readFileSync(pidFile, 'utf8'))
+      assert.ok(Number.isInteger(pid) && pid > 0, `round ${round}: stub never reported its pid`)
+      assert.ok(await deadWithin(pid, 3000), `round ${round}: stub pid ${pid} survived the tree kill`)
+      // the temp XDG root from this launch must be gone (no NEW dirs by name)
+      assert.deepEqual(tempDirNames().filter((name) => !before.has(name)), [], `round ${round}: temp root leaked`)
+    }
+    const fastest = Math.min(...elapsed)
+    const spread = Math.max(...elapsed) - fastest
+    assert.ok(fastest < 4500, `fastest guard call took ${fastest}ms — every teardown paid the dead 5s exit wait (${elapsed.join(', ')})`)
+    assert.ok(spread < 4000, `guard call spread was ${spread}ms — some teardown paid the dead 5s exit wait (${elapsed.join(', ')})`)
+  } finally {
+    process.chdir(cwdBefore)
+    delete process.env.GUARD_KILLPATH_PID_FILE
+    try {
+      const orphan = Number(fs.readFileSync(pidFile, 'utf8'))
+      if (Number.isInteger(orphan) && orphan > 0 && alive(orphan)) {
+        childProcess.spawnSync('taskkill', ['/pid', String(orphan), '/t', '/f'], { windowsHide: true, stdio: 'ignore' })
+      }
+    } catch {}
+    fs.rmSync(stubRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('guard teardown does not pay the 5s exit wait for a child dying mid-kill', async () => {
+  // Deterministic regression tripwire for the exit-listener-after-taskkill
+  // race. The live-child stub above almost never loses that race in this fast
+  // environment (measured 0-in-18 pre-fix), so this arm manufactures the loss
+  // instead: the stub is a REAL http server that answers the guard's health
+  // probe (500 -> guard resolves ok:false through the finally teardown) and
+  // self-exits ~30ms later — so the child's exit event lands squarely inside
+  // the taskkill await. An exit listener attached only AFTER that await has
+  // already missed the event and pays the full 5s race timeout nearly every
+  // call; the fixed ordering (listener first, exitCode recheck) returns fast.
+  const stubRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-dyingchild-'))
+  const pidFile = path.join(stubRoot, 'stub.pid')
+  fs.writeFileSync(path.join(stubRoot, 'serve'), [
+    "require('node:fs').writeFileSync(process.env.GUARD_KILLPATH_PID_FILE, String(process.pid))",
+    "const http = require('node:http')",
+    "const server = http.createServer((req, res) => { res.statusCode = 500; res.end('x'); setTimeout(() => process.exit(0), 30) })",
+    "server.listen(0, '127.0.0.1', () => console.log(`server listening on http://127.0.0.1:${server.address().port}`))",
+    '',
+  ].join('\n'))
+  const cwdBefore = process.cwd()
+  process.env.GUARD_KILLPATH_PID_FILE = pidFile
+  process.chdir(stubRoot)
+  try {
+    for (let round = 0; round < 2; round++) {
+      const before = new Set(tempDirNames())
+      const startedAt = Date.now()
+      const result = await verifyEngineBinaryIdentity(process.execPath, 'f'.repeat(40), true)
+      const elapsed = Date.now() - startedAt
+      assert.equal(result.ok, false, `round ${round}: guard accepted the stub`)
+      assert.match(result.reason, /health returned 500/, `round ${round}: unexpected reason: ${result.reason}`)
+      assert.ok(elapsed < 4500, `round ${round}: guard call took ${elapsed}ms — teardown paid the dead 5s exit wait on a dying child`)
+      const pid = Number(fs.readFileSync(pidFile, 'utf8'))
+      assert.ok(Number.isInteger(pid) && pid > 0, `round ${round}: stub never reported its pid`)
+      assert.ok(await deadWithin(pid, 3000), `round ${round}: stub pid ${pid} survived teardown`)
+      assert.deepEqual(tempDirNames().filter((name) => !before.has(name)), [], `round ${round}: temp root leaked`)
+    }
   } finally {
     process.chdir(cwdBefore)
     delete process.env.GUARD_KILLPATH_PID_FILE

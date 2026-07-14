@@ -234,10 +234,10 @@ export async function verifyEngineBinaryIdentity(engineBinary, expectedRevision,
     // engine's own script/verify-omega-build.ts: kill, await exit, then rm).
     if (child.pid !== undefined && child.exitCode === null) {
       // Attach the exit listener BEFORE issuing the kill (stopTree's order):
-      // the engine usually dies while the taskkill await is still in flight,
-      // and a listener attached after that exit never fires — which would turn
-      // the 5s race timeout from an upper bound into the price paid on every
-      // successful teardown.
+      // when the child's exit event lands while the taskkill await is still in
+      // flight, a listener attached only after that await misses it and the
+      // race below pays its full 5s timeout on an already-dead process. The
+      // dying-child test manufactures exactly that window deterministically.
       const exited = new Promise((resolve) => child.once('exit', resolve))
       await new Promise((resolve) => {
         const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' })
