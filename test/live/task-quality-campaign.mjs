@@ -40,8 +40,18 @@ const BASELINE_RE = /qwen.*3\.6.*35|3\.6.*35.*qwen/i
 const requestedModelID = process.env.AGENT_OMEGA_TEST_MODEL || null
 const lanes = (process.env.AGENT_OMEGA_TEST_LANES || '')
   .split(',').map((name) => name.trim()).filter(Boolean)
-const ENGINE_REPO = path.resolve(process.env.AGENT_OMEGA_TEST_ENGINE_REPO || path.join(APP_REPO, '..', 'opencode-omega'))
-const TEST_ENGINE = process.env.AGENT_OMEGA_TEST_ENGINE || path.join(ENGINE_REPO, 'packages', 'opencode', 'dist', 'opencode-windows-x64', 'bin', 'opencode.exe')
+// iter-1 review B-MINOR: no silent fallback path for the engine repo. The old
+// default (../opencode-omega) pointed at the WRONG checkout on this machine
+// (the real one is opencode-omega-v26) — an unset env var would quietly test a
+// stale engine and attribute its behavior to the current build. Lazy so the
+// pure exports stay importable by the unit suite without env configured.
+const ENGINE_REPO = process.env.AGENT_OMEGA_TEST_ENGINE_REPO ? path.resolve(process.env.AGENT_OMEGA_TEST_ENGINE_REPO) : null
+const TEST_ENGINE = process.env.AGENT_OMEGA_TEST_ENGINE
+  || (ENGINE_REPO ? path.join(ENGINE_REPO, 'packages', 'opencode', 'dist', 'opencode-windows-x64', 'bin', 'opencode.exe') : null)
+function requireTestEngine() {
+  if (!TEST_ENGINE) throw new Error('AGENT_OMEGA_TEST_ENGINE_REPO (or AGENT_OMEGA_TEST_ENGINE) is not set — refusing to guess which engine to test')
+  return TEST_ENGINE
+}
 // The released engine does not expose a per-request seed. Record that explicitly
 // rather than pretending that paired observations are deterministic experiments.
 const SAMPLING = Object.freeze({ source: 'engine/provider defaults', seed: null, temperature: null, topP: null })
@@ -141,7 +151,8 @@ function git(repo, args) {
 }
 
 function releasedIdentity() {
-  if (!fs.existsSync(TEST_ENGINE)) throw new Error('test engine artifact is missing')
+  if (!ENGINE_REPO) throw new Error('AGENT_OMEGA_TEST_ENGINE_REPO is not set — refusing to guess which engine repo to fingerprint')
+  if (!fs.existsSync(requireTestEngine())) throw new Error('test engine artifact is missing')
   const actual = {
     appCommit: git(APP_REPO, ['rev-parse', 'HEAD']),
     appClean: git(APP_REPO, ['status', '--porcelain']) === '',
@@ -151,7 +162,7 @@ function releasedIdentity() {
     sidecarSha256: digest(path.join(APP, 'sidecar.mjs')),
     rawControlSidecarSha256: digest(rawControlSidecar()),
     taskQualitySha256: digest(path.join(APP, 'config-template', 'opencode', 'task-quality', 'index.js')),
-    engineSha256: digest(TEST_ENGINE),
+    engineSha256: digest(requireTestEngine()),
   }
   return actual
 }
@@ -804,7 +815,7 @@ async function runCase({ id, lane, arm, thinking, prompts, timeoutMs = 300000, p
         AGENT_OMEGA_ATTACH: path.join(caseRoot, 'attach.json'),
         AGENT_OMEGA_AGENTS: path.join(xdg, 'opencode', 'AGENTS.md'),
         AGENT_OMEGA_DEFAULT_MODEL: arm === 'omega' ? `local/${lane.modelID}` : `baseline/${lane.modelID}`,
-        AGENT_OMEGA_ENGINE: TEST_ENGINE,
+        AGENT_OMEGA_ENGINE: requireTestEngine(),
         AGENT_OMEGA_TEST_RAW_CONTROL: arm === 'raw' ? '1' : '0',
         ROUTER_TIMEOUT_MS: '20000',
         ROUTER_NOTHINK: '1',
