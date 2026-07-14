@@ -767,6 +767,10 @@ async function runCase({ id, lane, arm, thinking, prompts, timeoutMs = 300000, p
   let ws
   const remoteJournalSinceEpoch = Math.floor(Date.now() / 1000) - 2
   try {
+    // iter-1 review A-F7: a rerun with the same run ROOT (crash recovery,
+    // manual replay) would otherwise inherit the previous attempt's workspace
+    // files and git history and score them as this attempt's work.
+    fs.rmSync(caseRoot, { recursive: true, force: true })
     fs.mkdirSync(workdir, { recursive: true })
     initWorkspaceGit(workdir)
     fixture = prepare ? await prepare(workdir) : null
