@@ -27,8 +27,8 @@ const head = childProcess.execSync('git rev-parse HEAD', { cwd: ENGINE_REPO }).t
 const clean = childProcess.execSync('git status --porcelain', { cwd: ENGINE_REPO }).toString().trim() === ''
 console.log(`repo HEAD: ${head}  clean: ${clean}`)
 
-const leakedTempDirs = () => fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('omega-binary-identity-')).length
-const tempDirsBefore = leakedTempDirs()
+const tempDirNames = () => fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('omega-binary-identity-'))
+const tempDirsBefore = new Set(tempDirNames())
 
 let fails = 0
 const check = (label, cond, extra = '') => { console.log(`${cond ? 'OK  ' : 'FAIL'} ${label}${extra ? ' — ' + extra : ''}`); if (!cond) fails++ }
@@ -70,7 +70,9 @@ const cleanAfter = childProcess.execSync('git status --porcelain', { cwd: ENGINE
 check('arm5 cleanup: engine tree clean again', cleanAfter)
 
 // Arm 6: guard hygiene — every launch above tore its temp XDG root down.
-check('arm6 no leaked omega-binary-identity temp dirs', leakedTempDirs() <= tempDirsBefore, `before=${tempDirsBefore} after=${leakedTempDirs()}`)
+// Name-set, not count: a leak masked by an unrelated dir vanishing must fail.
+const leakedNow = tempDirNames().filter((name) => !tempDirsBefore.has(name))
+check('arm6 no leaked omega-binary-identity temp dirs', leakedNow.length === 0, leakedNow.length ? `new dirs: ${leakedNow.join(', ')}` : `before=${tempDirsBefore.size} after=${tempDirNames().length}`)
 
 console.log(fails === 0 ? '\nGUARD IDENTITY PROOF PASSED (shipped harness code)' : `\n${fails} ARM(S) FAILED`)
 process.exit(fails === 0 ? 0 : 1)

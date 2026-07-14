@@ -12,7 +12,7 @@ import path from 'node:path'
 
 const { verifyEngineBinaryIdentity } = await import(new URL('../live/task-quality-campaign.mjs', import.meta.url))
 
-const leakedTempDirs = () => fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('omega-binary-identity-')).length
+const tempDirNames = () => fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('omega-binary-identity-'))
 
 const alive = (pid) => {
   try {
@@ -33,16 +33,17 @@ const deadWithin = async (pid, timeoutMs) => {
 }
 
 test('guard refuses a dirty source tree before launching anything', async () => {
-  const before = leakedTempDirs()
+  // name-set, not count: a leak masked by an unrelated dir vanishing must fail
+  const before = new Set(tempDirNames())
   const result = await verifyEngineBinaryIdentity(path.join(os.tmpdir(), 'no-such-binary.exe'), 'f'.repeat(40), false)
   assert.equal(result.ok, false)
   assert.match(result.reason, /dirty/)
   // the dirty refusal returns before mkdtemp/spawn — nothing to clean up
-  assert.ok(leakedTempDirs() <= before)
+  assert.deepEqual(tempDirNames().filter((name) => !before.has(name)), [])
 })
 
 test('guard rejects gracefully when the binary cannot launch, and still cleans its temp root', async () => {
-  const before = leakedTempDirs()
+  const before = new Set(tempDirNames())
   const missing = path.join(os.tmpdir(), 'guard-identity-missing', 'opencode.exe')
   // Before the child 'error' listener existed, a spawn failure raised an
   // unhandled ChildProcess error event and crashed the process instead of
@@ -52,7 +53,7 @@ test('guard rejects gracefully when the binary cannot launch, and still cleans i
     /failed to launch|engine exited/,
   )
   // the finally teardown must remove the temp XDG root on the failure path too
-  assert.ok(leakedTempDirs() <= before)
+  assert.deepEqual(tempDirNames().filter((name) => !before.has(name)), [])
 })
 
 test('guard kill path tears down a live engine tree promptly and cleans its temp root', async () => {
@@ -62,7 +63,7 @@ test('guard kill path tears down a live engine tree promptly and cleans its temp
   // expected listening line for dead port 1 and then stays alive: the health
   // probe is refused, and the finally teardown meets a LIVE child — the
   // taskkill -> await-exit -> rm ordering that no launch-free arm reaches.
-  const before = new Set(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('omega-binary-identity-')))
+  const before = new Set(tempDirNames())
   const stubRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-killpath-'))
   const pidFile = path.join(stubRoot, 'stub.pid')
   fs.writeFileSync(path.join(stubRoot, 'serve'), [
@@ -89,8 +90,7 @@ test('guard kill path tears down a live engine tree promptly and cleans its temp
     assert.ok(Number.isInteger(pid) && pid > 0, 'stub never reported its pid')
     assert.ok(await deadWithin(pid, 3000), `stub pid ${pid} survived the tree kill`)
     // the temp XDG root from this launch must be gone (no NEW dirs by name)
-    const leaked = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('omega-binary-identity-') && !before.has(name))
-    assert.deepEqual(leaked, [])
+    assert.deepEqual(tempDirNames().filter((name) => !before.has(name)), [])
   } finally {
     process.chdir(cwdBefore)
     delete process.env.GUARD_KILLPATH_PID_FILE
