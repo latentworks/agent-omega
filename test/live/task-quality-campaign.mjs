@@ -233,15 +233,20 @@ export async function verifyEngineBinaryIdentity(engineBinary, expectedRevision,
     // engine to exit before removing its temp XDG root (same order as the
     // engine's own script/verify-omega-build.ts: kill, await exit, then rm).
     if (child.pid !== undefined && child.exitCode === null) {
+      // Attach the exit listener BEFORE issuing the kill (stopTree's order):
+      // the engine usually dies while the taskkill await is still in flight,
+      // and a listener attached after that exit never fires — which would turn
+      // the 5s race timeout from an upper bound into the price paid on every
+      // successful teardown.
+      const exited = new Promise((resolve) => child.once('exit', resolve))
       await new Promise((resolve) => {
         const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' })
         killer.once('exit', resolve)
         killer.once('error', resolve)
       })
-      await Promise.race([
-        new Promise((resolve) => child.once('exit', resolve)),
-        pause(5000),
-      ])
+      if (child.exitCode === null) {
+        await Promise.race([exited, pause(5000)])
+      }
     }
     await fs.promises.rm(configRoot, { recursive: true, force: true }).catch(() => {})
   }
