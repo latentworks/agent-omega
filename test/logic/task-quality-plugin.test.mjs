@@ -2129,6 +2129,66 @@ test("FIX-C2: latched denials must not rewrite the addressed-plan response, and 
 });
 
 // ---------------------------------------------------------------------------
+// FIX-C2 hardening (converged review MINOR on 80a77c9): the pass-through must
+// mirror recordAddressedPlan's full eligibility guard. awaiting-plan-repair
+// with a pending revocation or unsettled execution is unreachable through the
+// plugin's own transitions, but an externally corrupted durable record can
+// present it; capture would refuse to record, so the response must not stream
+// through clean and unrecorded - the rewrites still own it.
+// ---------------------------------------------------------------------------
+
+test("FIX-C2 hardening: an ineligible awaiting-plan-repair record never passes the addressed-plan response through", async () => {
+  const corruptions = [
+    {
+      name: "revocationPending",
+      extra: { revocationPending: { messageID: "m-revoke", requestedAt: 1 } },
+      pattern: /still settling/,
+    },
+    {
+      name: "unsettled execution",
+      extra: { pendingExecutions: [{ callID: "call-orphan", tool: "bash", recordedAt: 1 }] },
+      pattern: /STATE: awaiting-plan-repair/,
+    },
+  ];
+  for (const corruption of corruptions) {
+    const fake = fakeClient();
+    const hooks = await TaskQualityPlugin({
+      client: fake.client,
+      experimental_task_quality: fake.internal,
+      experimental_internal_automation: fake.automation,
+    });
+    const sessionID = `ses-fixc2-hardening-${corruption.name.replace(/\s+/g, "-")}`;
+    await fake.internal.update({
+      sessionID,
+      expectedRevision: 0,
+      expectedGeneration: 0,
+      generation: 1,
+      data: {
+        version: 1,
+        phase: "awaiting-plan-repair",
+        pendingReview: { kind: "plan", reviewID: "r-fixc2-h", report: "Plan finding: trim the input.", delivery: { messageID: "m-fixc2-h-delivery" } },
+        ...corruption.extra,
+      },
+    });
+    await hooks["experimental.task_quality.terminal.start"](
+      { sessionID, messageID: "msg-fixc2-h-addressed", parentMessageID: "m-fixc2-h-delivery" },
+      {},
+    );
+    const out = { text: "Repaired plan: trim, validate, range-check 1-65535." };
+    await hooks["experimental.text.complete"](
+      { sessionID, messageID: "msg-fixc2-h-addressed", partID: "part-final" },
+      out,
+    );
+    assert.notEqual(
+      out.text,
+      "Repaired plan: trim, validate, range-check 1-65535.",
+      `${corruption.name}: capture would refuse this record, so the response must not pass through`,
+    );
+    assert.match(out.text, corruption.pattern, `${corruption.name}: the expected rewrite owns the response`);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // FIX-A/FIX-B (smoke3 wedge): once the plan is recorded (awaiting-approval) or
 // approved, the system guidance must describe the actual phase - not the
 // planning-era "repair the plan" text - and a redundant plan checkpoint must

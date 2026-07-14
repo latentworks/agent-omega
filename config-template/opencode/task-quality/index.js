@@ -1242,8 +1242,15 @@ export const TaskQualityPlugin = async ({
           const terminalParent = terminalParentByMessage.get(
             heldTerminalKey(input),
           );
+          // Mirrors recordAddressedPlan's eligibility guard exactly: capture
+          // refuses to record while a revocation is pending or execution is
+          // unsettled, so the pass-through must not outrank the rewrites in
+          // those states either — otherwise the response streams clean but is
+          // never durably recorded.
           addressedPlanResponse =
             lifecycle.phase === "awaiting-plan-repair" &&
+            !lifecycle.revocationPending &&
+            !hasUnsettledExecution(lifecycle) &&
             Boolean(terminalParent) &&
             terminalParent === lifecycle.pendingReview.delivery?.messageID;
           if (!addressedPlanResponse) pendingPlan = true;
