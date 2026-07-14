@@ -167,6 +167,83 @@ function releasedIdentity() {
   return actual
 }
 
+// r6 guard: the harness launches the BUILT binary, so bind the binary's
+// embedded source identity to the repo HEAD the fingerprint records — a stale
+// binary (smoke2) otherwise runs silently under a fresh-looking fingerprint.
+// Ports the engine's own release gate (script/verify-omega-build.ts) to node;
+// no engine change. Exported so the guard's own three-arm behavior proof can
+// import the exact shipped code.
+export async function verifyEngineBinaryIdentity(engineBinary, expectedRevision, sourceClean) {
+  if (!sourceClean) {
+    return { ok: false, reason: 'engine source tree is dirty; identity digest requires a clean tree' }
+  }
+  const expectedDigest = crypto.createHash('sha256')
+    .update(`revision:${expectedRevision}\n`)
+    .update('diff:\n')
+    .digest('hex') // clean-tree formula, matches script/verify-omega-build.ts:15
+  const configRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'omega-binary-identity-'))
+  const password = crypto.randomBytes(16).toString('hex')
+  const child = spawn(engineBinary, ['serve', '--hostname', '127.0.0.1', '--port', '0'], {
+    env: {
+      ...process.env,
+      XDG_CONFIG_HOME: configRoot,
+      XDG_DATA_HOME: path.join(configRoot, 'data'),
+      XDG_STATE_HOME: path.join(configRoot, 'state'),
+      XDG_CACHE_HOME: path.join(configRoot, 'cache'),
+      OPENCODE_SERVER_PASSWORD: password,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  try {
+    const port = await new Promise((resolve, reject) => {
+      let stdoutText = ''
+      let stderrText = ''
+      const timer = setTimeout(() => reject(new Error(`engine did not announce a port within 30s: ${(stdoutText + stderrText).slice(-400)}`)), 30_000)
+      child.stdout.on('data', (chunk) => {
+        stdoutText += String(chunk)
+        const match = stdoutText.match(/server listening on http:\/\/127\.0\.0\.1:(\d+)/)
+        if (match) { clearTimeout(timer); resolve(match[1]) }
+      })
+      // stderr is consumed (not matched) so a chatty binary cannot fill the
+      // pipe buffer and wedge before announcing its port.
+      child.stderr.on('data', (chunk) => { stderrText += String(chunk) })
+      child.on('exit', (code) => { clearTimeout(timer); reject(new Error(`engine exited (${code}) before announcing a port: ${(stdoutText + stderrText).slice(-400)}`)) })
+    })
+    const response = await fetch(`http://127.0.0.1:${port}/global/health`, {
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}` },
+    })
+    if (!response.ok) return { ok: false, reason: `health returned ${response.status}` }
+    const health = await response.json()
+    const build = health?.taskQuality?.build
+    if (!build) return { ok: false, reason: 'binary predates embedded build identity; rebuild with: bun run build --single' }
+    if (build.revision !== expectedRevision) {
+      return { ok: false, reason: `STALE BINARY: embedded revision ${build.revision} != repo HEAD ${expectedRevision}; rebuild with: bun run build --single`, build }
+    }
+    if (build.sourceDigest !== expectedDigest) {
+      return { ok: false, reason: 'binary was built from a DIRTY tree (sourceDigest mismatch); rebuild from a clean checkout', build }
+    }
+    return { ok: true, build, binaryVersion: health.version }
+  } finally {
+    child.kill()
+    await fs.promises.rm(configRoot, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+// Every run mode fingerprints through this wrapper, so no case can launch
+// behind a binary whose embedded identity disagrees with the repo fingerprint.
+// Exported for the same shipped-code behavior proof as the guard above.
+export async function verifiedReleaseIdentity() {
+  const release = releasedIdentity()
+  const identity = await verifyEngineBinaryIdentity(requireTestEngine(), release.engineCommit, release.engineSourceClean)
+  if (!identity.ok) throw new Error(`engine binary identity preflight failed: ${identity.reason}`)
+  return {
+    ...release,
+    binaryRevision: identity.build.revision,
+    binarySourceDigest: identity.build.sourceDigest,
+    binaryVersion: identity.binaryVersion,
+  }
+}
+
 function copyTree(from, to) {
   fs.cpSync(from, to, { recursive: true, force: true })
 }
@@ -988,7 +1065,7 @@ async function endpointAdvertises(lane) {
 }
 
 async function preflight(runID = 'preflight') {
-  const release = releasedIdentity()
+  const release = await verifiedReleaseIdentity()
   const run = {
     startedAt: new Date().toISOString(), version: VERSION, context: CONTEXT, output: OUTPUT,
     sampling: SAMPLING, release, harnessSha256: digest(path.join(SCRIPT_ROOT, 'task-quality-campaign.mjs')), lanes: [],
@@ -1710,7 +1787,7 @@ async function core(runID = 'core-run-2') {
   const gateName = `${process.env.OMEGA_PREFLIGHT_RUN_ID || 'preflight'}.manifest.json`
   const gate = JSON.parse(fs.readFileSync(path.join(ROOT, gateName), 'utf8'))
   if (gate.status !== 'passed' || gate.lanes.some((lane) => !lane.passed)) throw new Error('core is blocked: final preflight did not pass')
-  const release = releasedIdentity()
+  const release = await verifiedReleaseIdentity()
   const harnessSha256 = digest(path.join(SCRIPT_ROOT, 'task-quality-campaign.mjs'))
   if (gate.harnessSha256 !== harnessSha256) throw new Error('core is blocked: harness changed after preflight')
   if (JSON.stringify(gate.release) !== JSON.stringify(release)) throw new Error('core is blocked: released package or source identity changed after preflight')
@@ -1769,7 +1846,7 @@ async function startupCase(lane, id) {
 }
 
 async function startupProof(runID = 'startup-proof-1') {
-  const release = releasedIdentity()
+  const release = await verifiedReleaseIdentity()
   const live = liveLanes()
   if (live.length < 2) throw new Error('startup proof requires the two qualified Qwen lanes')
   const manifest = {
@@ -1905,7 +1982,7 @@ async function canonicalCase(lane, sequence, thinking) {
 }
 
 async function thinkingAB(runID = 'thinking-ab') {
-  const release = releasedIdentity()
+  const release = await verifiedReleaseIdentity()
   const live = liveLanes()
   if (live.length < 2) throw new Error('canonical proof requires the two qualified Qwen lanes')
   const advertised = await Promise.all(live.map(async (lane) => ({ lane: lane.label, ...(await endpointAdvertises(lane)) })))
@@ -1946,7 +2023,7 @@ async function thinkingAB(runID = 'thinking-ab') {
 }
 
 async function singleSeries(runID = 'single-series') {
-  const release = releasedIdentity()
+  const release = await verifiedReleaseIdentity()
   const live = liveLanes()
   if (live.length !== 1) throw new Error('single-series requires exactly one selected model lane')
   const advertised = await endpointAdvertises(live[0])
@@ -2163,7 +2240,7 @@ function readCaptureRecords(capturePath) {
 // preflight gate binds this mode, because it asserts on one case's captured
 // bytes rather than scoring arms; the manifest still records both fingerprints.
 async function smoke(runID = 'camera-smoke') {
-  const release = releasedIdentity()
+  const release = await verifiedReleaseIdentity()
   const live = liveLanes()
   if (live.length !== 1) throw new Error('smoke requires exactly one selected model lane')
   const advertised = await endpointAdvertises(live[0])
