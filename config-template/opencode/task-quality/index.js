@@ -987,6 +987,25 @@ export const TaskQualityPlugin = async ({
           );
           return;
         }
+        // FIX-A (smoke3 wedge): awaiting-approval and approved previously fell
+        // through to the planning-era text below, which told an already-past-
+        // planning builder to "repair the plan" and checkpoint again — stale
+        // guidance that steered it back into the plan tool.
+        if (loaded.lifecycle?.phase === "awaiting-approval") {
+          output.system.push(
+            "The current plan generation is already checkpointed and durably recorded; it now awaits the user's explicit go/no-go. Do not call task_quality_checkpoint again and do not mutate the workspace. Present the recorded plan and wait for a later, explicit user-authored approval; only that approval opens implementation.",
+          );
+          return;
+        }
+        if (loaded.lifecycle?.phase === "approved") {
+          output.system.push(
+            "The recorded plan is approved: implementation is authorized within the approved scope. Do not call task_quality_checkpoint again for this generation. Build and verify against the recorded acceptance criteria, then call task_quality_artifact_checkpoint with the completed artifact and its exact acceptance evidence.",
+          );
+          output.system.push(
+            "Completion-claim gate: you must not state or imply that work is complete, recorded, shipped, verified, or successful unless task_quality_artifact_checkpoint returned title 'Artifact review recorded' with taskQuality.completionAuthorized=true. Any 'found gaps', 'not recorded', or denied result authorizes only a failure report and a new routed follow-up.",
+          );
+          return;
+        }
         output.system.push(
           [
             "## Task-quality lifecycle — required gate",
@@ -994,10 +1013,6 @@ export const TaskQualityPlugin = async ({
             "Show the repaired plan to the user and wait for a later, explicit user-authored go/no-go. The engine blocks workspace mutation until that exact plan generation is approved.",
           ].join(" "),
         );
-        if (loaded.lifecycle?.phase === "approved")
-          output.system.push(
-            "Completion-claim gate: you must not state or imply that work is complete, recorded, shipped, verified, or successful unless task_quality_artifact_checkpoint returned title 'Artifact review recorded' with taskQuality.completionAuthorized=true. Any 'found gaps', 'not recorded', or denied result authorizes only a failure report and a new routed follow-up.",
-          );
       } catch (error) {
         log(`system transform error: ${error?.message || error}`);
       }
@@ -1477,6 +1492,28 @@ export const TaskQualityPlugin = async ({
               throw new Error(
                 "The durable task lifecycle has an invalid identity. Start a fresh routed task before checkpointing.",
               );
+            // FIX-B (smoke3 wedge): a redundant plan checkpoint after the plan
+            // is already recorded (or already approved) previously fell into
+            // the reviewer + eligibility path, whose throw latched a denial
+            // and told the model "No implementation is authorized" right
+            // after its GO — a false rebuff that deadlocked the session.
+            // Redirect truthfully instead; no review runs and no latch is set.
+            if (lifecycle.phase === "awaiting-approval") {
+              planCheckpointDenied.delete(context.sessionID);
+              return {
+                title: "Plan already recorded",
+                output: `Plan generation ${lifecycle.generation} is already durably recorded and awaits the user's explicit go/no-go. Do not call this checkpoint again for this generation; present the recorded plan and wait for a user-authored approval.`,
+                metadata: { taskQuality: { phase: lifecycle.phase, generation: lifecycle.generation } },
+              };
+            }
+            if (lifecycle.phase === "approved") {
+              planCheckpointDenied.delete(context.sessionID);
+              return {
+                title: "Plan already approved",
+                output: `Plan generation ${lifecycle.generation} is approved: implementation is already authorized within the approved scope. Do not checkpoint a plan again; build and verify against the recorded acceptance criteria, then call task_quality_artifact_checkpoint with the completed artifact and its exact acceptance evidence.`,
+                metadata: { taskQuality: { phase: lifecycle.phase, generation: lifecycle.generation } },
+              };
+            }
             if (lifecycle.phase === "awaiting-plan-repair" && lifecycle.pendingReview?.kind === "plan") {
               if (!lifecycle.pendingReview.delivery?.messageID) {
                 const delivery = await adapter.resumeWithReview({ sessionID: context.sessionID, reviewID: lifecycle.pendingReview.reviewID });

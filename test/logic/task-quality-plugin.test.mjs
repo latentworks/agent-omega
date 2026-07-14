@@ -2028,6 +2028,130 @@ test("FIX-C: the addressed-plan response passes through the completion gate unto
   assert.match(unstashedOut.text, /task_quality_checkpoint/);
 });
 
+// ---------------------------------------------------------------------------
+// FIX-A/FIX-B (smoke3 wedge): once the plan is recorded (awaiting-approval) or
+// approved, the system guidance must describe the actual phase - not the
+// planning-era "repair the plan" text - and a redundant plan checkpoint must
+// redirect truthfully instead of spending a reviewer run, latching a denial,
+// and rebuffing the model with "No implementation is authorized" after GO.
+// ---------------------------------------------------------------------------
+
+test("FIX-A: system guidance in awaiting-approval and approved matches the actual phase instead of planning-era text", async () => {
+  const sessionID = "ses-fixa-guidance";
+  clearRouteHandoff(sessionID);
+  recordRouteHandoff(
+    buildRouteHandoff({
+      sessionID,
+      messageID: "msg-task",
+      messages: ["Build a robust feature"],
+      skillNames: ["brainstorming"],
+    }),
+  );
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({
+    client: fake.client,
+    experimental_task_quality: fake.internal,
+  });
+  await hooks["experimental.chat.system.transform"]({ sessionID }, { system: [] });
+  await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Make the change.\n2. Run the proof.", acceptance_criteria: ["The real surface works."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(fake.state().data.phase, "awaiting-approval");
+
+  const awaitingSystem = { system: [] };
+  await hooks["experimental.chat.system.transform"]({ sessionID }, awaitingSystem);
+  const awaitingText = awaitingSystem.system.join("\n");
+  assert.match(awaitingText, /already checkpointed and durably recorded/);
+  assert.match(awaitingText, /go\/no-go/);
+  assert.doesNotMatch(awaitingText, /qualifying routed task/);
+  assert.doesNotMatch(awaitingText, /repair the plan/i);
+
+  await hooks["chat.message.persisted"](
+    { sessionID, messageID: "msg-go", origin: "external-user" },
+    { parts: [{ type: "text", text: "GO." }] },
+  );
+  assert.equal(fake.state().data.phase, "approved");
+
+  const approvedSystem = { system: [] };
+  await hooks["experimental.chat.system.transform"]({ sessionID }, approvedSystem);
+  const approvedText = approvedSystem.system.join("\n");
+  assert.match(approvedText, /implementation is authorized within the approved scope/);
+  assert.match(approvedText, /Completion-claim gate/);
+  assert.doesNotMatch(approvedText, /qualifying routed task/);
+  assert.doesNotMatch(approvedText, /repair the plan/i);
+  clearRouteHandoff(sessionID);
+});
+
+test("FIX-B: a redundant plan checkpoint after recording or approval redirects truthfully without a reviewer run or a denial latch", async () => {
+  const sessionID = "ses-fixb-redirect";
+  clearRouteHandoff(sessionID);
+  recordRouteHandoff(
+    buildRouteHandoff({
+      sessionID,
+      messageID: "msg-task",
+      messages: ["Build a robust feature"],
+      skillNames: ["brainstorming"],
+    }),
+  );
+  const fake = fakeClient();
+  const hooks = await TaskQualityPlugin({
+    client: fake.client,
+    experimental_task_quality: fake.internal,
+  });
+  await hooks["experimental.chat.system.transform"]({ sessionID }, { system: [] });
+  await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Make the change.\n2. Run the proof.", acceptance_criteria: ["The real surface works."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(fake.state().data.phase, "awaiting-approval");
+  const reviewsAfterFirst = fake.reviews.length;
+
+  // Redundant checkpoint while awaiting GO: truthful redirect, no reviewer run.
+  const redundantAwaiting = await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Make the change.\n2. Run the proof.", acceptance_criteria: ["The real surface works."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(redundantAwaiting.title, "Plan already recorded");
+  assert.match(redundantAwaiting.output, /go\/no-go/);
+  assert.doesNotMatch(redundantAwaiting.output, /No implementation is authorized/);
+  assert.equal(fake.reviews.length, reviewsAfterFirst, "a redundant checkpoint must not spend a reviewer run");
+  assert.equal(fake.state().data.phase, "awaiting-approval");
+
+  await hooks["chat.message.persisted"](
+    { sessionID, messageID: "msg-go", origin: "external-user" },
+    { parts: [{ type: "text", text: "GO." }] },
+  );
+  assert.equal(fake.state().data.phase, "approved");
+
+  // The wedge: a redundant checkpoint right after GO must not rebuff the model.
+  const redundantApproved = await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Make the change.\n2. Run the proof.", acceptance_criteria: ["The real surface works."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(redundantApproved.title, "Plan already approved");
+  assert.match(redundantApproved.output, /task_quality_artifact_checkpoint/);
+  assert.doesNotMatch(redundantApproved.output, /No implementation is authorized/);
+  assert.equal(fake.reviews.length, reviewsAfterFirst);
+  assert.equal(fake.state().data.phase, "approved");
+
+  // No denial latch: the final response is not rewritten, and mutation
+  // admission stays open under the intact approval.
+  const out = { text: "Proceeding with the approved implementation now." };
+  await hooks["experimental.text.complete"](
+    { sessionID, messageID: "msg-after-go", partID: "part-final" },
+    out,
+  );
+  assert.equal(out.text, "Proceeding with the approved implementation now.");
+  const admitted = { decision: "deny" };
+  await hooks["tool.execute.admission"](
+    { sessionID, tool: "edit", callID: "call-impl", args: {}, source: "builtin", capability: "mutate" },
+    admitted,
+  );
+  assert.equal(admitted.decision, "allow");
+  clearRouteHandoff(sessionID);
+});
+
 test("FIX-3/A3.1: the review-findings excerpt is byte-bounded to 1 KB and marks truncation", async () => {
   const fake = fakeClient();
   const hooks = await TaskQualityPlugin({
