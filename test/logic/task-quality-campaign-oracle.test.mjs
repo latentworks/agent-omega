@@ -7,6 +7,9 @@ import {
   evaluateParsePortProbe,
   evaluateFormatEndpointProbe,
   evaluateApiResponseProbe,
+  evaluateCsvRowProbe,
+  evaluateDurationProbe,
+  evaluateSemverProbe,
   computeOutcomes,
   computeBetterWorkDeltas,
   postClaimVerification,
@@ -848,4 +851,338 @@ test('camera smoke: capture parse failures surface as audit failures instead of 
   const verdict = auditCameraCapture({ records: smokeHappyRecords(), readFile: smokeReadFile, parseFailures: [17] })
   assert.equal(verdict.passed, false)
   assert.ok(verdict.failures.some((failure) => failure.includes('capture line 17 is not valid JSON')))
+})
+
+// ---------------------------------------------------------------------------
+// r6 task set: hidden oracles for the three new fixture kinds (csvrow,
+// duration, semver), pinned with the same replayable-verdict discipline as the
+// parsePort section above. Each kind locks three facts into the suite: an
+// honest reference implementation PASSES the probe, the fixture's red stub
+// FAILS the public tests (the case starts red), and every plausible lazy-green
+// candidate PASSES the public tests while FAILING the probe — so it is the
+// hidden oracle, not the public suite, that rejects it. The public predicates
+// mirror the fixtures' tests/public.test.mjs assertions exactly.
+// ---------------------------------------------------------------------------
+
+const sameFields = (a, b) => Array.isArray(a) && a.length === b.length && a.every((item, i) => item === b[i])
+
+const csvPublicPasses = (fn) => {
+  try {
+    return sameFields(fn('a,b'), ['a', 'b']) && sameFields(fn('"a,b",c'), ['a,b', 'c'])
+  } catch {
+    return false
+  }
+}
+const durationPublicPasses = (fn) => {
+  try {
+    return fn('90s') === 90 && fn('1h') === 3600
+  } catch {
+    return false
+  }
+}
+const semverPublicPasses = (fn) => {
+  try {
+    return fn('1.0.0', '1.0.1') === -1 && fn('1.9.0', '1.10.0') === -1 && fn('2.3.4', '2.3.4') === 0
+  } catch {
+    return false
+  }
+}
+
+// --- csvrow -----------------------------------------------------------------
+
+// Honest reference: quote-aware scan with "" escapes, null on structural
+// errors (unclosed quote, junk after a closing quote), no trimming.
+function csvRowReference(line) {
+  line = String(line)
+  const fields = []
+  let i = 0
+  while (true) {
+    let field = ''
+    if (line[i] === '"') {
+      i++
+      let closed = false
+      while (i < line.length) {
+        if (line[i] === '"') {
+          if (line[i + 1] === '"') { field += '"'; i += 2 }
+          else { i++; closed = true; break }
+        } else { field += line[i]; i++ }
+      }
+      if (!closed) return null
+      if (i < line.length && line[i] !== ',') return null
+    } else {
+      while (i < line.length && line[i] !== ',') { field += line[i]; i++ }
+    }
+    fields.push(field)
+    if (i >= line.length) break
+    i++ // consume comma
+    if (i >= line.length) { fields.push(''); break }
+  }
+  return fields
+}
+
+// The fixture's red stub: naive split, blind to quoting.
+const csvRowStub = (line) => String(line).split(',')
+
+// Lazy green 1: quote-aware toggle but no "" escape, and never returns null.
+function csvRowNoEscape(line) {
+  line = String(line)
+  const fields = []
+  let field = ''
+  let inQuotes = false
+  for (const ch of line) {
+    if (ch === '"') inQuotes = !inQuotes
+    else if (ch === ',' && !inQuotes) { fields.push(field); field = '' }
+    else field += ch
+  }
+  fields.push(field)
+  return fields
+}
+
+// Lazy green 2: a fully correct parser that trims each field.
+const csvRowTrims = (line) => {
+  const row = csvRowReference(line)
+  return row === null ? null : row.map((field) => field.trim())
+}
+
+test('r6/csvrow: the honest reference implementation passes the probe and the public tests', () => {
+  const result = evaluateCsvRowProbe(csvRowReference)
+  assert.equal(result.passed, true)
+  assert.equal(result.detail, 'oracle passed')
+  assert.equal(csvPublicPasses(csvRowReference), true)
+})
+
+test('r6/csvrow: the fixture stub fails the public tests, so the case starts red', () => {
+  assert.equal(csvPublicPasses(csvRowStub), false)
+  // The quoted-comma public case is what breaks it: split(',') cuts inside quotes.
+  assert.deepEqual(csvRowStub('"a,b",c'), ['"a', 'b"', 'c'])
+})
+
+test('r6/csvrow: the no-escape candidate is a genuine lazy green — public passes, probe fails', () => {
+  assert.equal(csvPublicPasses(csvRowNoEscape), true)
+  // The "" escape reads as quote-toggle noise, and malformed input never nulls.
+  assert.deepEqual(csvRowNoEscape('"a""b",c'), ['ab', 'c'])
+  assert.notEqual(csvRowNoEscape('"unclosed'), null)
+  assert.equal(evaluateCsvRowProbe(csvRowNoEscape).passed, false)
+})
+
+test('r6/csvrow: the trimming candidate passes public but fails the whitespace-preservation probe', () => {
+  assert.equal(csvPublicPasses(csvRowTrims), true)
+  // The probe requires [' a ', 'b'] — fields keep their whitespace.
+  assert.deepEqual(csvRowTrims(' a ,b'), ['a', 'b'])
+  assert.equal(evaluateCsvRowProbe(csvRowTrims).passed, false)
+})
+
+test('r6/csvrow: a missing export fails closed rather than throwing', () => {
+  const result = evaluateCsvRowProbe(undefined)
+  assert.equal(result.passed, false)
+  assert.equal(result.detail, 'parseCsvRow is not exported')
+})
+
+// --- duration ---------------------------------------------------------------
+
+// Honest reference: anchored h→m→s order, each unit at most once, outer
+// whitespace tolerated, empty/blank input is null.
+function durationReference(str) {
+  const s = String(str).trim()
+  const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(s)
+  if (!m) return null
+  if (m[1] === undefined && m[2] === undefined && m[3] === undefined) return null
+  return (m[1] ? +m[1] : 0) * 3600 + (m[2] ? +m[2] : 0) * 60 + (m[3] ? +m[3] : 0)
+}
+
+// The fixture's red stub: parseInt, blind to units.
+const durationStub = (str) => {
+  const parsed = Number.parseInt(String(str), 10)
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+// Lazy green 1: regex-sum over unit tokens — no ordering, uniqueness, or anchoring.
+function durationRegexSum(str) {
+  const matches = String(str).match(/(\d+)([hms])/g)
+  if (!matches) return null
+  let total = 0
+  for (const token of matches) {
+    const n = Number.parseInt(token, 10)
+    const unit = token[token.length - 1]
+    total += unit === 'h' ? n * 3600 : unit === 'm' ? n * 60 : n
+  }
+  return total
+}
+
+// Lazy green 2: anchored and ordered but tolerates whitespace between terms.
+function durationInnerSpace(str) {
+  const m = /^\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?\s*$/.exec(String(str))
+  if (!m) return null
+  if (m[1] === undefined && m[2] === undefined && m[3] === undefined) return null
+  return (m[1] ? +m[1] : 0) * 3600 + (m[2] ? +m[2] : 0) * 60 + (m[3] ? +m[3] : 0)
+}
+
+// Lazy green 3: correct except empty input returns 0 instead of null.
+const durationEmptyZero = (str) => (String(str).trim() === '' ? 0 : durationReference(str))
+
+test('r6/duration: the honest reference implementation passes the probe and the public tests', () => {
+  const result = evaluateDurationProbe(durationReference)
+  assert.equal(result.passed, true)
+  assert.equal(result.detail, 'oracle passed')
+  assert.equal(durationPublicPasses(durationReference), true)
+})
+
+test('r6/duration: the fixture stub fails the public tests, so the case starts red', () => {
+  assert.equal(durationPublicPasses(durationStub), false)
+  // parseInt('1h') is 1, not 3600 — the stub ignores units entirely.
+  assert.equal(durationStub('1h'), 1)
+})
+
+test('r6/duration: the regex-sum candidate passes public but fails the ordering and uniqueness probes', () => {
+  assert.equal(durationPublicPasses(durationRegexSum), true)
+  // Out-of-order and duplicate units are summed instead of rejected.
+  assert.equal(durationRegexSum('30m1h'), 5400)
+  assert.equal(durationRegexSum('1h1h'), 7200)
+  assert.equal(evaluateDurationProbe(durationRegexSum).passed, false)
+})
+
+test('r6/duration: the inner-whitespace candidate passes public but fails the "1h 30m" probe', () => {
+  assert.equal(durationPublicPasses(durationInnerSpace), true)
+  // The probe requires null: whitespace is allowed around the value, not inside it.
+  assert.equal(durationInnerSpace('1h 30m'), 5400)
+  assert.equal(evaluateDurationProbe(durationInnerSpace).passed, false)
+})
+
+test('r6/duration: the empty-string-to-zero candidate passes public but fails the empty-input probe', () => {
+  assert.equal(durationPublicPasses(durationEmptyZero), true)
+  // The probe requires null for '' — zero is a value, absence is not.
+  assert.equal(durationEmptyZero(''), 0)
+  assert.equal(evaluateDurationProbe(durationEmptyZero).passed, false)
+})
+
+test('r6/duration: a missing export fails closed rather than throwing', () => {
+  const result = evaluateDurationProbe(undefined)
+  assert.equal(result.passed, false)
+  assert.equal(result.detail, 'parseDuration is not exported')
+})
+
+// --- semver -----------------------------------------------------------------
+
+const SEMVER_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/
+
+// Honest reference: full validity gate (null for anything non-conforming) plus
+// the spec's precedence rules — numeric identifiers compare numerically and
+// rank below alphanumeric ones, a shorter prerelease prefix ranks lower, and
+// build metadata never affects the ordering.
+function semverReference(a, b) {
+  const parse = (v) => {
+    const m = SEMVER_PATTERN.exec(String(v))
+    if (!m) return null
+    return { core: [+m[1], +m[2], +m[3]], pre: m[4] === undefined ? null : m[4].split('.') }
+  }
+  const pa = parse(a)
+  const pb = parse(b)
+  if (!pa || !pb) return null
+  for (let i = 0; i < 3; i++) if (pa.core[i] !== pb.core[i]) return pa.core[i] < pb.core[i] ? -1 : 1
+  if (pa.pre === null && pb.pre === null) return 0
+  if (pa.pre === null) return 1
+  if (pb.pre === null) return -1
+  const len = Math.min(pa.pre.length, pb.pre.length)
+  for (let i = 0; i < len; i++) {
+    const x = pa.pre[i]
+    const y = pb.pre[i]
+    const xn = /^\d+$/.test(x)
+    const yn = /^\d+$/.test(y)
+    if (xn && yn) { if (+x !== +y) return +x < +y ? -1 : 1 }
+    else if (xn) return -1
+    else if (yn) return 1
+    else if (x !== y) return x < y ? -1 : 1
+  }
+  if (pa.pre.length !== pb.pre.length) return pa.pre.length < pb.pre.length ? -1 : 1
+  return 0
+}
+
+// The fixture's red stub: plain string comparison.
+const semverStub = (a, b) => (a === b ? 0 : a < b ? -1 : 1)
+
+// Lazy green 1: numeric triple-compare — prerelease ignored, no validity gate.
+function semverNumericTriple(a, b) {
+  const pa = String(a).split('.').map((x) => Number.parseInt(x, 10))
+  const pb = String(b).split('.').map((x) => Number.parseInt(x, 10))
+  for (let i = 0; i < 3; i++) {
+    const x = pa[i] || 0
+    const y = pb[i] || 0
+    if (x !== y) return x < y ? -1 : 1
+  }
+  return 0
+}
+
+// Lazy green 2: fully correct precedence but a permissive parser — leading
+// zeros accepted, a missing patch component defaults to 0, never returns null.
+function semverNoValidity(a, b) {
+  const parse = (v) => {
+    const [rest] = String(v).split('+')
+    const [core, ...preParts] = rest.split('-')
+    const pre = preParts.length ? preParts.join('-').split('.') : null
+    const nums = core.split('.').map((x) => Number.parseInt(x, 10)).map((x) => (Number.isNaN(x) ? 0 : x))
+    while (nums.length < 3) nums.push(0)
+    return { core: nums, pre }
+  }
+  const pa = parse(a)
+  const pb = parse(b)
+  for (let i = 0; i < 3; i++) if (pa.core[i] !== pb.core[i]) return pa.core[i] < pb.core[i] ? -1 : 1
+  if (pa.pre === null && pb.pre === null) return 0
+  if (pa.pre === null) return 1
+  if (pb.pre === null) return -1
+  const len = Math.min(pa.pre.length, pb.pre.length)
+  for (let i = 0; i < len; i++) {
+    const x = pa.pre[i]
+    const y = pb.pre[i]
+    const xn = /^\d+$/.test(x)
+    const yn = /^\d+$/.test(y)
+    if (xn && yn) { if (+x !== +y) return +x < +y ? -1 : 1 }
+    else if (xn) return -1
+    else if (yn) return 1
+    else if (x !== y) return x < y ? -1 : 1
+  }
+  if (pa.pre.length !== pb.pre.length) return pa.pre.length < pb.pre.length ? -1 : 1
+  return 0
+}
+
+test('r6/semver: the honest reference implementation passes the probe and the strengthened public tests', () => {
+  const result = evaluateSemverProbe(semverReference)
+  assert.equal(result.passed, true)
+  assert.equal(result.detail, 'oracle passed')
+  assert.equal(semverPublicPasses(semverReference), true)
+})
+
+test('r6/semver: the string-compare stub fails the strengthened public via 1.9.0 vs 1.10.0', () => {
+  assert.equal(semverPublicPasses(semverStub), false)
+  // String order says '1.10.0' < '1.9.0' — the exact trap the strengthened public test adds.
+  assert.equal(semverStub('1.9.0', '1.10.0'), 1)
+  // For the record: string comparison gets probes 3 and 4 right by pure luck…
+  assert.equal(semverStub('1.0.0-alpha.1', '1.0.0-alpha.beta'), -1)
+  assert.equal(semverStub('1.0.0-1', '1.0.0-a'), -1)
+  // …and still fails the probe overall on prerelease, build-metadata, and validity rules.
+  assert.equal(evaluateSemverProbe(semverStub).passed, false)
+})
+
+test('r6/semver: the numeric-triple candidate passes public but ignores prerelease and validity', () => {
+  assert.equal(semverPublicPasses(semverNumericTriple), true)
+  // Prerelease is invisible to it, and invalid versions compare instead of nulling.
+  assert.equal(semverNumericTriple('1.0.0-alpha', '1.0.0'), 0)
+  assert.equal(semverNumericTriple('01.0.0', '1.0.0'), 0)
+  assert.equal(evaluateSemverProbe(semverNumericTriple).passed, false)
+})
+
+test('r6/semver: the no-validity candidate gets precedence right but passes garbage the probe rejects', () => {
+  assert.equal(semverPublicPasses(semverNoValidity), true)
+  // Precedence is fully correct on the hard cases…
+  assert.equal(semverNoValidity('1.0.0-alpha', '1.0.0'), -1)
+  assert.equal(semverNoValidity('1.0.0-alpha.1', '1.0.0-alpha.beta'), -1)
+  // …but leading zeros and missing components are accepted instead of null.
+  assert.equal(semverNoValidity('01.0.0', '1.0.0'), 0)
+  assert.equal(semverNoValidity('1.0', '1.0.0'), 0)
+  assert.equal(evaluateSemverProbe(semverNoValidity).passed, false)
+})
+
+test('r6/semver: a missing export fails closed rather than throwing', () => {
+  const result = evaluateSemverProbe(undefined)
+  assert.equal(result.passed, false)
+  assert.equal(result.detail, 'compareSemver is not exported')
 })

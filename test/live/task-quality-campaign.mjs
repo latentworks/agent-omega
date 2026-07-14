@@ -1098,6 +1098,51 @@ function prepareFixture(kind, workdir) {
       'src/response.mjs': "export function toApiResponse(value) {\n  return { result: value }\n}\n",
       'tests/public.test.mjs': "import test from 'node:test'\nimport assert from 'node:assert/strict'\nimport { toApiResponse } from '../src/response.mjs'\ntest('uses current response shape', () => assert.deepEqual(toApiResponse('ok'), { value: 'ok', ok: true }))\n",
     },
+    csvrow: {
+      ...common,
+      'README.md': common['README.md'] +
+        'Repair parseCsvRow in src/csvrow.mjs. parseCsvRow(line) parses ONE row of RFC-4180-style CSV and returns an array of field strings, or null if the row is malformed.\n' +
+        'Rules, all of which are graded:\n' +
+        '1. Fields are separated by commas.\n' +
+        '2. A field may be enclosed in double quotes. Commas inside a quoted field are literal characters, not separators.\n' +
+        '3. Within a quoted field, a pair of double quotes ("") represents one literal double-quote character.\n' +
+        '4. Whitespace is never trimmed; unquoted fields keep their spaces exactly as written.\n' +
+        '5. The empty string is a valid row consisting of a single empty field.\n' +
+        '6. A trailing comma produces a final empty field.\n' +
+        '7. A row is malformed - return null - if a quoted field is never closed, or if any character other than a comma (or the end of the line) appears immediately after a field\'s closing quote.\n',
+      'src/csvrow.mjs': "export function parseCsvRow(line) {\n  return String(line).split(',')\n}\n",
+      'tests/public.test.mjs': "import test from 'node:test'\nimport assert from 'node:assert/strict'\nimport { parseCsvRow } from '../src/csvrow.mjs'\ntest('splits plain and quoted fields', () => { assert.deepEqual(parseCsvRow('a,b'), ['a', 'b']); assert.deepEqual(parseCsvRow('\"a,b\",c'), ['a,b', 'c']) })\n",
+    },
+    duration: {
+      ...common,
+      'README.md': common['README.md'] +
+        'Repair parseDuration in src/duration.mjs. parseDuration(str) parses a duration string and returns the total number of seconds as an integer, or null if the input is invalid.\n' +
+        'Rules, all of which are graded:\n' +
+        '1. A duration is one or more terms; each term is an integer immediately followed by a unit, one of h (hours), m (minutes), s (seconds).\n' +
+        '2. Units must appear in strictly descending order (h before m before s) and each unit may appear at most once.\n' +
+        '3. No characters may appear between terms - not even spaces. Whitespace before the first term and after the last term is allowed.\n' +
+        '4. Each integer is one or more decimal digits, with no sign and no decimal point.\n' +
+        '5. Term values are not range-limited (90s is valid) and zero values are allowed.\n' +
+        '6. Anything not matching these rules is invalid - return null.\n',
+      'src/duration.mjs': "export function parseDuration(str) {\n  const parsed = Number.parseInt(String(str), 10)\n  return Number.isNaN(parsed) ? null : parsed\n}\n",
+      'tests/public.test.mjs': "import test from 'node:test'\nimport assert from 'node:assert/strict'\nimport { parseDuration } from '../src/duration.mjs'\ntest('parses seconds and hours', () => { assert.equal(parseDuration('90s'), 90); assert.equal(parseDuration('1h'), 3600) })\n",
+    },
+    semver: {
+      ...common,
+      'README.md': common['README.md'] +
+        'Repair compareSemver in src/semver.mjs. compareSemver(a, b) compares two version strings and returns -1 if a has lower precedence, 1 if higher, 0 if equal - or null if EITHER input is invalid.\n' +
+        'Version format, all parts graded:\n' +
+        '1. A version is major.minor.patch - all three required, each a non-negative integer. Leading zeros in major, minor, or patch make the version invalid.\n' +
+        '2. An optional prerelease follows a hyphen: dot-separated identifiers (e.g. 1.0.0-alpha.1). Identifiers are alphanumeric (letters/digits/hyphens) or all-numeric. Leading zeros in an all-numeric prerelease identifier make the version invalid.\n' +
+        '3. Optional build metadata follows a plus (e.g. 1.0.0+build5). Build metadata is ignored when comparing precedence.\n' +
+        'Precedence rules, all graded:\n' +
+        '4. Compare major, then minor, then patch, numerically.\n' +
+        '5. A version with a prerelease has LOWER precedence than the same version without one.\n' +
+        '6. Two prereleases compare identifier by identifier, left to right: two all-numeric identifiers compare numerically; two alphanumeric identifiers compare by ASCII order; an all-numeric identifier is always LOWER than an alphanumeric one.\n' +
+        '7. If all compared identifiers are equal and one prerelease list is a prefix of the other, the shorter list is LOWER.\n',
+      'src/semver.mjs': "export function compareSemver(a, b) {\n  return a === b ? 0 : a < b ? -1 : 1\n}\n",
+      'tests/public.test.mjs': "import test from 'node:test'\nimport assert from 'node:assert/strict'\nimport { compareSemver } from '../src/semver.mjs'\ntest('orders patch and numeric minor', () => { assert.equal(compareSemver('1.0.0', '1.0.1'), -1); assert.equal(compareSemver('1.9.0', '1.10.0'), -1); assert.equal(compareSemver('2.3.4', '2.3.4'), 0) })\n",
+    },
   }
   const selected = fixtures[kind]
   if (!selected) throw new Error(`unknown fixture ${kind}`)
@@ -1181,6 +1226,69 @@ export function evaluateApiResponseProbe(toApiResponse) {
   }
 }
 
+// r6: parseCsvRow must honor every graded README rule - literal commas in
+// quotes, "" escapes, no trimming, empty row = [''], trailing comma adds a
+// final empty field, and null (never a guess) for an unclosed quote or for
+// text immediately after a closing quote. Probe #s match the commit-message
+// pairing table.
+export function evaluateCsvRowProbe(parseCsvRow) {
+  if (typeof parseCsvRow !== 'function') return { passed: false, detail: 'parseCsvRow is not exported' }
+  const same = (a, b) => Array.isArray(a) && a.length === b.length && a.every((item, i) => item === b[i])
+  try {
+    const passed =
+      same(parseCsvRow('"a""b",c'), ['a"b', 'c']) &&      // 1: "" escape
+      same(parseCsvRow('a,b,'), ['a', 'b', '']) &&        // 2: trailing comma
+      same(parseCsvRow(''), ['']) &&                      // 3: empty row
+      parseCsvRow('"unclosed') === null &&                // 4: unclosed quote
+      parseCsvRow('"a"x,b') === null &&                   // 5: junk after close quote
+      same(parseCsvRow(' a ,b'), [' a ', 'b']) &&         // 6: no trimming
+      same(parseCsvRow('","'), [','])                     // 7: quoted comma
+    return { passed, detail: passed ? 'oracle passed' : 'parseCsvRow edge behavior is wrong' }
+  } catch (error) {
+    return { passed: false, detail: `parseCsvRow threw on a probe input: ${error.message}` }
+  }
+}
+
+// r6: parseDuration must sum h/m/s terms, allow only outer whitespace and
+// zero values, and return null for wrong unit order, repeated units, inner
+// spaces, decimals, signs, unitless/empty input.
+export function evaluateDurationProbe(parseDuration) {
+  if (typeof parseDuration !== 'function') return { passed: false, detail: 'parseDuration is not exported' }
+  try {
+    const valid =
+      parseDuration('1h30m') === 5400 &&                  // 1: multi-term sum
+      parseDuration(' 2m ') === 120 &&                    // 2: outer whitespace ok
+      parseDuration('0h30m') === 1800                     // 3: zero value ok
+    const invalid = ['30m1h', '1h1h', '1h 30m', '1.5h', '+1h', 'h', '']   // 4-10
+      .every((value) => parseDuration(value) === null)
+    return { passed: valid && invalid, detail: valid && invalid ? 'oracle passed' : 'parseDuration rule behavior is wrong' }
+  } catch (error) {
+    return { passed: false, detail: `parseDuration threw on a probe input: ${error.message}` }
+  }
+}
+
+// r6: compareSemver must apply semver precedence (prerelease < release,
+// prefix-shorter < longer, numeric < alphanumeric identifiers, build
+// metadata ignored) and return null for leading zeros or a missing part.
+export function evaluateSemverProbe(compareSemver) {
+  if (typeof compareSemver !== 'function') return { passed: false, detail: 'compareSemver is not exported' }
+  try {
+    const passed =
+      compareSemver('1.0.0-alpha', '1.0.0') === -1 &&             // 1: prerelease < release
+      compareSemver('1.0.0-alpha', '1.0.0-alpha.1') === -1 &&     // 2: prefix shorter is lower
+      compareSemver('1.0.0-alpha.1', '1.0.0-alpha.beta') === -1 && // 3: numeric < alphanumeric
+      compareSemver('1.0.0-1', '1.0.0-a') === -1 &&               // 4: rule 6 w/o famous example
+      compareSemver('1.0.0+b1', '1.0.0+b2') === 0 &&              // 5: build metadata ignored
+      compareSemver('1.0.0+b1', '1.0.0') === 0 &&                 // 6: build metadata ignored
+      compareSemver('01.0.0', '1.0.0') === null &&                // 7: leading zero core
+      compareSemver('1.0.0-01', '1.0.0') === null &&              // 8: leading zero prerelease
+      compareSemver('1.0', '1.0.0') === null                      // 9: all three required
+    return { passed, detail: passed ? 'oracle passed' : 'compareSemver precedence or validity behavior is wrong' }
+  } catch (error) {
+    return { passed: false, detail: `compareSemver threw on a probe input: ${error.message}` }
+  }
+}
+
 async function oracle(kind, workdir) {
   try {
     if (kind === 'repair') {
@@ -1190,6 +1298,18 @@ async function oracle(kind, workdir) {
     if (kind === 'build') {
       const { formatEndpoint } = await import(pathToFileURL(path.join(workdir, 'src/endpoint.mjs')).href + `?${Date.now()}`)
       return evaluateFormatEndpointProbe(formatEndpoint)
+    }
+    if (kind === 'csvrow') {
+      const { parseCsvRow } = await import(pathToFileURL(path.join(workdir, 'src/csvrow.mjs')).href + `?${Date.now()}`)
+      return evaluateCsvRowProbe(parseCsvRow)
+    }
+    if (kind === 'duration') {
+      const { parseDuration } = await import(pathToFileURL(path.join(workdir, 'src/duration.mjs')).href + `?${Date.now()}`)
+      return evaluateDurationProbe(parseDuration)
+    }
+    if (kind === 'semver') {
+      const { compareSemver } = await import(pathToFileURL(path.join(workdir, 'src/semver.mjs')).href + `?${Date.now()}`)
+      return evaluateSemverProbe(compareSemver)
     }
     const { toApiResponse } = await import(pathToFileURL(path.join(workdir, 'src/response.mjs')).href + `?${Date.now()}`)
     return evaluateApiResponseProbe(toApiResponse)
@@ -1441,6 +1561,9 @@ function promptFor(kind) {
   const task = {
     repair: 'Repair the parsePort behavior described in README.md and validated by tests.',
     build: 'Implement the formatEndpoint behavior described in README.md and validated by tests.',
+    csvrow: 'Repair the parseCsvRow behavior described in README.md and validated by tests.',
+    duration: 'Repair the parseDuration behavior described in README.md and validated by tests.',
+    semver: 'Repair the compareSemver behavior described in README.md and validated by tests.',
     evidence: 'Repair toApiResponse using docs/authority.md as the authoritative local specification; docs/legacy.md is stale.',
   }[kind]
   return [
@@ -1603,14 +1726,18 @@ async function core(runID = 'core-run-2') {
   }
   const manifest = {
     startedAt: new Date().toISOString(), version: VERSION, context: CONTEXT, output: OUTPUT,
-    sampling: SAMPLING, harnessSha256, release, fixtures: ['repair', 'build', 'evidence'],
+    sampling: SAMPLING, harnessSha256, release, fixtures: ['repair', 'csvrow', 'duration', 'semver', 'evidence'],
     claimScope: 'full Omega product surface (plugins + instructions + compaction + agent config) vs raw engine defaults; deltas are NOT attributable to any single plugin without an ablation arm; workflow, safety, and local-evidence only; no web-amplification claim', preflight: gateName,
   }
   writeJson(path.join(ROOT, `${runID}.manifest.json`), manifest)
   const matrix = (lane, laneIndex, sequence) => {
+    // r6: `build` is unscheduled (not deleted) — its fixture, prompt, oracle
+    // dispatch, probe, and tests all remain runnable; only this matrix and
+    // manifest.fixtures stop referencing it. Arm order alternates per kind
+    // and flips per lane, as before.
     const base = laneIndex === 0
-      ? [['repair', 'omega'], ['repair', 'raw'], ['build', 'raw'], ['build', 'omega'], ['evidence', 'omega'], ['evidence', 'raw']]
-      : [['repair', 'raw'], ['repair', 'omega'], ['build', 'omega'], ['build', 'raw'], ['evidence', 'raw'], ['evidence', 'omega']]
+      ? [['repair', 'omega'], ['repair', 'raw'], ['csvrow', 'raw'], ['csvrow', 'omega'], ['duration', 'omega'], ['duration', 'raw'], ['semver', 'raw'], ['semver', 'omega'], ['evidence', 'omega'], ['evidence', 'raw']]
+      : [['repair', 'raw'], ['repair', 'omega'], ['csvrow', 'omega'], ['csvrow', 'raw'], ['duration', 'raw'], ['duration', 'omega'], ['semver', 'omega'], ['semver', 'raw'], ['evidence', 'raw'], ['evidence', 'omega']]
     return base.map(([kind, arm]) => ({ lane, arm, kind, sequence }))
   }
   const laneRuns = live.map(async (lane, laneIndex) => {
