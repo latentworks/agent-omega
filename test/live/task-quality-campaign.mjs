@@ -712,6 +712,25 @@ async function pollLifecycle(context, predicate, timeoutMs = MAX_TURN_TIMEOUT_MS
   return { reached: false, last }
 }
 
+// The engine's snapshot change-detection service only engages when the case
+// workspace resolves as a git project (Snapshot.enabled checks project.vcs ===
+// "git"; project detection walks up looking for a .git entry). Without it every
+// review runs on the "Change detection is unavailable" fallback and reviewers
+// never see engine-attested file contents — the r5 headline residual. This
+// mirrors the engine's own test fixture recipe (fixture.ts tmpdirScoped) exactly,
+// including the empty root commit that gives each workspace a unique project
+// identity. The snapshot tracker keeps its object database under XDG data, so
+// this workspace repo receives no further commits during the run.
+function initWorkspaceGit(workdir) {
+  const git = (...args) => execFileSync('git', args, { cwd: workdir, stdio: 'pipe', windowsHide: true })
+  git('init')
+  git('config', 'core.fsmonitor', 'false')
+  git('config', 'commit.gpgsign', 'false')
+  git('config', 'user.email', 'harness@task-quality.test')
+  git('config', 'user.name', 'Task Quality Harness')
+  git('commit', '--allow-empty', '-m', `workspace root ${path.basename(path.dirname(workdir))}`)
+}
+
 async function runCase({ id, lane, arm, thinking, prompts, timeoutMs = 300000, prepare, beforePrompt, afterPrompt, beforeStop }) {
   const caseRoot = path.join(ROOT, 'cases', id)
   const workdir = path.join(caseRoot, 'workspace')
@@ -726,6 +745,7 @@ async function runCase({ id, lane, arm, thinking, prompts, timeoutMs = 300000, p
   const remoteJournalSinceEpoch = Math.floor(Date.now() / 1000) - 2
   try {
     fs.mkdirSync(workdir, { recursive: true })
+    initWorkspaceGit(workdir)
     fixture = prepare ? await prepare(workdir) : null
     shim = typeof thinking === 'boolean' ? await startSettledThinkingShim(lane, thinking, {
       capturePath: path.join(caseRoot, 'provider-capture.ndjson'),
@@ -943,6 +963,11 @@ function treeDigest(root) {
   const hash = crypto.createHash('sha256')
   const visit = (dir) => {
     for (const item of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      // Workspace git metadata is harness/engine plumbing, not task content:
+      // the engine's own status/snapshot reads can rewrite .git/index between
+      // digests, which would misread as agent file changes. The immutable check
+      // hashes explicit file paths, so it is unaffected by this exclusion.
+      if (item.name === '.git') continue
       const full = path.join(dir, item.name)
       const rel = path.relative(root, full).replace(/\\/g, '/')
       if (item.isDirectory()) visit(full)
