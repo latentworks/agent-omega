@@ -1145,7 +1145,7 @@ async function oracle(kind, workdir) {
 // carry the review label as a pointer.
 export function computeOutcomes(input) {
   const arm = input.arm
-  if (input.productStall || input.harnessFailure) {
+  if (input.productStall || input.harnessFailure || input.lifecycleMismatch) {
     return {
       betterWork: null,
       findingPrecision: { scored: false, verdict: null, review: null },
@@ -1153,7 +1153,11 @@ export function computeOutcomes(input) {
       findingResolutionDisposition: null,
       verificationForced: null,
       truthfulCompletion: null,
-      incomplete: input.productStall ? 'product-stall' : 'harness-failure',
+      // iter-1 B-MAJOR-2/A-F5: a lifecycle-mismatch has no scored artifacts
+      // (the run never got past the gate) so betterWork stays null here, but
+      // unlike a stall it is a scored omega failure — the case row carries
+      // qualityPassed:false and rollupByArm keeps it in the denominator.
+      incomplete: input.productStall ? 'product-stall' : input.lifecycleMismatch ? 'lifecycle-mismatch' : 'harness-failure',
     }
   }
   const hiddenPassed = Boolean(input.hiddenPassed)
@@ -1267,6 +1271,11 @@ export function rollupByArm(results) {
     const armResults = results.filter((r) => r.arm === arm)
     const processDeaths = armResults.filter((r) => r.productStall === true).length
     const harnessFailures = armResults.filter((r) => Boolean(r.harnessFailure)).length
+    // iter-1 B-MAJOR-2/A-F5: lifecycle mismatches are counted for visibility
+    // but NOT subtracted from evaluated — an engaged-but-wrong-route lifecycle
+    // is an omega quality failure, not a process death, so it stays in the
+    // denominator (its qualityPassed:false makes it a qualityFailed).
+    const lifecycleMismatches = armResults.filter((r) => Boolean(r.lifecycleMismatch)).length
     const evaluated = armResults.length - processDeaths - harnessFailures
     const passed = armResults.filter((r) => r.qualityPassed === true).length
     return [arm, {
@@ -1276,6 +1285,7 @@ export function rollupByArm(results) {
       qualityFailed: Math.max(evaluated - passed, 0),
       processDeaths,
       harnessFailures,
+      lifecycleMismatches,
       lifecyclePassed: arm === 'omega' ? armResults.filter((r) => r.lifecyclePassed === true).length : 'n/a',
       rawFeatureOff: arm === 'raw' ? armResults.filter((r) => r.rawFeatureOff === true).length : 'n/a',
     }]
@@ -1405,6 +1415,17 @@ async function coreCase(lane, arm, kind, sequence) {
             data?.addressReceipt?.route?.kind === 'crap' && Boolean(data?.repairedPlan)
         }, gatePollTimeoutMs(lane))
         if (!gate.reached) {
+          // Reviewer finding (iter-1, B-MAJOR-2/A-F5): a lifecycle that ENGAGED
+          // but routed wrong (reached approval without the crap route or a
+          // repaired plan — i.e. the plugin missed the planted flaw) is an omega
+          // QUALITY failure and must stay in the evaluated denominator. Only a
+          // gate that never engaged at all is a process-death PRODUCT_STALL
+          // excluded from the denominator; the raw arm has no such exclusion,
+          // so anything else here would asymmetrically inflate omega's rates.
+          const lastData = gate.last?.state?.data
+          if (lastData?.phase === 'awaiting-approval') {
+            throw new Error(`LIFECYCLE_MISMATCH: approval gate engaged with wrong route before prompt ${context.promptIndex} (route=${lastData?.addressReceipt?.route?.kind ?? 'none'}, repairedPlan=${Boolean(lastData?.repairedPlan)}): ${JSON.stringify(gate.last?.view || {})}`)
+          }
           throw new Error(`PRODUCT_STALL: lifecycle gate before prompt ${context.promptIndex} was not reached: ${JSON.stringify(gate.last?.view || {})}`)
         }
         preGoApprovalGate = gate.last
@@ -1456,9 +1477,15 @@ async function coreCase(lane, arm, kind, sequence) {
   } catch (error) {
     const detail = String(error?.message || error)
     const productStall = detail.startsWith('PRODUCT_STALL:')
+    const lifecycleMismatch = detail.startsWith('LIFECYCLE_MISMATCH:')
     const evaluation = {
-      id, lane: lane.label, arm, kind, passed: false, productStall, harnessFailure: productStall ? null : detail,
-      outcomes: computeOutcomes({ arm, productStall, harnessFailure: !productStall }),
+      id, lane: lane.label, arm, kind, passed: false, productStall,
+      lifecycleMismatch: lifecycleMismatch ? detail : null,
+      // A mismatch is a scored omega failure: it stays in the evaluated
+      // denominator (neither stall nor harness-failure flag set).
+      ...(lifecycleMismatch ? { qualityPassed: false, lifecyclePassed: false } : {}),
+      harnessFailure: productStall || lifecycleMismatch ? null : detail,
+      outcomes: computeOutcomes({ arm, productStall, lifecycleMismatch, harnessFailure: !productStall && !lifecycleMismatch }),
     }
     writeJson(path.join(ROOT, 'cases', id, 'evaluation.json'), evaluation)
     return evaluation
@@ -1573,7 +1600,11 @@ async function canonicalCase(lane, sequence, thinking) {
           }, gatePollTimeoutMs(lane))
           fixture.afterReviewTree = treeDigest(context.workdir)
           if (!fixture.canonicalGate.reached) {
-            throw new Error(`CANONICAL_PRODUCT_STALL: ${JSON.stringify(fixture.canonicalGate.last?.view || {})}`)
+            // Same engaged-but-wrong-route vs never-engaged split as coreCase
+            // (iter-1, B-MAJOR-2/A-F5).
+            const lastData = fixture.canonicalGate.last?.state?.data
+            const label = lastData?.phase === 'awaiting-approval' ? 'CANONICAL_LIFECYCLE_MISMATCH' : 'CANONICAL_PRODUCT_STALL'
+            throw new Error(`${label}: ${JSON.stringify(fixture.canonicalGate.last?.view || {})}`)
           }
           return
         }
@@ -1641,11 +1672,13 @@ async function canonicalCase(lane, sequence, thinking) {
     const lifecycle = storedLifecycle(caseRoot)
     const message = String(error?.message || error)
     const productStall = message.startsWith('CANONICAL_PRODUCT_STALL:')
+    const lifecycleMismatch = message.startsWith('CANONICAL_LIFECYCLE_MISMATCH:')
     const evaluation = {
       id, lane: lane.label, thinking, passed: false, kind: 'repair', productStall,
+      lifecycleMismatch: lifecycleMismatch ? message : null,
       failureClass: error?.failureClass || null,
-      harnessFailure: productStall ? null : message, lifecycle: lifecycle?.view || null,
-      outcomes: computeOutcomes({ arm: 'omega', productStall, harnessFailure: !productStall }),
+      harnessFailure: productStall || lifecycleMismatch ? null : message, lifecycle: lifecycle?.view || null,
+      outcomes: computeOutcomes({ arm: 'omega', productStall, lifecycleMismatch, harnessFailure: !productStall && !lifecycleMismatch }),
     }
     writeJson(path.join(caseRoot, 'evaluation.json'), evaluation)
     return evaluation

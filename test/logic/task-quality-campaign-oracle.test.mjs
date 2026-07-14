@@ -524,3 +524,41 @@ test('iter-1/B-MAJOR-1: fileDigestMap survives a deleted protected file and the 
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('iter-1/B-MAJOR-2: a lifecycle mismatch yields an incomplete outcomes bucket distinct from stall and harness failure', () => {
+  const mismatch = computeOutcomes({ arm: 'omega', lifecycleMismatch: true })
+  assert.equal(mismatch.incomplete, 'lifecycle-mismatch')
+  assert.equal(mismatch.betterWork, null)
+  assert.equal(mismatch.findingResolution, null)
+  assert.equal(mismatch.verificationForced, null)
+  assert.equal(mismatch.truthfulCompletion, null)
+  assert.equal(mismatch.findingPrecision.scored, false)
+  assert.equal(mismatch.findingResolutionDisposition, null)
+  // Precedence: a stall label wins if both are somehow set (can't happen from
+  // the throw sites — one message, one prefix — but the guard is cheap).
+  assert.equal(computeOutcomes({ arm: 'omega', productStall: true, lifecycleMismatch: true }).incomplete, 'product-stall')
+})
+
+test('iter-1/B-MAJOR-2: rollupByArm keeps a lifecycle mismatch in the evaluated denominator as a quality failure', () => {
+  // Mirror of the coreCase catch shape for a LIFECYCLE_MISMATCH throw: scored
+  // failure flags set, harnessFailure null, productStall false.
+  const mismatchRow = {
+    id: 'm', lane: 'lane-1', kind: 'build', arm: 'omega', passed: false,
+    productStall: false, lifecycleMismatch: 'LIFECYCLE_MISMATCH: approval gate engaged with wrong route',
+    qualityPassed: false, lifecyclePassed: false, harnessFailure: null,
+    outcomes: computeOutcomes({ arm: 'omega', lifecycleMismatch: true }),
+  }
+  const by = rollupByArm([...syntheticResults(), mismatchRow])
+  // Baseline omega from syntheticResults(): 3 total, 1 stall, evaluated 2,
+  // passed 1, qualityFailed 1. The mismatch adds to total AND evaluated AND
+  // qualityFailed — unlike a stall it is NOT subtracted from the denominator.
+  assert.equal(by.omega.total, 4)
+  assert.equal(by.omega.processDeaths, 1)
+  assert.equal(by.omega.harnessFailures, 0)
+  assert.equal(by.omega.lifecycleMismatches, 1)
+  assert.equal(by.omega.evaluated, 3)
+  assert.equal(by.omega.passed, 1)
+  assert.equal(by.omega.qualityFailed, 2)
+  // Raw arm never emits mismatches; the key still exists and reads zero.
+  assert.equal(by.raw.lifecycleMismatches, 0)
+})
