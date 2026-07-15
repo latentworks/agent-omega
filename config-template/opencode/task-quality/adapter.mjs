@@ -24,6 +24,18 @@ export function createLifecycleAdapter(_client, internal, reviewers = []) {
       }
       return Object.freeze({ reviewID: receipt.reviewID, reportDigest: receipt.reportDigest, messageID: receipt.messageID })
     },
+    // Real subagent liveness for the stale-execution sweep. Unlike the durable
+    // lifecycle methods this is a graceful enhancement, not a correctness
+    // requirement: an engine that predates the capability returns null so the
+    // caller degrades to its age-based heuristic instead of failing closed. A
+    // present engine returns a strict boolean (true = still running → defer;
+    // false = phantom → safe to abandon) and throws only if its own status
+    // probe failed, which the caller also treats as "unknown → use the age gate".
+    async isExecutionLive(input) {
+      if (typeof internal.isExecutionLive !== 'function') return null
+      const live = await internal.isExecutionLive(input)
+      return typeof live === 'boolean' ? live : null
+    },
     async review(input) {
       // HSS candidate order crosses only the loader-attested in-process
       // bridge. Ordinary SDK callers cannot select or probe helpers.

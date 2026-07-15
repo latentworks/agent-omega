@@ -36,6 +36,8 @@ import {
   recordPendingPlanReview,
   recordAddressedPlan,
   recordUserDecision,
+  recordAutonomousApproval,
+  abandonStaleExecution,
   revokeApprovalForSubstantiveTurn,
   PENDING_EXECUTION_LIMIT,
 } from "./lifecycle.mjs";
@@ -89,6 +91,106 @@ const CRAP_PARKED_REREVIEW_RECOVERY_PROMPT = [
   "NEXT ACTION: do not revise the artifact and do not answer in prose; call task_quality_artifact_checkpoint again with the exact same addressed artifact bytes. No new receipt is needed and the recovery guard rejects any other content, so that byte-exact call is the only thing that re-runs the stalled re-review.",
   "Do not make a completion claim unless that checkpoint returns title 'Artifact review recorded' with taskQuality.completionAuthorized=true.",
 ].join(" ");
+// F3 (iter-2 Road-2 autonomous wiring). Default OFF preserves the interactive
+// human-in-the-loop path byte-for-byte: a real person types GO, and a phantom
+// precommit stays fail-closed for a human to inspect. It is set ON only by the
+// unattended improvement loop, where no human is present to type GO or to clear
+// a stale precommit. When ON, two strictly-additive lifecycle edges supply the
+// "road back" a human otherwise would (recordAutonomousApproval on a stranded
+// approved-plan, abandonStaleExecution on a phantom precommit), and the terminal
+// completion hold is widened so a bare "I'm done" narration can never bypass the
+// isolated artifact review merely because the autonomously-minted approval
+// identity does not match the engine's turn id. It weakens no gate: every
+// authorization predicate (mutation, artifact review, completion) is unchanged;
+// this only adds edges that move a frozen state to a legitimately-authorized one
+// and only ever holds MORE completions, never fewer.
+const AUTONOMOUS_MODE = /^(1|true|yes|on)$/i.test(
+  String(process.env.TASK_QUALITY_AUTONOMOUS || "").trim(),
+);
+// FALLBACK-ONLY age floor. The primary phantom signal is now real engine
+// liveness (isExecutionLive): the sweep asks the engine whether the subagent
+// that owns an unsettled precommit is still running, and defers a live one no
+// matter its age. This floor is consulted only when the engine cannot answer
+// (an older engine without the capability, or a failed status probe). In that
+// degraded case a precommit younger than this may be a live subagent mutation
+// still running against the parent lifecycle while the parent session is
+// momentarily idle; abandoning it would drop a real execution receipt and
+// corrupt the Power-B evidence chain. A genuine phantom never settles, so its
+// age only grows and a later idle recovers it. Bias long: wrongly abandoning
+// live work is worse than a slow phantom recovery. Tunable via env for r7 lanes.
+const STALE_PRECOMMIT_MIN_AGE_MS = (() => {
+  const raw = Number(process.env.TASK_QUALITY_STALE_PRECOMMIT_MS);
+  return Number.isSafeInteger(raw) && raw >= 0 ? raw : 300000;
+})();
+// The synthetic identity stamped on an autonomously-minted approval. It is
+// deliberately shaped so it can never collide with an engine message id
+// (msg_...), which is what forces autonomous completions down the explicit
+// checkpoint path guarded by the widened hold below, rather than the implicit
+// terminal-narration capture that binds on a matching turn id.
+function autonomousMessageID(kind, generation) {
+  return `internal:autonomous-${kind}:g${generation}`;
+}
+const AUTONOMOUS_APPROVAL_PROMPT = [
+  "[task-quality autonomous approval]",
+  "Your plan cleared its independent review and has now been approved so work can proceed - this is a road forward, not a completion signal. Stay strictly within the approved plan's scope and implement it now.",
+  "When the implementation is finished, do NOT simply narrate that you are done: call task_quality_artifact_checkpoint with the final artifact and your exact verification evidence. A bare completion claim without that checkpoint is held and rejected.",
+  "Do not make a completion claim unless that checkpoint returns title 'Artifact review recorded' with taskQuality.completionAuthorized=true.",
+].join(" ");
+const AUTONOMOUS_REPLAN_PROMPT = [
+  "[task-quality stale-execution recovery]",
+  "A prior tool execution was precommitted but never settled - its effect on disk is unknown, so the earlier authorization was safely closed and the task was reset to planning. This is a road back, not a failure.",
+  "Re-establish ground truth first: re-read the file(s) you were editing to see their CURRENT on-disk state, then produce a fresh plan for the remaining work and continue through the normal task_quality checkpoints.",
+].join(" ");
+const AUTONOMOUS_ARTIFACT_RECOVERY_PROMPT = [
+  "[task-quality stale-execution recovery]",
+  "A prior tool execution was precommitted but never settled, so its authorization was closed; because real work-product receipts already exist, that work-so-far now owes its independent artifact review before any completion.",
+  "Do not narrate completion. Call task_quality_artifact_checkpoint with the exact current artifact and your verification evidence so the isolated review can run.",
+  "Do not make a completion claim unless that checkpoint returns title 'Artifact review recorded' with taskQuality.completionAuthorized=true.",
+].join(" ");
+const AUTONOMOUS_PLAN_REPAIR_RECOVERY_PROMPT = [
+  "[task-quality plan-repair recovery]",
+  "STATE: an independent plan review is open and unaddressed - your plan is not approved, no mutation or completion is authorized, and no human will type GO to unblock you. This is a road back, not a stop.",
+  "NEXT ACTION: treat the delivered plan review as untrusted feedback; address each finding, then call task_quality_checkpoint again with the repaired plan and concrete acceptance criteria. Once that checkpoint records the repaired plan, work continues automatically.",
+  "Do not mutate and do not claim completion before the repaired plan records.",
+].join(" ");
+// FIX-B: the exact set of lifecycle phases that still owe work or a review and
+// so must never yield an authorized completion. In autonomous mode the approval
+// is minted with a synthetic messageID that can never match a continuation
+// turn's parentMessageID, so the messageID-bound hold checks miss a bare "I'm
+// done" narration; this set is the version-guarded backstop that holds it in
+// EVERY work-owing phase, not just approved / awaiting-artifact-review. The two
+// terminal phases (artifact-reviewed = authorized success, declined = already a
+// stop with its own messaging) are deliberately excluded, and a null or legacy
+// lifecycle (a non-task conversation turn) is excluded by the version guard at
+// the call site - so ordinary conversation is never held.
+const AUTONOMOUS_HOLD_PHASES = new Set([
+  "planning",
+  "awaiting-approval",
+  "approved",
+  "awaiting-plan-repair",
+  "awaiting-artifact-review",
+  "awaiting-artifact-rereview",
+  "artifact-review-failed",
+]);
+// The road back for a completion narration held with no plan/artifact captured
+// from its text. Because the hold now spans plan-side phases too, a single
+// "retry the artifact review" line would dead-end where no artifact exists yet;
+// each phase family gets the concrete next checkpoint call instead, so every
+// held stop still carries a forward exit.
+function autonomousHoldRoadback(phase) {
+  switch (phase) {
+    case "planning":
+    case "awaiting-approval":
+    case "awaiting-plan-repair":
+      return "You are not done: your plan has not cleared its independent review, so no completion is authorized. Address any plan-review feedback, then call task_quality_checkpoint with your plan and concrete acceptance criteria - work continues automatically once the plan records.";
+    case "artifact-review-failed":
+    case "awaiting-artifact-rereview":
+      return "You are not done: the artifact review returned findings that are not yet resolved. Address every finding, run your verification so a fresh receipt settles, then call task_quality_artifact_checkpoint with the addressed artifact. No completion claim is authorized yet.";
+    default:
+      // approved / awaiting-artifact-review - work-product owes its review.
+      return "Completion is not eligible for artifact review yet because the required execution proof is missing or still unsettled. Complete and settle the required work, then call task_quality_artifact_checkpoint with the final artifact and your verification evidence.";
+  }
+}
 function log(message) {
   try {
     appendFileSync(LOG, `[${new Date().toISOString()}] ${message}\n`);
@@ -209,12 +311,18 @@ const INTERCEPTIONS = {
     phaseName: "awaiting-plan-repair - plan review open",
     meaning:
       "a plain-language plan review is open; no plan, GO, mutation, or completion is authorized until the repaired plan is recorded.",
-    action:
-      "Address the findings and call task_quality_checkpoint with the repaired plan; that new checkpoint must record the repaired plan before you ask for GO.",
+    action: AUTONOMOUS_MODE
+      ? "Address the findings and call task_quality_checkpoint with the repaired plan; once that checkpoint records the repaired plan, work resumes automatically."
+      : "Address the findings and call task_quality_checkpoint with the repaired plan; that new checkpoint must record the repaired plan before you ask for GO.",
     steps: [
       "Address each plan finding listed below.",
       "Call task_quality_checkpoint with the repaired plan and concrete acceptance criteria.",
-      "Wait for a fresh external GO before any mutation.",
+      // FIX-C: in the unattended loop no human is present to type GO, so the
+      // old "wait for a fresh external GO" step was a dead-end. Re-checkpointing
+      // the repaired plan is itself the road forward - Trigger-1 grants it.
+      AUTONOMOUS_MODE
+        ? "Once that checkpoint records the repaired plan, work resumes automatically - do not wait for a human GO."
+        : "Wait for a fresh external GO before any mutation.",
     ],
   },
   awaiting: {
@@ -387,6 +495,197 @@ async function persistCurrentTransition(adapter, sessionID, expected, transition
     }
   }
   throw new Error("Task quality could not persist the review handshake due to a concurrent lifecycle update.");
+}
+
+// F3: the autonomous-loop road-back driver, invoked only from the idle handler
+// under AUTONOMOUS_MODE. It never weakens a gate; it only moves a frozen state
+// to a legitimately-authorized posture (identical in shape to the interactive
+// counterpart) and prompts the model forward. Returns true when it advanced the
+// lifecycle (the caller then returns without running the artifact-recovery path)
+// and false when nothing applied. The dedup map bounds re-firing to one
+// continuation per durable state, exactly like artifact-CRAP recovery.
+const NOTHING_TO_ABANDON = "task-quality:nothing-to-abandon";
+async function advanceAutonomousLifecycle({
+  adapter,
+  sessionID,
+  lifecycle,
+  internalAutomation,
+  dedup,
+}) {
+  if (!lifecycle || lifecycle.version !== 1) return false;
+
+  // Trigger 0 - an open plan review the model walked away from by going idle
+  // instead of re-checkpointing a repaired plan. Without this edge,
+  // awaiting-plan-repair is a hard dead-end in the unattended loop: Trigger 1
+  // only matches awaiting-approval, Trigger 2 only matches an unsettled
+  // execution, and the artifact-recovery fall-through only re-delivers artifact
+  // reviews - nothing re-delivers a pending PLAN review, and no human will type
+  // GO. Re-deliver it as a road back, mirroring the artifact re-delivery, so
+  // every stop keeps a forward exit.
+  if (
+    lifecycle.phase === "awaiting-plan-repair" &&
+    lifecycle.pendingReview?.kind === "plan" &&
+    typeof lifecycle.pendingReview.reviewID === "string" &&
+    lifecycle.pendingReview.delivery?.messageID
+  ) {
+    const key = `plan-repair:${lifecycle.pendingReview.reviewID}`;
+    if (dedup.get(sessionID) === key) return true;
+    if (typeof internalAutomation?.continue !== "function") {
+      log(`autonomous plan-repair recovery unavailable for ${sessionID}: internal automation bridge is missing`);
+      return true;
+    }
+    dedup.set(sessionID, key);
+    await internalAutomation.continue({ sessionID, text: AUTONOMOUS_PLAN_REPAIR_RECOVERY_PROMPT });
+    log(`autonomous plan-repair recovery continuation queued for ${sessionID} (review ${lifecycle.pendingReview.reviewID})`);
+    return true;
+  }
+
+  // Trigger 1 - a fully-reviewed plan stranded at AWAITING_APPROVAL with no
+  // human GO. Mint the autonomous approval (the "road forward") and prompt the
+  // model to implement through the explicit checkpoints.
+  if (
+    lifecycle.phase === "awaiting-approval" &&
+    lifecycle.repairedPlan?.generation === lifecycle.generation
+  ) {
+    const key = `grant:g${lifecycle.generation}`;
+    if (dedup.get(sessionID) === key) return true;
+    if (typeof internalAutomation?.continue !== "function") {
+      log(`autonomous approval unavailable for ${sessionID}: internal automation bridge is missing`);
+      return true;
+    }
+    const messageID = autonomousMessageID("approval", lifecycle.generation);
+    const expected = taskIdentity(lifecycle);
+    await persistCurrentTransition(adapter, sessionID, expected, (current) => {
+      const result = recordAutonomousApproval(current, {
+        messageID,
+        expectedGeneration: current.generation,
+      });
+      if (!result.ok) throw new Error(`autonomous approval rejected: ${result.reason}`);
+      return result.lifecycle;
+    });
+    dedup.set(sessionID, key);
+    await internalAutomation.continue({ sessionID, text: AUTONOMOUS_APPROVAL_PROMPT });
+    log(`autonomous approval granted and continuation queued for ${sessionID} (generation ${lifecycle.generation})`);
+    return true;
+  }
+
+  // Trigger 2 - a phantom precommit that can never settle on its own (idle means
+  // no tool is running, yet a precommit is unsettled). Abandon every stale
+  // precommit through the shared fail-closed settlement machinery, then prompt
+  // the road back that the resulting phase implies.
+  //
+  // PRIMARY SIGNAL (engine liveness): ask the engine whether each unsettled
+  // precommit belongs to a subagent that is still running. A subagent's child
+  // session stays busy for the entire time its tool executes and its receipt is
+  // recorded during that turn, before the child ever goes idle - so an unsettled
+  // precommit whose child session is idle is a genuine phantom (crashed or killed
+  // tool), while a genuinely slow-but-live subagent still reports busy and is
+  // deferred no matter how long it has run. This is what makes the sweep abandon
+  // ONLY dead work: it no longer times out a legitimately long subagent.
+  //
+  // FALLBACK (FIX-D age floor): the age gate is consulted only when the engine
+  // cannot answer - an older engine without the liveness capability, or a status
+  // probe that errored. In that degraded case a precommit younger than the floor
+  // is deferred (it may still be live) and only an out-aged one is treated as a
+  // phantom, exactly as before. A liveness-aware engine never reaches this path,
+  // so it never wrongly abandons a long-running subagent.
+  if (hasUnsettledExecution(lifecycle)) {
+    const now = Date.now();
+    const isAged = (item) =>
+      item?.callID &&
+      Number.isSafeInteger(item.startedAt) &&
+      now - item.startedAt >= STALE_PRECOMMIT_MIN_AGE_MS;
+    const pendingNow = (lifecycle.pendingExecutions || []).filter((item) => item?.callID);
+    const canProbe = typeof adapter?.isExecutionLive === "function";
+    const classify = async (item) => {
+      let live = null;
+      if (canProbe) {
+        try {
+          live = await adapter.isExecutionLive({ sessionID, callID: item.callID });
+        } catch (error) {
+          // Engine present but its status probe failed. Treat as unknown and
+          // fall back to the age floor rather than guess "phantom" and risk
+          // dropping a live receipt.
+          live = null;
+          log(
+            `autonomous liveness probe failed for ${sessionID} ${item.callID}: ${String(error?.message || error)}`,
+          );
+        }
+      }
+      if (live === true) return { item, abandon: false, reason: "engine-live" };
+      if (live === false) return { item, abandon: true, reason: "engine-phantom" };
+      return { item, abandon: isAged(item), reason: isAged(item) ? "age-fallback" : "age-defer" };
+    };
+    const classified = await Promise.all(pendingNow.map(classify));
+    const stale = classified.filter((entry) => entry.abandon).map((entry) => entry.item);
+    if (stale.length === 0) {
+      // Nothing is a confirmed phantom yet - either the engine says the subagent
+      // is still live, or (engine unavailable) the precommit has not out-aged the
+      // floor. Defer to a later idle rather than abandon possibly-live work. Not a
+      // stop: the precommit either settles normally or becomes a confirmed phantom
+      // that a future idle recovers.
+      log(
+        `autonomous abandon deferred for ${sessionID}: ${pendingNow.length} precommit(s) still live or not yet phantom (${classified.map((entry) => entry.reason).join(", ") || "none"})`,
+      );
+      return false;
+    }
+    const staleCallIDs = stale.map((item) => item.callID);
+    const abandonCallIDs = new Set(staleCallIDs);
+    const key = `abandon:${staleCallIDs.slice().sort().join(",")}`;
+    if (dedup.get(sessionID) === key) return true;
+    if (typeof internalAutomation?.continue !== "function") {
+      log(`autonomous abandon unavailable for ${sessionID}: internal automation bridge is missing`);
+      return true;
+    }
+    const messageID = autonomousMessageID("abandon", lifecycle.generation);
+    const expected = taskIdentity(lifecycle);
+    let settled;
+    try {
+      settled = await persistCurrentTransition(adapter, sessionID, expected, (current) => {
+        const pending = Array.isArray(current.pendingExecutions)
+          ? current.pendingExecutions
+          : [];
+        // Re-apply the decision against freshly-read state by exact call ID. A
+        // precommit that started after the idle read carries a new call ID that
+        // is absent from the confirmed-abandon set, so it can never be swept
+        // here; one that settled normally in the meantime is simply gone from
+        // pending. This membership filter replaces the age re-check because the
+        // confirmed set already encodes the engine-liveness (or age-fallback)
+        // phantom decision made against a consistent read above.
+        const targetPending = pending.filter(
+          (item) => item?.callID && abandonCallIDs.has(item.callID),
+        );
+        if (targetPending.length === 0) throw new Error(NOTHING_TO_ABANDON);
+        let next = current;
+        for (const item of targetPending) {
+          const result = abandonStaleExecution(next, { callID: item?.callID, messageID });
+          if (!result.ok) {
+            // Another writer may have settled this exact precommit already;
+            // skip it rather than abort the whole abandon transition.
+            if (result.reason === "no-matching-stale-execution") continue;
+            throw new Error(`autonomous abandon rejected: ${result.reason}`);
+          }
+          next = result.lifecycle;
+        }
+        return next;
+      });
+    } catch (error) {
+      // The precommit settled normally between the idle read and this write, so
+      // there is nothing stale to recover; let the caller fall through.
+      if (String(error?.message || error).includes(NOTHING_TO_ABANDON)) return false;
+      throw error;
+    }
+    dedup.set(sessionID, key);
+    const prompt =
+      settled?.phase === "awaiting-artifact-review"
+        ? AUTONOMOUS_ARTIFACT_RECOVERY_PROMPT
+        : AUTONOMOUS_REPLAN_PROMPT;
+    await internalAutomation.continue({ sessionID, text: prompt });
+    log(`autonomous abandon of [${staleCallIDs.join(", ")}] routed to ${settled?.phase} for ${sessionID}`);
+    return true;
+  }
+
+  return false;
 }
 
 async function routeHandoff(sessionID, engineBridge) {
@@ -933,6 +1232,28 @@ export const TaskQualityPlugin = async ({
   // the in-memory cap resets and the still-pending durable review can be
   // safely retried; it never authorizes completion on its own.
   const artifactRecoveryContinuation = new Map();
+  // F3: one autonomous road-back continuation per durable state (keyed by grant
+  // generation or the sorted stale call ids). Same restart semantics as above -
+  // the in-memory cap resets on restart and the still-frozen durable state can
+  // be safely retried; it never authorizes completion on its own.
+  const autonomousContinuation = new Map();
+  // Finding-1 carry-forward: a direct-task child carries TWO engine clocks. The
+  // admission grant (directTaskParent) proves child->parent provenance but dies
+  // 30 minutes after the child is spawned; the execution binding
+  // (beginDirectTaskExecution) is minted when a mutating tool STARTS and stays
+  // settleable for the 2h settle window. preexecute correctly starts tracking
+  // under the still-valid grant, but persisted can fire >30min later for a
+  // long-running subagent tool - by then directTaskParent returns undefined and
+  // lifecycleOwner resolves the child to ITSELF, so captureReceipt(child) reads
+  // a null snapshot, drops the receipt, and the precommit never settles (the
+  // stale-precommit sweep then abandons genuinely-completed work). Settlement
+  // must therefore ride the binding, not the grant. The engine exposes no
+  // non-consuming binding->parent peek, so remember the resolved owner the
+  // instant beginDirectTaskExecution admits the execution and read it back at
+  // settlement, keeping the receipt path independent of grant expiry while the
+  // binding still lives. Consumed on settle; bounded like terminalParentByMessage.
+  const directTaskExecutionOwner = new Map();
+  const executionOwnerKey = (input) => `${input.sessionID} ${input.callID}`;
   log(
     `engine lifecycle bridge=${Boolean(experimental_task_quality)} router-decision bridge=${typeof experimental_task_quality?.awaitRouteDecision === "function"} active=${active}`,
   );
@@ -993,7 +1314,9 @@ export const TaskQualityPlugin = async ({
         // guidance that steered it back into the plan tool.
         if (loaded.lifecycle?.phase === "awaiting-approval") {
           output.system.push(
-            "The current plan generation is already checkpointed and durably recorded; it now awaits the user's explicit go/no-go. Do not call task_quality_checkpoint again and do not mutate the workspace. Present the recorded plan and wait for a later, explicit user-authored approval; only that approval opens implementation.",
+            AUTONOMOUS_MODE
+              ? "The current plan generation is already checkpointed and durably recorded. Do not call task_quality_checkpoint again and do not mutate the workspace yet. In autonomous mode this plan will be approved automatically and you will then be prompted to implement it. Present the recorded plan and do not wait for a human go/no-go; the engine still blocks workspace mutation until that approval is recorded."
+              : "The current plan generation is already checkpointed and durably recorded; it now awaits the user's explicit go/no-go. Do not call task_quality_checkpoint again and do not mutate the workspace. Present the recorded plan and wait for a later, explicit user-authored approval; only that approval opens implementation.",
           );
           return;
         }
@@ -1010,7 +1333,9 @@ export const TaskQualityPlugin = async ({
           [
             "## Task-quality lifecycle — required gate",
             "This is a qualifying routed task. Preserve the existing planning/review skills and repair the plan. Use task_quality_checkpoint with that repaired plan and concrete acceptance criteria whenever the provider can call it. A fully terminal prose-only plan is independently captured and reviewed by the engine; it is never an approval bypass. Do not claim a plan is saved unless the lifecycle records it.",
-            "Show the repaired plan to the user and wait for a later, explicit user-authored go/no-go. The engine blocks workspace mutation until that exact plan generation is approved.",
+            AUTONOMOUS_MODE
+              ? "In autonomous mode the recorded plan will be approved automatically and you will be prompted to implement it; do not wait for a human go/no-go. The engine still blocks workspace mutation until that exact plan generation is approved."
+              : "Show the repaired plan to the user and wait for a later, explicit user-authored go/no-go. The engine blocks workspace mutation until that exact plan generation is approved.",
           ].join(" "),
         );
       } catch (error) {
@@ -1039,6 +1364,29 @@ export const TaskQualityPlugin = async ({
         const sessionID = input.event.properties?.sessionID;
         if (typeof sessionID !== "string" || !sessionID) return;
         const lifecycle = normalizeSnapshot(await adapter.get(sessionID)).data;
+        // F3: in the unattended loop, a stranded approval or a phantom precommit
+        // has no human to unblock it. These two additive road-back edges fire on
+        // idle (turn ended, no tool running) before the artifact-recovery path,
+        // and each moves the state to a legitimately-authorized posture. Default
+        // OFF leaves the interactive human path untouched.
+        if (AUTONOMOUS_MODE) {
+          try {
+            const advanced = await advanceAutonomousLifecycle({
+              adapter,
+              sessionID,
+              lifecycle,
+              internalAutomation,
+              dedup: autonomousContinuation,
+            });
+            if (advanced) return;
+          } catch (error) {
+            // A road-back write failing must not become a completion or unblock
+            // mutation; the state stays exactly as fail-closed as it was and a
+            // later idle retries once the durable state changes.
+            log(`autonomous road-back error for ${sessionID}: ${error?.message || error}`);
+            return;
+          }
+        }
         const pending = lifecycle?.pendingReview;
         if (
           pending?.kind !== "artifact" ||
@@ -1096,7 +1444,27 @@ export const TaskQualityPlugin = async ({
         const artifactRepairBound =
           lifecycle?.pendingReview?.kind === "artifact" &&
           lifecycle.pendingReview.delivery?.messageID === input.parentMessageID;
-        if (approvalBound || artifactReviewBound || artifactRepairBound) {
+        // Autonomous fail-closed hold. In autonomous mode the approval was
+        // minted internally (recordAutonomousApproval) with a synthetic
+        // messageID that can never equal the engine's continuation-turn
+        // parentMessageID, so the messageID-bound checks above would let a
+        // bare "I'm done" narration slip through unheld. FIX-B: hold a
+        // completion narration in EVERY work-owing phase (AUTONOMOUS_HOLD_PHASES),
+        // not just approved / awaiting-artifact-review - otherwise a bare "done"
+        // in planning / awaiting-approval / awaiting-plan-repair / rereview /
+        // review-failed also slips through unheld. The version guard means a
+        // null or legacy lifecycle (an ordinary non-task conversation turn) is
+        // never held. This only ADDS holds; it never removes the power-B teeth.
+        const autonomousUnbound =
+          AUTONOMOUS_MODE &&
+          lifecycle?.version === 1 &&
+          AUTONOMOUS_HOLD_PHASES.has(lifecycle.phase);
+        if (
+          approvalBound ||
+          artifactReviewBound ||
+          artifactRepairBound ||
+          autonomousUnbound
+        ) {
           output.hold = true;
           heldTerminalCandidates.add(heldTerminalKey(input));
         }
@@ -1127,6 +1495,30 @@ export const TaskQualityPlugin = async ({
         // message reopens planning.
         planCheckpointDenied.add(input.sessionID);
         log(`terminal plan capture error: ${error?.message || error}`);
+        // MAJOR-#1 (iter-2 Road-2). FIX-B widened the completion hold to cover
+        // the plan-side phases (planning / awaiting-plan-repair). When the
+        // isolated PLAN review returns non-pass it THROWS out of
+        // captureTerminalPlan (adapter.review), landing here. Every OTHER held
+        // exit in this handler releases the held completion with a road back;
+        // this one alone used to return unreleased, stranding a held completion
+        // in a phase whose only idle re-drive is the plan-repair trigger - the
+        // exact stop-and-strand the demote exists to kill. Release it with the
+        // phase's road back plus the reviewer's own reason, so the stop still
+        // carries a concrete, actionable way forward ("every stop must include a
+        // road back"). Gated on AUTONOMOUS_MODE so the interactive path stays
+        // byte-identical: there, this catch is only ever reached with held=false
+        // (no messageID-bound hold covers the plan-side phases), so this branch
+        // never fires and the pre-demote behavior is preserved exactly.
+        if (held && AUTONOMOUS_MODE && output && typeof output.text === "string") {
+          let heldPhase;
+          try {
+            heldPhase = normalizeSnapshot(await adapter.get(input.sessionID)).data?.phase;
+          } catch {
+            heldPhase = undefined;
+          }
+          output.text = `${autonomousHoldRoadback(heldPhase)} Review detail: ${error?.message || error}`;
+          output.release = true;
+        }
         return;
       }
       try {
@@ -1139,8 +1531,26 @@ export const TaskQualityPlugin = async ({
           return;
         }
         if (held && output && typeof output.text === "string") {
-          output.text =
-            "Completion is not eligible for artifact review yet because the required execution proof is missing or still unsettled. Complete and settle the required work, then retry the final artifact review.";
+          // FIX-B: the hold now spans plan-side phases, so in autonomous mode
+          // the road back must name the checkpoint the CURRENT phase actually
+          // owes. Read the phase fresh; a read failure falls back to the generic
+          // artifact-review guidance (autonomousHoldRoadback's default), never
+          // to no road back. When AUTONOMOUS_MODE is OFF this fall-through can
+          // still be reached with held=true (e.g. approvalBound + a terminal
+          // narration that is not an artifact), so emit the exact pre-demote
+          // string there to keep the interactive path byte-identical.
+          if (AUTONOMOUS_MODE) {
+            let heldPhase;
+            try {
+              heldPhase = normalizeSnapshot(await adapter.get(input.sessionID)).data?.phase;
+            } catch {
+              heldPhase = undefined;
+            }
+            output.text = autonomousHoldRoadback(heldPhase);
+          } else {
+            output.text =
+              "Completion is not eligible for artifact review yet because the required execution proof is missing or still unsettled. Complete and settle the required work, then retry the final artifact review.";
+          }
           output.release = true;
         }
       } catch (error) {
@@ -1273,7 +1683,13 @@ export const TaskQualityPlugin = async ({
       }
       if (planCheckpointDenied.has(input.sessionID)) {
         interceptionEscalation.delete(input.sessionID);
-        output.text = "The plan checkpoint was not recorded, so no implementation or approval is authorized. Resolve the routing or lifecycle failure and checkpoint the plan successfully before asking for GO.";
+        // F4 de-contradiction: in autonomous mode there is no human to "ask for
+        // GO", so the interactive dead-end wording would strand the agent. The
+        // demote reframes it as a road back (fix and re-checkpoint) without
+        // weakening any gate — the plan still has to record before work.
+        output.text = AUTONOMOUS_MODE
+          ? "The plan checkpoint was not recorded, so there is no approved plan to build from yet. This is a road back, not a stop: resolve the routing or lifecycle failure and call the plan checkpoint again. Once it records, work continues automatically."
+          : "The plan checkpoint was not recorded, so no implementation or approval is authorized. Resolve the routing or lifecycle failure and checkpoint the plan successfully before asking for GO.";
         return;
       }
       // FIX-3: the five actionable postures below share one legible three-part
@@ -1420,6 +1836,13 @@ export const TaskQualityPlugin = async ({
           throw new Error(
             "no live engine-issued direct-task execution grant exists for mutation precommit",
           );
+        // Grant is valid HERE (begin just succeeded). Remember the parent so
+        // settlement survives grant expiry (see directTaskExecutionOwner note).
+        directTaskExecutionOwner.set(executionOwnerKey(input), owner.sessionID);
+        if (directTaskExecutionOwner.size > 512)
+          directTaskExecutionOwner.delete(
+            directTaskExecutionOwner.keys().next().value,
+          );
       }
       await markExecutionStarted(adapter, input, owner.sessionID);
     },
@@ -1427,12 +1850,51 @@ export const TaskQualityPlugin = async ({
     "tool.execute.persisted": async (input, output) => {
       try {
         if (!active) return;
-        const owner = await settlementOwner(
-          adapter,
-          experimental_task_quality,
-          input,
-        );
-        await captureReceipt(adapter, input, output, owner.sessionID);
+        // Settle the mutation precommit WITHOUT depending on the admission grant
+        // and WITHOUT consuming the execution binding before the receipt is
+        // durably filed. Two failure modes are closed here:
+        //  (1) grant expiry - a subagent tool that finishes >30min after the
+        //      child spawned no longer has a live directTaskParent grant, so
+        //      lifecycleOwner would resolve the child to itself and drop the
+        //      receipt. Resolve the owner from the carry-forward stash captured
+        //      at preexecute (grant-independent, rides the 2h binding instead).
+        //  (2) ordering race - the old consuming resolver deleted the
+        //      child->parent liveness binding BEFORE the receipt was written; a
+        //      stale-precommit sweep in that window saw no live child, misread
+        //      the just-completed subagent as a phantom, and abandoned real
+        //      work. File the receipt FIRST, then retire the binding, so any
+        //      concurrent sweep in the write window still sees the child live.
+        const key = executionOwnerKey(input);
+        const stashedOwner = directTaskExecutionOwner.get(key);
+        const ownerSessionID =
+          typeof stashedOwner === "string" && stashedOwner
+            ? stashedOwner
+            : (
+                await lifecycleOwner(
+                  adapter,
+                  experimental_task_quality,
+                  input.sessionID,
+                )
+              ).sessionID;
+        const ownsBinding =
+          ownerSessionID !== input.sessionID &&
+          typeof experimental_task_quality?.takeDirectTaskExecution ===
+            "function";
+        try {
+          await captureReceipt(adapter, input, output, ownerSessionID);
+        } finally {
+          // Retire the one-shot binding and stash entry so a replayed persisted
+          // delivery cannot re-settle. Doing this in finally (not only on
+          // success) means a captureReceipt error still releases the binding
+          // rather than leaving a completed child masquerading as live for the
+          // full 2h settle window and masking a later genuine phantom.
+          directTaskExecutionOwner.delete(key);
+          if (ownsBinding)
+            experimental_task_quality.takeDirectTaskExecution(
+              input.sessionID,
+              input.callID,
+            );
+        }
       } catch (error) {
         // Evidence capture cannot authorize anything. A failure leaves the
         // artifact checkpoint closed and never changes the original tool result.
@@ -1526,7 +1988,9 @@ export const TaskQualityPlugin = async ({
               planCheckpointDenied.delete(context.sessionID);
               return {
                 title: "Plan already recorded",
-                output: `Plan generation ${lifecycle.generation} is already durably recorded and awaits the user's explicit go/no-go. Do not call this checkpoint again for this generation; present the recorded plan and wait for a user-authored approval.`,
+                output: AUTONOMOUS_MODE
+                  ? `Plan generation ${lifecycle.generation} is already durably recorded. Do not call this checkpoint again for this generation. In autonomous mode it will be approved automatically and you will be prompted to implement it — do not wait for a human go/no-go.`
+                  : `Plan generation ${lifecycle.generation} is already durably recorded and awaits the user's explicit go/no-go. Do not call this checkpoint again for this generation; present the recorded plan and wait for a user-authored approval.`,
                 metadata: { taskQuality: { phase: lifecycle.phase, generation: lifecycle.generation } },
               };
             }
@@ -1554,7 +2018,9 @@ export const TaskQualityPlugin = async ({
               completionDenied.delete(context.sessionID);
               return {
                 title: "Repaired plan recorded",
-                output: `Repaired plan generation ${recorded.generation} is recorded after the durably delivered review. Show this exact plan to the user and wait for an explicit go/no-go before any implementation tool call.`,
+                output: AUTONOMOUS_MODE
+                  ? `Repaired plan generation ${recorded.generation} is recorded after the durably delivered review. In autonomous mode it will be approved automatically and you will be prompted to implement it. Do not call an implementation tool until that approval prompt arrives, and do not wait for a human go/no-go.`
+                  : `Repaired plan generation ${recorded.generation} is recorded after the durably delivered review. Show this exact plan to the user and wait for an explicit go/no-go before any implementation tool call.`,
                 metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, planDigest: recorded.repairedPlan.digest, reviewID: recorded.addressReceipt.reviewID, reportDigest: recorded.addressReceipt.reportDigest, deliveryMessageID: recorded.addressReceipt.deliveryMessageID } },
               };
             }
@@ -1593,7 +2059,9 @@ export const TaskQualityPlugin = async ({
             completionDenied.delete(context.sessionID);
             return {
               title: "Repaired plan recorded",
-              output: `Repaired plan generation ${recorded.generation} is recorded. Show this exact plan to the user and wait for an explicit go/no-go before any implementation tool call.`,
+              output: AUTONOMOUS_MODE
+                ? `Repaired plan generation ${recorded.generation} is recorded. In autonomous mode it will be approved automatically and you will be prompted to implement it. Do not call an implementation tool until that approval prompt arrives, and do not wait for a human go/no-go.`
+                : `Repaired plan generation ${recorded.generation} is recorded. Show this exact plan to the user and wait for an explicit go/no-go before any implementation tool call.`,
               metadata: {
                 taskQuality: {
                   phase: recorded.phase,
@@ -1606,7 +2074,9 @@ export const TaskQualityPlugin = async ({
             planCheckpointDenied.add(context.sessionID);
             return {
               title: "Task-quality plan not recorded",
-              output: `No implementation is authorized: ${error?.message || error}`,
+              output: AUTONOMOUS_MODE
+                ? `The plan could not be recorded, so there is nothing approved to build from yet. Fix the failure and call the plan checkpoint again to continue: ${error?.message || error}`
+                : `No implementation is authorized: ${error?.message || error}`,
             };
           }
         },
