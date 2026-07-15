@@ -441,6 +441,41 @@ export function recordUserDecision(lifecycle, { origin, messageID, text, expecte
   }
 }
 
+// The autonomous-loop counterpart of recordUserDecision's GO. In interactive use
+// a human types "go" after a plan clears review; in an unattended loop no such
+// message ever arrives, so a fully-reviewed plan strands at AWAITING_APPROVAL
+// forever ("you may not work" with no road back). This edge is that road back:
+// it mints an approval binding IDENTICAL in shape to a human GO, so every
+// downstream gate (settlement, artifact review, completion refusal) behaves
+// exactly as if a person had approved. It is strictly ADDITIVE and weakens no
+// gate — the plan still had to pass plan-review to reach AWAITING_APPROVAL, and
+// completion still has to pass the isolated artifact review. It is invoked only
+// under the autonomous config flag at the caller, so interactive human-GO is
+// unchanged. There is deliberately no autonomous no-go: declining is a stop with
+// a road back, handled by the review machinery, never a silent auto-decline.
+export function recordAutonomousApproval(lifecycle, { messageID, expectedGeneration, now = Date.now() } = {}) {
+  if (!lifecycle || lifecycle.version !== 1) return { ok: false, reason: 'missing-lifecycle' }
+  if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration !== lifecycle.generation) return { ok: false, reason: 'stale-plan-generation' }
+  if (lifecycle.phase !== PHASE.AWAITING_APPROVAL || lifecycle.repairedPlan?.generation !== lifecycle.generation) {
+    return { ok: false, reason: 'no-current-repaired-plan-awaiting-approval' }
+  }
+  if (typeof messageID !== 'string' || !messageID) return { ok: false, reason: 'missing-message-identity' }
+  return {
+    ok: true,
+    lifecycle: Object.freeze({
+      ...lifecycle,
+      phase: PHASE.APPROVED,
+      approval: Object.freeze({
+        messageID,
+        recordedAt: nowValue(now),
+        generation: lifecycle.generation,
+        planDigest: lifecycle.repairedPlan.digest,
+      }),
+      updatedAt: nowValue(now),
+    }),
+  }
+}
+
 // A new substantive external-user turn is a new scope boundary even when the
 // router returns NONE or is unavailable. Close the old authorization before
 // any tool from that turn can borrow it. Standalone go/no decisions remain
