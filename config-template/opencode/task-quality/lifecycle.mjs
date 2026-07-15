@@ -660,6 +660,43 @@ export function recordExecutionPermissionRejected(lifecycle, { callID, tool, now
   return finishPendingScopeTransition(settled, { now })
 }
 
+// The autonomous-loop counterpart of recordExecutionPermissionRejected for a
+// precommit that can never settle on its own — a crashed or phantom execution
+// whose real side effect is UNKNOWN. A permission rejection is the narrow
+// known-no-side-effect case, so it legitimately keeps the approval live; an
+// abandon must assume the tool may already have mutated, so it must NOT leave
+// mutation authorized. It sets the durable revocation latch FIRST (which
+// immediately disables new mutation through hasCurrentApproval's
+// !revocationPending conjunct), removes the exact named precommit, then routes
+// through the SAME settlement machinery every other path uses:
+//   receipts exist -> AWAITING_ARTIFACT_REVIEW: the work already produced gets
+//     its isolated review; the plan/approval bindings stay intact so that review
+//     is reachable, but the phase is no longer APPROVED so mutation stays denied.
+//   no receipts    -> fresh PLANNING at generation+1: nothing was produced, so
+//     the task re-plans from a clean slate.
+// Either branch re-authorizes mutation only after a NEW review/approval — this
+// is a road back from a permanent freeze, never a fail-open re-authorization
+// over unknown on-disk state. If OTHER precommits are still pending, the shared
+// transition stays latched (fail-closed) until they too settle. This edge is
+// invoked only under the autonomous caller flag; interactive runs are unchanged.
+// The forensic breadcrumb (which call was abandoned and why) is emitted by the
+// caller's log layer, so no new field is added to the persisted lifecycle shape.
+export function abandonStaleExecution(lifecycle, { callID, messageID, now = Date.now() } = {}) {
+  if (!lifecycle || lifecycle.version !== 1) return { ok: false, reason: 'missing-lifecycle' }
+  if (typeof callID !== 'string' || !callID) return { ok: false, reason: 'missing-call-identity' }
+  if (typeof messageID !== 'string' || !messageID) return { ok: false, reason: 'missing-message-identity' }
+  const pending = Array.isArray(lifecycle.pendingExecutions) ? lifecycle.pendingExecutions : []
+  const match = pending.find((item) => item?.callID === callID)
+  if (!match) return { ok: false, reason: 'no-matching-stale-execution' }
+  const latched = Object.freeze({
+    ...lifecycle,
+    revocationPending: Object.freeze({ messageID, requestedAt: nowValue(now) }),
+    pendingExecutions: Object.freeze(pending.filter((item) => item?.callID !== callID)),
+    updatedAt: nowValue(now),
+  })
+  return { ok: true, lifecycle: finishPendingScopeTransition(latched, { now }) }
+}
+
 const RECEIPT_LIMIT = 24
 const DIGEST = /^[a-f0-9]{64}$/
 
