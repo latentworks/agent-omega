@@ -31,6 +31,7 @@ import {
   withLifecycleCertifiedBetterWork,
   classifyAutonomousSmoke,
   assertTemplateDivergenceAcceptable,
+  taskQualityTemplateDivergence,
 } from '../live/task-quality-campaign.mjs'
 
 // ---------------------------------------------------------------------------
@@ -1600,4 +1601,24 @@ test('assertTemplateDivergenceAcceptable: genuine divergence still throws', () =
 test('assertTemplateDivergenceAcceptable: null report hard-fails', () => {
   assert.throws(() => assertTemplateDivergenceAcceptable(null), /empty or missing/)
   assert.throws(() => assertTemplateDivergenceAcceptable(undefined), /empty or missing/)
+})
+
+// r7 review B-3 (walk->guard HANDOFF): every test above feeds the GUARD a hand-built
+// report. None proves the WALK actually produces the sourceFileCount:0 shape the
+// guard's hard-fail depends on. If the walk miscounted a missing tree (or threw), the
+// guard would never fire in production despite passing its own unit tests. This drives
+// the REAL walk at a guaranteed-nonexistent source root and confirms the two halves
+// are wired: walk yields the vacuous-green shape → guard rejects it.
+test('taskQualityTemplateDivergence -> guard: a missing source tree yields sourceFileCount:0 and is REJECTED (B-3 handoff)', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'b3-handoff-'))
+  try {
+    const missing = path.join(parent, 'never-created-source') // parent exists; this child does not
+    const div = taskQualityTemplateDivergence({ sourceRoot: missing, packagedRoot: missing })
+    // The walk on a missing tree must count zero and see no divergence — the exact
+    // vacuous-green shape (0 files ⇒ nothing only-on-one-side ⇒ diverged:false).
+    assert.equal(div.sourceFileCount, 0)
+    assert.equal(div.diverged, false)
+    // Handoff: that REAL walk output must drive the guard to hard-fail.
+    assert.throws(() => assertTemplateDivergenceAcceptable(div), /empty or missing/)
+  } finally { fs.rmSync(parent, { recursive: true, force: true }) }
 })

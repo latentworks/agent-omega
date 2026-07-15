@@ -295,9 +295,14 @@ export async function verifiedReleaseIdentity() {
 // the new source commit. That exact stale-plugin trap already bit this loop once.
 // This walks both trees, digests every file, and reports any file present on one
 // side only or differing in content. Pure/read-only so the lead can replay it.
-function taskQualityTemplateDivergence() {
-  const sourceRoot = path.join(TEMPLATE, 'task-quality')
-  const packagedRoot = MANAGED_TASK_QUALITY_TEMPLATE
+function taskQualityTemplateDivergence({
+  // Defaults are the real trees. Overridable so the walk->guard HANDOFF — a missing
+  // or empty source tree MUST yield sourceFileCount:0 so the guard rejects it as
+  // vacuous-green — is testable without shuffling the real checkout. Existing callers
+  // pass no args and are unaffected. (r7 review B-3.)
+  sourceRoot = path.join(TEMPLATE, 'task-quality'),
+  packagedRoot = MANAGED_TASK_QUALITY_TEMPLATE,
+} = {}) {
   const listFiles = (root) => {
     const out = []
     const visit = (dir) => {
