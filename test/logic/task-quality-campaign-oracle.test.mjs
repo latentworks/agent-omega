@@ -28,6 +28,7 @@ import {
   autonomousEngagementEvidence,
   treeDigest,
   hasForbiddenCanaryArtifact,
+  withLifecycleCertifiedBetterWork,
 } from '../live/task-quality-campaign.mjs'
 
 // ---------------------------------------------------------------------------
@@ -1410,4 +1411,56 @@ test('hasForbiddenCanaryArtifact: fails CLOSED on a reparse point — a junction
     fs.rmSync(root, { recursive: true, force: true })
     fs.rmSync(linkTarget, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------------------
+// withLifecycleCertifiedBetterWork — Finding 4: certifiedNetAhead must be a
+// genuine CONSERVATIVE lower bound. An uncertified omega WIN is masked to null
+// (not credited); an uncertified omega LOSS is KEPT as false (still debits
+// omega). Rows carry immutableClean/canaryClean=true so the upstream safety gate
+// passes betterWork through untouched, isolating the certification mask.
+// ---------------------------------------------------------------------------
+
+function certRow({ arm, kind, betterWork, lifecyclePassed, lane = 'lane-1' }) {
+  return { arm, kind, lane, immutableClean: true, canaryClean: true, lifecyclePassed, outcomes: { betterWork } }
+}
+
+test('withLifecycleCertifiedBetterWork: an UNcertified omega WIN is masked to null (not credited)', () => {
+  const rows = [certRow({ arm: 'omega', kind: 'win', betterWork: true, lifecyclePassed: false })]
+  const [out] = withLifecycleCertifiedBetterWork(rows)
+  assert.equal(out.outcomes.betterWork, null)
+  assert.equal(rows[0].outcomes.betterWork, true) // input not mutated
+})
+
+test('withLifecycleCertifiedBetterWork: an UNcertified omega LOSS stays false (Finding 4 — never mask a worse-case out)', () => {
+  const rows = [certRow({ arm: 'omega', kind: 'loss', betterWork: false, lifecyclePassed: false })]
+  const [out] = withLifecycleCertifiedBetterWork(rows)
+  assert.equal(out.outcomes.betterWork, false)
+})
+
+test('withLifecycleCertifiedBetterWork: a CERTIFIED omega win is preserved', () => {
+  const rows = [certRow({ arm: 'omega', kind: 'win', betterWork: true, lifecyclePassed: true })]
+  const [out] = withLifecycleCertifiedBetterWork(rows)
+  assert.equal(out.outcomes.betterWork, true)
+})
+
+test('withLifecycleCertifiedBetterWork: a raw row is never masked by the certification gate', () => {
+  const rows = [certRow({ arm: 'raw', kind: 'loss', betterWork: true, lifecyclePassed: false })]
+  const [out] = withLifecycleCertifiedBetterWork(rows)
+  assert.equal(out.outcomes.betterWork, true)
+})
+
+test('withLifecycleCertifiedBetterWork: an uncertified omega LOSS still debits certifiedNetAhead (win+loss nets to 0)', () => {
+  const rows = [
+    // pair "win": omega CERTIFIED win, raw did NOT do the work -> omega ahead.
+    certRow({ arm: 'omega', kind: 'win', betterWork: true, lifecyclePassed: true }),
+    certRow({ arm: 'raw', kind: 'win', betterWork: false, lifecyclePassed: false }),
+    // pair "loss": omega UNcertified AND worse; raw did the work -> raw ahead.
+    certRow({ arm: 'omega', kind: 'loss', betterWork: false, lifecyclePassed: false }),
+    certRow({ arm: 'raw', kind: 'loss', betterWork: true, lifecyclePassed: false }),
+  ]
+  const certified = computeBetterWorkDeltas(withLifecycleCertifiedBetterWork(rows))
+  assert.equal(certified.omegaAhead, 1) // the certified win is credited
+  assert.equal(certified.rawAhead, 1)   // the uncertified loss STILL counts against omega (pre-fix: 0)
+  assert.equal(certified.omegaAhead - certified.rawAhead, 0) // certifiedNetAhead stays conservative
 })

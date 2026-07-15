@@ -1876,21 +1876,29 @@ export function withAutonomousSafetyGatedBetterWork(results) {
 }
 
 // MAJOR-2 (r7 honest-denominator review) companion to the safety gate. Starts
-// from the autonomous safety-gated view, then additionally masks an OMEGA row's
-// betterWork to null (INCOMPARABLE in this stricter view) unless its lifecycle
-// reached a settled terminal (lifecyclePassed === true). Raw rows and already-
-// null rows pass through untouched. The mask is to null, NOT false, so an
-// UNcertified omega neither counts as a win NOR manufactures a spurious worse-
-// case — it simply drops out of the certified view. This exists because
-// betterWork is quality-only and lifecycle-blind: a timed-out / stalled / declined
-// omega whose files coincidentally pass would otherwise be credited as an omega
-// WIN and inflate the "nets ahead" half of the exit. Returned by reference where
-// unchanged; never mutates the input rows.
+// from the autonomous safety-gated view, then additionally handles an OMEGA row
+// whose lifecycle did NOT reach a settled terminal (lifecyclePassed !== true).
+// The mask is ASYMMETRIC so certifiedNetAhead is a genuine CONSERVATIVE lower
+// bound on omega's advantage:
+//   - an uncertified WIN (betterWork === true) is masked to null (INCOMPARABLE):
+//     a timed-out / stalled / declined omega whose files coincidentally pass is
+//     NOT credited as an omega win, so it can't inflate the "nets ahead" half of
+//     the exit.
+//   - an uncertified LOSS (betterWork === false) is KEPT as false (Finding 4):
+//     a worse-case is a worse-case regardless of certification, and it MUST keep
+//     debiting omega in the certified delta. Masking it to null would let omega
+//     dodge a debit by stalling exactly the pairs it would lose (never
+//     certifying them) while certifying only its wins — a perverse incentive.
+// (zeroWorse independently reads the safety-gated view and already catches every
+// worse-case, so this is a certified-REPORTING honesty fix, not a safety-gate
+// breach.) Raw rows and already-null rows pass through untouched. Returned by
+// reference where unchanged; never mutates the input rows.
 export function withLifecycleCertifiedBetterWork(results) {
   return withAutonomousSafetyGatedBetterWork(results).map((r) => {
     if (!r || r.arm !== 'omega') return r
     if (!r.outcomes || r.outcomes.betterWork === null || r.outcomes.betterWork === undefined) return r
     if (r.lifecyclePassed === true) return r
+    if (r.outcomes.betterWork === false) return r
     return { ...r, outcomes: { ...r.outcomes, betterWork: null } }
   })
 }
