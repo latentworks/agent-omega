@@ -29,6 +29,8 @@ import {
   treeDigest,
   hasForbiddenCanaryArtifact,
   withLifecycleCertifiedBetterWork,
+  classifyAutonomousSmoke,
+  assertTemplateDivergenceAcceptable,
 } from '../live/task-quality-campaign.mjs'
 
 // ---------------------------------------------------------------------------
@@ -1463,4 +1465,109 @@ test('withLifecycleCertifiedBetterWork: an uncertified omega LOSS still debits c
   assert.equal(certified.omegaAhead, 1) // the certified win is credited
   assert.equal(certified.rawAhead, 1)   // the uncertified loss STILL counts against omega (pre-fix: 0)
   assert.equal(certified.omegaAhead - certified.rawAhead, 0) // certifiedNetAhead stays conservative
+})
+
+// ---------------------------------------------------------------------------
+// Commit 4 — autonomous-smoke pass/fail classifier (B-1 drove, B-2 engaged).
+// The smoke is a MECHANISM proof: it passes only when the lifecycle DROVE past the
+// awaiting-approval pause (F3 fired) AND the self-drive reached a genuine settled
+// terminal. classifyAutonomousSmoke is the pure predicate behind that gate.
+// ---------------------------------------------------------------------------
+
+// B-1: a run stranded at awaiting-plan-repair (a PRE-approval phase) must NOT count
+// as having driven. The pre-fix denylist (phase !== planning && !== awaiting-approval)
+// wrongly admitted it → drove=true → passed=true. RED on pre-fix.
+test('classifyAutonomousSmoke: awaiting-plan-repair is pre-drive, does not pass (B-1)', () => {
+  const r = classifyAutonomousSmoke({ phase: 'awaiting-plan-repair', terminalReached: 'artifact-reviewed', approvalGranted: false })
+  assert.equal(r.drove, false)
+  assert.equal(r.passed, false)
+})
+
+// B-1: the genuine pre-drive phases never count as drive.
+test('classifyAutonomousSmoke: planning / awaiting-approval are pre-drive', () => {
+  for (const phase of ['planning', 'awaiting-approval', 'awaiting-plan-repair']) {
+    assert.equal(classifyAutonomousSmoke({ phase, terminalReached: 'artifact-reviewed', approvalGranted: false }).drove, false)
+  }
+})
+
+// B-1: every post-approval phase counts as drive.
+test('classifyAutonomousSmoke: post-approval phases count as drive', () => {
+  for (const phase of ['approved', 'awaiting-artifact-review', 'awaiting-artifact-rereview', 'artifact-reviewed', 'artifact-review-failed']) {
+    assert.equal(classifyAutonomousSmoke({ phase, terminalReached: 'artifact-reviewed', approvalGranted: true }).drove, true)
+  }
+})
+
+// B-2: a 'stall' is a no-progress DEATH, not a settled terminal. Pre-fix counted
+// anything except no-engine-state/timeout as engaged, so a hung self-drive that
+// stalled at an approved phase falsely passed. RED on pre-fix.
+test('classifyAutonomousSmoke: a stall is not an engaged terminal (B-2)', () => {
+  const r = classifyAutonomousSmoke({ phase: 'approved', terminalReached: 'stall', approvalGranted: true })
+  assert.equal(r.drove, true)
+  assert.equal(r.engaged, false)
+  assert.equal(r.passed, false)
+})
+
+// B-2: timeout and no-engine-state remain non-terminal (guard against regression).
+test('classifyAutonomousSmoke: timeout / no-engine-state are not engaged', () => {
+  for (const terminalReached of ['timeout', 'no-engine-state', 'stall']) {
+    assert.equal(classifyAutonomousSmoke({ phase: 'awaiting-artifact-review', terminalReached, approvalGranted: true }).engaged, false)
+  }
+  for (const terminalReached of ['artifact-reviewed', 'declined', 'artifact-review-failed']) {
+    assert.equal(classifyAutonomousSmoke({ phase: 'approved', terminalReached, approvalGranted: true }).engaged, true)
+  }
+})
+
+// declined disambiguation: a no-go AT the gate never minted approval → not drive;
+// rounds-exhausted AFTER driving carries the approval binding → drive.
+test('classifyAutonomousSmoke: declined is drive only with an approval binding', () => {
+  const noGo = classifyAutonomousSmoke({ phase: 'declined', terminalReached: 'declined', approvalGranted: false })
+  assert.equal(noGo.drove, false)
+  assert.equal(noGo.passed, false)
+  const exhausted = classifyAutonomousSmoke({ phase: 'declined', terminalReached: 'declined', approvalGranted: true })
+  assert.equal(exhausted.drove, true)
+  assert.equal(exhausted.engaged, true)
+  assert.equal(exhausted.passed, true)
+})
+
+// A clean full success passes; a null/garbage phase never passes.
+test('classifyAutonomousSmoke: clean success passes; missing phase fails', () => {
+  assert.equal(classifyAutonomousSmoke({ phase: 'artifact-reviewed', terminalReached: 'artifact-reviewed', approvalGranted: true }).passed, true)
+  assert.equal(classifyAutonomousSmoke({ phase: null, terminalReached: 'artifact-reviewed', approvalGranted: true }).passed, false)
+  assert.equal(classifyAutonomousSmoke({}).passed, false)
+})
+
+// ---------------------------------------------------------------------------
+// Commit 4 — B-3: the template-divergence guard must not pass vacuously. `diverged`
+// is false when BOTH trees are empty (0 files ⇒ nothing only-on-one-side), so the
+// pre-fix guard silently greenlit a possibly-stale plugin whenever the source path
+// was wrong/missing. assertTemplateDivergenceAcceptable now hard-fails on an empty
+// source tree.
+// ---------------------------------------------------------------------------
+
+// RED on pre-fix: sourceFileCount 0 with diverged=false used to be accepted.
+test('assertTemplateDivergenceAcceptable: empty source tree hard-fails (B-3)', () => {
+  assert.throws(
+    () => assertTemplateDivergenceAcceptable({ sourceRoot: '/nope', sourceFileCount: 0, packagedFileCount: 0, diverged: false, onlyInSource: [], onlyInPackaged: [], contentMismatch: [] }),
+    /empty or missing/,
+  )
+})
+
+// A real, in-sync tree (non-empty, not diverged) is accepted and returned as-is.
+test('assertTemplateDivergenceAcceptable: non-empty in-sync tree is accepted', () => {
+  const div = { sourceRoot: '/src', sourceFileCount: 7, packagedFileCount: 7, diverged: false, onlyInSource: [], onlyInPackaged: [], contentMismatch: [] }
+  assert.equal(assertTemplateDivergenceAcceptable(div), div)
+})
+
+// A genuine divergence (non-empty but mismatched) still throws the original error.
+test('assertTemplateDivergenceAcceptable: genuine divergence still throws', () => {
+  assert.throws(
+    () => assertTemplateDivergenceAcceptable({ sourceRoot: '/src', sourceFileCount: 7, packagedFileCount: 6, diverged: true, onlyInSource: ['index.js'], onlyInPackaged: [], contentMismatch: [] }),
+    /diverged from committed source/,
+  )
+})
+
+// A null/undefined report is treated as unusable and hard-fails.
+test('assertTemplateDivergenceAcceptable: null report hard-fails', () => {
+  assert.throws(() => assertTemplateDivergenceAcceptable(null), /empty or missing/)
+  assert.throws(() => assertTemplateDivergenceAcceptable(undefined), /empty or missing/)
 })

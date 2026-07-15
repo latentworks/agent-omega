@@ -319,6 +319,7 @@ function taskQualityTemplateDivergence() {
     .sort()
   return {
     sourceRoot, packagedRoot, onlyInSource, onlyInPackaged, contentMismatch,
+    sourceFileCount: sourceFiles.size, packagedFileCount: packagedFiles.size,
     diverged: onlyInSource.length > 0 || onlyInPackaged.length > 0 || contentMismatch.length > 0,
   }
 }
@@ -328,8 +329,17 @@ function taskQualityTemplateDivergence() {
 // name. Throwing here (rather than silently running stale) is the whole point —
 // a stale plugin invalidates every autonomous result. The fix is always to
 // rebuild the desktop app (or re-copy the template), never to loosen this.
-function assertTaskQualityTemplateInSync() {
-  const divergence = taskQualityTemplateDivergence()
+// Pure adjudicator for a divergence report, split out so the vacuous-green guard is
+// unit-testable without a real filesystem. The pre-fix code only threw on `diverged`,
+// but `diverged` is false when BOTH trees are empty/absent (0 files on each side ⇒ no
+// onlyInSource/onlyInPackaged/contentMismatch) — so a wrong or missing source path made
+// the guard silently pass while comparing NOTHING, greenlighting a possibly-stale plugin
+// (B-3). Requiring a non-empty source tree closes that hole: there is no legitimate
+// autonomous run in which the committed plugin source is empty.
+export function assertTemplateDivergenceAcceptable(divergence) {
+  if (!divergence || divergence.sourceFileCount === 0) {
+    throw new Error(`autonomous run blocked: the committed task-quality source tree at ${divergence?.sourceRoot ?? '(unknown)'} is empty or missing, so the packaged-vs-committed divergence guard cannot prove the plugin is current. Restore the source checkout / fix the template path before running autonomous mode.`)
+  }
   if (divergence.diverged) {
     throw new Error(`autonomous run blocked: packaged task-quality plugin diverged from committed source — rebuild the desktop app so bin/Release matches config-template. ${JSON.stringify({
       onlyInSource: divergence.onlyInSource,
@@ -338,6 +348,10 @@ function assertTaskQualityTemplateInSync() {
     })}`)
   }
   return divergence
+}
+
+function assertTaskQualityTemplateInSync() {
+  return assertTemplateDivergenceAcceptable(taskQualityTemplateDivergence())
 }
 
 // The omega config template is ~7k files (plugin node_modules). Copying it
@@ -2503,6 +2517,50 @@ async function autonomousSeries(runID = 'autonomous-series') {
   console.log(JSON.stringify(summary))
 }
 
+// Phases only reachable AFTER F3 mints the approval binding, i.e. the lifecycle
+// DROVE past the awaiting-approval pause. Deliberately excludes the three pre-drive
+// phases (planning / awaiting-plan-repair / awaiting-approval) — the pre-fix denylist
+// only excluded planning + awaiting-approval, so a run stranded at awaiting-plan-repair
+// was falsely scored as having driven (B-1). 'declined' is NOT a member because it is
+// reachable two ways — a no-go AT the approval gate (never drove) or review-rounds-
+// exhausted AFTER driving — and is credited as drive only when the lifecycle also
+// carries the approval binding (handled in classifyAutonomousSmoke).
+const AUTONOMOUS_SMOKE_DROVE_PHASES = Object.freeze([
+  'approved',
+  'awaiting-artifact-review',
+  'awaiting-artifact-rereview',
+  'artifact-reviewed',
+  'artifact-review-failed',
+])
+// The only GENUINELY SETTLED terminals — the self-drive reached a real review
+// verdict. 'stall' (no-progress death) and 'timeout' (ceiling hit while engaged)
+// are engaged-but-UNSETTLED, and 'no-engine-state' never engaged at all. The pre-fix
+// predicate counted everything except no-engine-state/timeout as engaged, so a 'stall'
+// (a hung self-drive) falsely passed the smoke (B-2).
+const AUTONOMOUS_SMOKE_SETTLED_TERMINALS = Object.freeze([
+  'artifact-reviewed',
+  'declined',
+  'artifact-review-failed',
+])
+
+// Pure pass/fail classifier for the autonomous smoke, split out so it is unit-testable
+// without a live cloud case. Inputs: the lifecycle's final `phase`, pollAutonomousTerminal's
+// `terminalReached` verdict, and `approvalGranted` = Boolean(lifecycle.approval).
+//   drove   = F3 pushed the lifecycle PAST awaiting-approval. Proven by a post-approval
+//             phase, OR by a 'declined' that still carries the approval binding
+//             (review-rounds-exhausted AFTER driving — a no-go 'declined' never mints
+//             `approval`, so approvalGranted is false there and it does NOT count).
+//   engaged = the self-drive reached a genuine settled terminal (real review verdict).
+//   passed  = drove AND engaged — the smoke proves the MECHANISM, not task quality.
+export function classifyAutonomousSmoke({ phase, terminalReached, approvalGranted } = {}) {
+  const drovePhases = new Set(AUTONOMOUS_SMOKE_DROVE_PHASES)
+  const settledTerminals = new Set(AUTONOMOUS_SMOKE_SETTLED_TERMINALS)
+  const drove = typeof phase === 'string'
+    && (drovePhases.has(phase) || (phase === 'declined' && Boolean(approvalGranted)))
+  const engaged = typeof terminalReached === 'string' && settledTerminals.has(terminalReached)
+  return { drove, engaged, passed: drove && engaged }
+}
+
 // Cheap end-to-end proof that F3 self-drive works before spending a full 80B run.
 // Builds ONE omega case against a cloud OpenAI-compatible lane read from env
 // (AGENT_OMEGA_SMOKE_BASEURL / _MODEL / _APIKEY; kind via _KIND, default repair),
@@ -2539,15 +2597,16 @@ async function autonomousSmoke(runID = 'autonomous-smoke') {
   const evaluation = await autonomousCase(lane, 'omega', kind, runID)
   const phase = evaluation.lifecycle?.phase ?? null
   const terminalReached = evaluation.terminalReached ?? null
-  // F3 fired iff the phase left the pre-drive states — in autonomous mode F3 is
-  // exactly what flips awaiting-approval → approved, so any later phase is proof
-  // the engine self-continued past where a base model would have stopped.
-  const drove = phase !== null && phase !== 'planning' && phase !== 'awaiting-approval'
-  const engaged = Boolean(terminalReached) && terminalReached !== 'no-engine-state' && terminalReached !== 'timeout'
-  const passed = drove && engaged
+  // The approval binding is minted only when the plan is authorized (human GO or F3's
+  // recordAutonomousApproval) and preserved through every downstream phase, so its
+  // presence proves the lifecycle drove past the awaiting-approval pause even for a
+  // 'declined' terminal (which is otherwise ambiguous between a gate no-go and rounds-
+  // exhausted-after-driving).
+  const approvalGranted = Boolean(evaluation.lifecycle?.approval)
+  const { drove, engaged, passed } = classifyAutonomousSmoke({ phase, terminalReached, approvalGranted })
   const summary = {
     ...manifest, finishedAt: new Date().toISOString(),
-    evaluation, phase, terminalReached, drove, engaged, passed,
+    evaluation, phase, terminalReached, approvalGranted, drove, engaged, passed,
   }
   writeJson(path.join(ROOT, `${runID}.summary.json`), summary)
   console.log(JSON.stringify(summary))
