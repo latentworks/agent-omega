@@ -13,6 +13,7 @@ import { configuredReviewerCandidates } from "./reviewer.mjs";
 import { getRouteHandoff, digestText } from "./handoff.mjs";
 import {
   admitTaskQualityTool,
+  parseImmutableOracles,
   CONTROL_TOOL,
   ARTIFACT_CONTROL_TOOL,
 } from "./admission.mjs";
@@ -106,6 +107,16 @@ const CRAP_PARKED_REREVIEW_RECOVERY_PROMPT = [
 // and only ever holds MORE completions, never fewer.
 const AUTONOMOUS_MODE = /^(1|true|yes|on)$/i.test(
   String(process.env.TASK_QUALITY_AUTONOMOUS || "").trim(),
+);
+// Lever I — immutable-artifact guard. The harness declares the acceptance-oracle
+// basenames (the hidden test/spec and the task README) via OMEGA_IMMUTABLE_ORACLES
+// (comma / semicolon / whitespace separated). When set, an otherwise-authorized
+// mutating write whose target basename exactly matches a declared oracle is denied
+// at admission. Deterministic, harness-declared (never inferred from prose),
+// fail-open. Parsed once here into a normalized Set; null (unset/empty) means the
+// guard abstains, so production behavior is byte-identical until explicitly enabled.
+const IMMUTABLE_ORACLES = parseImmutableOracles(
+  process.env.OMEGA_IMMUTABLE_ORACLES,
 );
 // FALLBACK-ONLY age floor. The primary phantom signal is now real engine
 // liveness (isExecutionLive): the sweep asks the engine whether the subagent
@@ -1798,6 +1809,8 @@ export const TaskQualityPlugin = async ({
             trustedControl: input.trustedControl,
             lifecycle: owner?.snapshot?.data || null,
             directTaskWrapperCallID,
+            args: input.args,
+            immutableOracles: IMMUTABLE_ORACLES,
           }),
         );
       } catch (error) {
