@@ -2305,36 +2305,28 @@ async function autonomousCase(lane, arm, kind, sequence) {
       },
     })
 
-    // no-engine-state == the engine NEVER produced any lifecycle data across the
-    // whole drive: a process-death / harness failure (like coreCase's never-engaged
-    // PRODUCT_STALL). EXCLUDE from the denominator — do not score it as an omega
-    // quality loss. EVERY other terminal disposition (declined / persistent
-    // review-failed / stall / timeout) ENGAGED and is a scored omega failure that
-    // stays in the denominator, handled by the normal scoring path below.
-    if (arm === 'omega' && terminal?.reached === 'no-engine-state') {
-      // Finding 2: NO LIVE engine state is not, by itself, grounds to EXCLUDE — the
-      // engine may have engaged and then died. Only exclude as a harness failure when
-      // durable evidence ALSO shows no engagement (no persisted turn-start AND the
-      // workspace is unchanged from baseline). Otherwise fall through to the normal
-      // scoring path, which scores it as an ENGAGED omega failure (lifecyclePassed is
-      // false since reached !== 'artifact-reviewed'), keeping it in the denominator.
-      const evidence = autonomousEngagementEvidence({
-        caseRoot: result.caseRoot,
-        workdir: result.workdir,
-        baselineTree: result.fixture?.baselineTree ?? baselineTree,
-      })
-      if (!evidence.engaged) {
-        const evaluation = {
-          id, lane: lane.label, arm, kind, passed: false, autonomous: true,
-          terminalReached: 'no-engine-state',
-          harnessFailure: 'autonomous lifecycle never produced engine state and left no engagement evidence',
-          outcomes: computeOutcomes({ arm, harnessFailure: true }),
-        }
-        writeJson(path.join(result.caseRoot, 'evaluation.json'), evaluation)
-        return evaluation
-      }
-      // engaged-then-died → do NOT exclude; fall through to score as an omega failure.
-    }
+    // no-engine-state (omega drove the whole ceiling without the lifecycle ever
+    // surfacing engine state) is SCORED, not excluded — and the reason is load-
+    // bearing, so do NOT re-add an exclusion here without reading this:
+    //   * This disposition is only REACHABLE from beforeStop's poll, which runs
+    //     AFTER runCase's prompt loop completed. That loop cannot complete without a
+    //     base-engine turn-start for every prompt (it throws otherwise). So a
+    //     turn-start is ALWAYS persisted to result.json by the time we get here — the
+    //     base engine demonstrably engaged. An exclusion gated on "no engagement
+    //     evidence" was therefore DEAD CODE (autonomousEngagementEvidence().engaged is
+    //     always true on this path); it was removed rather than left as a false guard.
+    //   * Excluding it would drop the pair from the denominator. If the raw arm solved
+    //     the same task, that HIDES a raw-ahead worse-case — the cardinal sin — and it
+    //     strikes exactly when omega produced nothing. no-engine-state alone also
+    //     cannot tell a plugin-infra failure apart from omega simply doing nothing
+    //     (omega's own fault), so there is no cardinal-sin-safe basis to exclude on
+    //     this single-arm signal.
+    // So we fall through to the normal scoring path: lifecyclePassed is false
+    // (reached !== 'artifact-reviewed'), the untouched/partial workspace fails the
+    // oracle, betterWork resolves false, and the case stays in the denominator where
+    // raw can register ahead. Any FUTURE exclusion must be cardinal-sin-safe — e.g.
+    // cross-arm: exclude only when BOTH arms reached no-engine-state (unambiguous
+    // infra), never on omega's single-arm no-engine-state.
 
     const fixture = result.fixture
     const immutableNow = fileDigestMap(result.workdir, Object.keys(fixture.immutable))

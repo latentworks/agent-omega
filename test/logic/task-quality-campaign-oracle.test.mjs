@@ -1249,14 +1249,44 @@ test('r7-CRIT-2: a no-engine-state terminal WITH durable engagement evidence is 
   assert.equal(ev.outcomes.betterWork, false)
 })
 
-test('r7-CRIT-2: a no-engine-state terminal with NO durable evidence stays an excluded harnessFailure', () => {
-  const ev = classifyAutonomousCatch({
-    id: 'x', lane: 'lane-1', arm: 'omega', kind: 'repair',
-    terminal: { reached: 'no-engine-state' }, detail: 'boom', engagedByEvidence: false,
-  })
-  assert.equal(ev.harnessFailure, 'boom')
-  assert.equal(ev.outcomes.incomplete, 'harness-failure')
+// r7 MAJOR (no-engine-state honesty): the previous test here hand-fed the pair
+// { terminal: no-engine-state, engagedByEvidence: false } and asserted an excluded
+// harnessFailure — but that pair is a FICTION the production caller can never
+// produce. In the harness, no-engine-state is only reachable from beforeStop's poll,
+// which runs AFTER runCase's prompt loop completed, and that loop cannot complete
+// without a base-engine turn-start per prompt (it throws otherwise). So a turn-start
+// is ALWAYS persisted to result.json when no-engine-state occurs, which means the
+// evidence probe ALWAYS returns engaged=true → the case is ALWAYS scored, never
+// excluded. This replacement drives the REAL disk→evidence→disposition pipeline that
+// production wires, instead of certifying an impossible input.
+test('r7-MAJOR: no-engine-state with a real persisted turn-start (the ONLY producible shape) is SCORED, not excluded', () => {
+  const caseRoot = freshCaseRoot()
+  try {
+    // Reproduce what production always writes before this terminal is reachable: a
+    // persisted turn-start. Derive engagement from disk — do NOT hand-feed the flag.
+    fs.writeFileSync(path.join(caseRoot, 'result.json'), JSON.stringify({
+      events: [{ type: 'update', title: 'planning' }, { type: 'turn-start', turnId: 't1' }],
+    }))
+    const evidence = autonomousEngagementEvidence({
+      caseRoot, workdir: path.join(caseRoot, 'workspace'), baselineTree: null,
+    })
+    // The always-true reality that makes the old exclusion branch unreachable:
+    assert.equal(evidence.engaged, true)
+    const ev = classifyAutonomousCatch({
+      id: 'x', lane: 'lane-1', arm: 'omega', kind: 'repair',
+      terminal: { reached: 'no-engine-state' }, detail: 'boom',
+      engagedByEvidence: evidence.engaged,
+    })
+    assert.equal(ev.harnessFailure, undefined)       // SCORED, not laundered into a harnessFailure
+    assert.equal(ev.outcomes.betterWork, false)      // stays in the denominator; raw can register ahead
+  } finally { fs.rmSync(caseRoot, { recursive: true, force: true }) }
 })
+
+// The harnessFailure branch of classifyAutonomousCatch IS still reachable — but only
+// the producible way: an early throw BEFORE any engagement leaves terminal=null AND
+// no durable evidence. That real path is covered by the r7-CRIT-1 'never-engaged omega
+// throw (null terminal, no durable evidence)' test above — no fictional no-engine-state
+// input is needed to exercise it.
 
 test('r7-CRIT-1: a raw-arm throw is always a harnessFailure regardless of evidence (arm gate holds)', () => {
   const ev = classifyAutonomousCatch({
