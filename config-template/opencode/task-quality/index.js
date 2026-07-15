@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { tool } from "@opencode-ai/plugin";
 import { createLifecycleAdapter, normalizeSnapshot } from "./adapter.mjs";
-import { warnOnce } from "./observability.mjs";
+import { warnOnce, withRouteObservability } from "./observability.mjs";
 import { configuredReviewerCandidates } from "./reviewer.mjs";
 import { getRouteHandoff, digestText } from "./handoff.mjs";
 import {
@@ -1188,10 +1188,13 @@ export const TaskQualityPlugin = async ({
   experimental_task_quality,
   experimental_internal_automation: internalAutomation,
 }) => {
-  const adapter = createLifecycleAdapter(
-    client,
-    experimental_task_quality,
-    configuredReviewerCandidates(POLICY).map(({ agent }) => ({ agent })),
+  const adapter = withRouteObservability(
+    createLifecycleAdapter(
+      client,
+      experimental_task_quality,
+      configuredReviewerCandidates(POLICY).map(({ agent }) => ({ agent })),
+    ),
+    log,
   );
   const active = Boolean(adapter && adapter.canReview && policyIsValid());
   // The engine invokes experimental.text.complete after a text part is
