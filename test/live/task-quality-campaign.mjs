@@ -2069,14 +2069,22 @@ function autonomousOmegaLifecyclePassed(lifecycle) {
 // fail CLOSED on every quality boolean (an un-scoreable workspace is never
 // certified clean). Only a raw throw, or a null / no-engine-state terminal, stays
 // an excluded harnessFailure. Pure + exported so it can be unit-proven.
-function classifyAutonomousCatch({ id, lane, arm, kind, terminal, detail, evidenceView }) {
-  const engagedOmega = arm === 'omega' && terminal && terminal.reached && terminal.reached !== 'no-engine-state'
+function classifyAutonomousCatch({ id, lane, arm, kind, terminal, detail, evidenceView, engagedByEvidence = false }) {
+  // r7 CRITICAL-1 (Finding 1): engagement is judged by the LIVE poll (`terminal`
+  // non-null and past no-engine-state) OR by DURABLE evidence the caller gathered
+  // from disk (a persisted turn-start / a workspace changed from baseline). The
+  // durable path is essential when the throw beat `beforeStop`: `terminal` is still
+  // null, yet omega may have driven a full turn and written files. Either signal ⇒
+  // SCORED omega failure, never an excluded harnessFailure.
+  const engagedOmega = arm === 'omega' && (
+    (Boolean(terminal) && Boolean(terminal.reached) && terminal.reached !== 'no-engine-state') || engagedByEvidence
+  )
   if (engagedOmega) {
     return {
       id, lane, arm, kind, passed: false, autonomous: true,
       qualityPassed: false, lifecyclePassed: false,
       immutableClean: false, canaryClean: false, changedFromBaseline: null, rawFeatureOff: false,
-      terminalReached: terminal.reached, scoringError: detail,
+      terminalReached: terminal?.reached ?? null, scoringError: detail,
       lifecycle: evidenceView || { present: false },
       outcomes: computeOutcomes({ arm, hiddenPassed: false, publicTestPassed: false, terminalReached: false }),
     }
@@ -2087,6 +2095,37 @@ function classifyAutonomousCatch({ id, lane, arm, kind, terminal, detail, eviden
     harnessFailure: detail,
     outcomes: computeOutcomes({ arm, harnessFailure: true }),
   }
+}
+
+// Durable proof that the omega lifecycle ENGAGED, still readable AFTER a throw has
+// torn `result`/`fixture` out of scope (or when the live poll returned
+// no-engine-state). Two independent signals, EITHER sufficient:
+//   (a) a turn-start event persisted to caseRoot/result.json — runCase records every
+//       received WS message (summary() preserves type:'turn-start') even on the throw
+//       path, so this proves the sidecar accepted the prompt and the model began a turn;
+//   (b) the workspace tree diverged from the fixture baseline — proves files were written.
+// Either ⇒ omega did real work ⇒ any subsequent throw / no-engine-state is a SCORED
+// omega failure (stays in the denominator, lets raw register ahead), NEVER an excluded
+// harnessFailure — the cardinal sin of laundering a loss exactly when omega did worst.
+// Fails CLOSED to "not engaged" only when BOTH signals are absent/unreadable (a genuine
+// never-engaged harness death). Pure + exported so it can be unit-proven.
+export function autonomousEngagementEvidence({ caseRoot, workdir, baselineTree }) {
+  let turnStarted = false
+  const raw = readTextOrNull(path.join(caseRoot, 'result.json'))
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed?.events)) {
+        turnStarted = parsed.events.some((event) => event && event.type === 'turn-start')
+      }
+    } catch { /* corrupt result.json → leave turnStarted false */ }
+  }
+  let workspaceChanged = false
+  if (baselineTree != null) {
+    // treeDigest fails SAFE (sentinel, never throws); the try is belt-and-suspenders.
+    try { workspaceChanged = treeDigest(workdir) !== baselineTree } catch { /* leave false */ }
+  }
+  return { engaged: turnStarted || workspaceChanged, turnStarted, workspaceChanged }
 }
 
 async function coreCase(lane, arm, kind, sequence) {
@@ -2203,12 +2242,20 @@ async function coreCase(lane, arm, kind, sequence) {
 async function autonomousCase(lane, arm, kind, sequence) {
   const id = `auto-${sequence}-${lane.label}-${kind}-${arm}`
   let terminal = null
+  // Captured in the outer scope so the catch block (where `result`/`fixture` are
+  // out of scope after a throw) can still probe durable engagement evidence —
+  // treeDigest(workspace) !== baselineTree. Assigned inside the prepare wrapper.
+  let baselineTree = null
   try {
     const result = await runCase({
       id, lane, arm, thinking: null, autonomous: true,
       prompts: autonomousPromptFor(kind),
       timeoutMs: canonicalTurnTimeoutMs(lane),
-      prepare: (workdir) => prepareFixture(kind, workdir, { autonomous: true }),
+      prepare: async (workdir) => {
+        const fixture = await prepareFixture(kind, workdir, { autonomous: true })
+        baselineTree = fixture?.baselineTree ?? null
+        return fixture
+      },
       // Raw does all its work inside the single harness turn, so its workspace is
       // final when the turn settles — a fast lifecycle capture is all beforeStop
       // needs (and confirms raw grew NO lifecycle). Omega idles after planning and
@@ -2235,14 +2282,28 @@ async function autonomousCase(lane, arm, kind, sequence) {
     // review-failed / stall / timeout) ENGAGED and is a scored omega failure that
     // stays in the denominator, handled by the normal scoring path below.
     if (arm === 'omega' && terminal?.reached === 'no-engine-state') {
-      const evaluation = {
-        id, lane: lane.label, arm, kind, passed: false, autonomous: true,
-        terminalReached: 'no-engine-state',
-        harnessFailure: 'autonomous lifecycle never produced engine state',
-        outcomes: computeOutcomes({ arm, harnessFailure: true }),
+      // Finding 2: NO LIVE engine state is not, by itself, grounds to EXCLUDE — the
+      // engine may have engaged and then died. Only exclude as a harness failure when
+      // durable evidence ALSO shows no engagement (no persisted turn-start AND the
+      // workspace is unchanged from baseline). Otherwise fall through to the normal
+      // scoring path, which scores it as an ENGAGED omega failure (lifecyclePassed is
+      // false since reached !== 'artifact-reviewed'), keeping it in the denominator.
+      const evidence = autonomousEngagementEvidence({
+        caseRoot: result.caseRoot,
+        workdir: result.workdir,
+        baselineTree: result.fixture?.baselineTree ?? baselineTree,
+      })
+      if (!evidence.engaged) {
+        const evaluation = {
+          id, lane: lane.label, arm, kind, passed: false, autonomous: true,
+          terminalReached: 'no-engine-state',
+          harnessFailure: 'autonomous lifecycle never produced engine state and left no engagement evidence',
+          outcomes: computeOutcomes({ arm, harnessFailure: true }),
+        }
+        writeJson(path.join(result.caseRoot, 'evaluation.json'), evaluation)
+        return evaluation
       }
-      writeJson(path.join(result.caseRoot, 'evaluation.json'), evaluation)
-      return evaluation
+      // engaged-then-died → do NOT exclude; fall through to score as an omega failure.
     }
 
     const fixture = result.fixture
@@ -2306,11 +2367,20 @@ async function autonomousCase(lane, arm, kind, sequence) {
     // in scope here (block-scoped to the try), so the lifecycle view comes from
     // the terminal evidence the poll already captured.
     const detail = String(error?.message || error)
+    // If the throw beat beforeStop, `terminal` is still null even though omega may
+    // have driven a full turn. Probe durable evidence on disk (persisted turn-start /
+    // workspace changed from the outer-scope baselineTree) so classifyAutonomousCatch
+    // scores a genuinely-engaged omega failure instead of laundering it to an excluded
+    // harnessFailure.
+    const caseRoot = path.join(ROOT, 'cases', id)
+    const workdir = path.join(caseRoot, 'workspace')
+    const evidence = autonomousEngagementEvidence({ caseRoot, workdir, baselineTree })
     const evaluation = classifyAutonomousCatch({
       id, lane: lane.label, arm, kind, terminal, detail,
       evidenceView: terminal?.evidence?.view,
+      engagedByEvidence: evidence.engaged,
     })
-    writeJson(path.join(ROOT, 'cases', id, 'evaluation.json'), evaluation)
+    writeJson(path.join(caseRoot, 'evaluation.json'), evaluation)
     return evaluation
   }
 }
@@ -2986,6 +3056,7 @@ export {
   autonomousTaskText,
   pollAutonomousTerminal,
   classifyAutonomousCatch,
+  treeDigest,
   hasForbiddenCanaryArtifact,
   taskQualityTemplateDivergence,
   AUTONOMOUS_DRIVE_CEILING_MS,

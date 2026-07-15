@@ -24,6 +24,9 @@ import {
   carriesEngineState,
   extractPromptText,
   auditCameraCapture,
+  classifyAutonomousCatch,
+  autonomousEngagementEvidence,
+  treeDigest,
 } from '../live/task-quality-campaign.mjs'
 
 // ---------------------------------------------------------------------------
@@ -1185,4 +1188,159 @@ test('r6/semver: a missing export fails closed rather than throwing', () => {
   const result = evaluateSemverProbe(undefined)
   assert.equal(result.passed, false)
   assert.equal(result.detail, 'compareSemver is not exported')
+})
+
+// ---------------------------------------------------------------------------
+// r7 CRITICAL-1 / CRITICAL-2 (Commit 1): an ENGAGED omega failure must never be
+// laundered into an EXCLUDED harnessFailure. Two pieces prove the fix:
+//   classifyAutonomousCatch — engagement is live-terminal OR durable-evidence; a
+//     null terminal (throw beat beforeStop) + evidence still scores; and the null
+//     terminal must not crash the classifier.
+//   autonomousEngagementEvidence — the durable disk probe (persisted turn-start /
+//     workspace changed from baseline) that survives a torn-down `result`.
+// ---------------------------------------------------------------------------
+
+test('r7-CRIT-1: an engaged omega throw with a NULL terminal (throw beat beforeStop) is SCORED, not a harnessFailure', () => {
+  const ev = classifyAutonomousCatch({
+    id: 'auto-1-lane-1-repair-omega', lane: 'lane-1', arm: 'omega', kind: 'repair',
+    terminal: null, detail: 'sidecar error: connection reset', evidenceView: undefined,
+    engagedByEvidence: true,
+  })
+  // Stays in the denominator as a real omega quality failure...
+  assert.equal(ev.harnessFailure, undefined)
+  assert.equal(ev.outcomes.betterWork, false)
+  assert.equal(ev.outcomes.incomplete, undefined)
+  assert.equal(ev.qualityPassed, false)
+  assert.equal(ev.scoringError, 'sidecar error: connection reset')
+  // ...and the null terminal did NOT crash the classifier (the `terminal?.reached` guard).
+  assert.equal(ev.terminalReached, null)
+})
+
+test('r7-CRIT-1: a never-engaged omega throw (null terminal, no durable evidence) stays an EXCLUDED harnessFailure', () => {
+  const ev = classifyAutonomousCatch({
+    id: 'x', lane: 'lane-1', arm: 'omega', kind: 'repair',
+    terminal: null, detail: 'sidecar failed to boot', engagedByEvidence: false,
+  })
+  assert.equal(ev.harnessFailure, 'sidecar failed to boot')
+  assert.equal(ev.outcomes.betterWork, null)
+  assert.equal(ev.outcomes.incomplete, 'harness-failure')
+})
+
+test('r7-CRIT-1: a live-engaged omega throw (terminal=stall) is scored even with no durable-evidence flag (regression guard)', () => {
+  const ev = classifyAutonomousCatch({
+    id: 'x', lane: 'lane-1', arm: 'omega', kind: 'repair',
+    terminal: { reached: 'stall' }, detail: 'treeDigest walk failed', engagedByEvidence: false,
+  })
+  assert.equal(ev.harnessFailure, undefined)
+  assert.equal(ev.outcomes.betterWork, false)
+  assert.equal(ev.terminalReached, 'stall')
+})
+
+test('r7-CRIT-2: a no-engine-state terminal WITH durable engagement evidence is scored, not excluded', () => {
+  const ev = classifyAutonomousCatch({
+    id: 'x', lane: 'lane-1', arm: 'omega', kind: 'repair',
+    terminal: { reached: 'no-engine-state' }, detail: 'boom', engagedByEvidence: true,
+  })
+  assert.equal(ev.harnessFailure, undefined)
+  assert.equal(ev.outcomes.betterWork, false)
+})
+
+test('r7-CRIT-2: a no-engine-state terminal with NO durable evidence stays an excluded harnessFailure', () => {
+  const ev = classifyAutonomousCatch({
+    id: 'x', lane: 'lane-1', arm: 'omega', kind: 'repair',
+    terminal: { reached: 'no-engine-state' }, detail: 'boom', engagedByEvidence: false,
+  })
+  assert.equal(ev.harnessFailure, 'boom')
+  assert.equal(ev.outcomes.incomplete, 'harness-failure')
+})
+
+test('r7-CRIT-1: a raw-arm throw is always a harnessFailure regardless of evidence (arm gate holds)', () => {
+  const ev = classifyAutonomousCatch({
+    id: 'x', lane: 'lane-1', arm: 'raw', kind: 'repair',
+    terminal: { reached: 'stall' }, detail: 'boom', engagedByEvidence: true,
+  })
+  assert.equal(ev.harnessFailure, 'boom')
+  assert.equal(ev.outcomes.betterWork, null)
+})
+
+test('r7-CRIT-1: an engaged-by-evidence omega failure lands in the EVALUATED denominator, not the harnessFailures bucket', () => {
+  const engagedRow = classifyAutonomousCatch({
+    id: 'auto-1-lane-1-repair-omega', lane: 'lane-1', arm: 'omega', kind: 'repair',
+    terminal: null, detail: 'scoring walk threw', engagedByEvidence: true,
+  })
+  const by = rollupByArm([...syntheticResults(), engagedRow])
+  // Baseline omega from syntheticResults(): 3 total, 1 stall, evaluated 2. The
+  // engaged failure adds to total AND evaluated (a scored quality failure), and is
+  // NOT counted as a harnessFailure or a process death.
+  assert.equal(by.omega.total, 4)
+  assert.equal(by.omega.harnessFailures, 0)
+  assert.equal(by.omega.processDeaths, 1)
+  assert.equal(by.omega.evaluated, 3)
+})
+
+function freshCaseRoot() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'aee-'))
+}
+
+test('autonomousEngagementEvidence: a persisted turn-start proves engagement (durable rescue of a null terminal)', () => {
+  const caseRoot = freshCaseRoot()
+  try {
+    fs.writeFileSync(path.join(caseRoot, 'result.json'), JSON.stringify({
+      events: [{ type: 'update', title: 'planning' }, { type: 'turn-start', turnId: 't1' }],
+    }))
+    const e = autonomousEngagementEvidence({ caseRoot, workdir: path.join(caseRoot, 'workspace'), baselineTree: null })
+    assert.equal(e.turnStarted, true)
+    assert.equal(e.engaged, true)
+  } finally { fs.rmSync(caseRoot, { recursive: true, force: true }) }
+})
+
+test('autonomousEngagementEvidence: a workspace changed from baseline proves engagement even with no turn-start', () => {
+  const caseRoot = freshCaseRoot()
+  try {
+    const workdir = path.join(caseRoot, 'workspace')
+    fs.mkdirSync(workdir, { recursive: true })
+    fs.writeFileSync(path.join(workdir, 'port.mjs'), 'export const x = 1\n')
+    // No result.json → no turn-start. baselineTree deliberately mismatched.
+    const e = autonomousEngagementEvidence({ caseRoot, workdir, baselineTree: '0'.repeat(64) })
+    assert.equal(e.turnStarted, false)
+    assert.equal(e.workspaceChanged, true)
+    assert.equal(e.engaged, true)
+  } finally { fs.rmSync(caseRoot, { recursive: true, force: true }) }
+})
+
+test('autonomousEngagementEvidence: an UNCHANGED workspace (baseline round-trip) is NOT engaged, then a write flips it', () => {
+  const caseRoot = freshCaseRoot()
+  try {
+    const workdir = path.join(caseRoot, 'workspace')
+    fs.mkdirSync(workdir, { recursive: true })
+    fs.writeFileSync(path.join(workdir, 'port.mjs'), 'export const x = 1\n')
+    const baseline = treeDigest(workdir)
+    const before = autonomousEngagementEvidence({ caseRoot, workdir, baselineTree: baseline })
+    assert.equal(before.workspaceChanged, false)
+    assert.equal(before.engaged, false)
+    // Model writes a file → tree diverges → engaged.
+    fs.writeFileSync(path.join(workdir, 'new.mjs'), 'export const y = 2\n')
+    const after = autonomousEngagementEvidence({ caseRoot, workdir, baselineTree: baseline })
+    assert.equal(after.workspaceChanged, true)
+    assert.equal(after.engaged, true)
+  } finally { fs.rmSync(caseRoot, { recursive: true, force: true }) }
+})
+
+test('autonomousEngagementEvidence: no result.json and no baseline fails CLOSED to not-engaged (genuine harness death stays excluded)', () => {
+  const caseRoot = freshCaseRoot()
+  try {
+    const e = autonomousEngagementEvidence({ caseRoot, workdir: path.join(caseRoot, 'workspace'), baselineTree: null })
+    assert.equal(e.turnStarted, false)
+    assert.equal(e.workspaceChanged, false)
+    assert.equal(e.engaged, false)
+  } finally { fs.rmSync(caseRoot, { recursive: true, force: true }) }
+})
+
+test('autonomousEngagementEvidence: a corrupt result.json does not throw and yields not-engaged', () => {
+  const caseRoot = freshCaseRoot()
+  try {
+    fs.writeFileSync(path.join(caseRoot, 'result.json'), '{ this is not valid json')
+    const e = autonomousEngagementEvidence({ caseRoot, workdir: path.join(caseRoot, 'workspace'), baselineTree: null })
+    assert.equal(e.engaged, false)
+  } finally { fs.rmSync(caseRoot, { recursive: true, force: true }) }
 })
