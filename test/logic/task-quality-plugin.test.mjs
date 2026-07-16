@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { TaskQualityPlugin } from "../../config-template/opencode/task-quality/index.js";
 import {
   buildRouteHandoff,
@@ -2410,4 +2411,108 @@ test("FIX-3/A3.2: a third consecutive same-phase interception escalates to numbe
   const backToPending = await gate("m5");
   assert.match(backToPending, /NEXT ACTION:/);
   assert.doesNotMatch(backToPending, /Do exactly this, in order/);
+});
+
+test("leverD: an independent structured non-pass first review is delivered as feedback and its repair is recorded (no wedge)", async () => {
+  // The Lever D crown-jewel path: an ISOLATED reviewer (different model) returns
+  // a STRUCTURED needs_changes verdict rather than a same-model CRAP report.
+  // Before the fix the adapter threw on this shape, captureTerminalPlan swallowed
+  // it, and the run dead-hung in `planning`. After the fix the structured
+  // rejection travels the SAME proven delivery path a same-model CRAP report
+  // uses: delivered once as feedback, then the repaired plan is recorded and the
+  // task advances to awaiting-approval. This asserts byte-for-byte the same
+  // lifecycle outcomes as the same-model CRAP plan test above.
+  const sessionID = "ses-leverd-structured";
+  clearRouteHandoff(sessionID);
+  recordRouteHandoff(buildRouteHandoff({ sessionID, messageID: "msg-task", messages: ["Repair parsePort"], skillNames: ["brainstorming"] }));
+  const fake = fakeClient();
+  fake.setReview(async (input) => (
+    input.rereview
+      ? {
+          // A post-repair re-review is same-model CRAP by engine design in both
+          // arms; keep the harness faithful so the repair path is exercised.
+          route: { kind: "crap", model: { providerID: "local", modelID: "model" } },
+          submission: { kind: input.submission.kind, digest: digestText(input.submission.content) },
+          review: { status: "complete", rereview: { reviewID: input.rereview.reviewID }, result: { verdict: "pass", summary: "findings addressed", findings: [], dispositions: [] } },
+        }
+      : {
+          // First review: an isolated 30B reviewer, structured non-pass verdict.
+          route: { kind: "subagent", model: { providerID: "asus30b", modelID: "qwen3-coder-30b" }, health: "validated" },
+          submission: { kind: input.submission.kind, digest: digestText(input.submission.content) },
+          review: {
+            status: "complete",
+            reviewID: "review-indep-1",
+            completedAt: 42,
+            toolCalls: 3,
+            result: {
+              verdict: "needs_changes",
+              summary: "The plan writes outside src and never runs the parsePort tests.",
+              findings: [
+                { severity: "blocking", message: "Step 2 edits README.md, violating the src-only constraint.", evidence: "plan step 2" },
+                { severity: "blocking", message: "No step runs the parsePort tests to validate the repair.", evidence: "acceptance criteria omit the suite" },
+              ],
+              dispositions: [],
+            },
+          },
+        }
+  ));
+  const hooks = await TaskQualityPlugin({ client: fake.client, experimental_task_quality: fake.internal });
+  await hooks["experimental.chat.system.transform"]({ sessionID }, { system: [] });
+
+  const first = await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Edit README.md and src.", acceptance_criteria: ["It works."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  // Delivered as feedback — NOT thrown, NOT approved.
+  assert.equal(first.title, "Plan review delivered");
+  assert.deepEqual(fake.deliveries, [{ sessionID, reviewID: "review-indep-1" }]);
+  const delivered = fake.state(sessionID).data;
+  assert.equal(delivered.phase, "awaiting-plan-repair");
+  assert.equal(delivered.pendingReview.delivery.messageID, "msg-review-1");
+  assert.equal(delivered.pendingReview.reviewID, "review-indep-1");
+  // Provenance of the true independent reviewer is preserved end to end.
+  assert.equal(delivered.pendingReview.route.kind, "crap");
+  assert.equal(delivered.pendingReview.route.model, "asus30b/qwen3-coder-30b");
+  // The synthesized feedback carries the verdict and each evidence-cited finding.
+  assert.match(delivered.pendingReview.report, /needs_changes/);
+  assert.match(delivered.pendingReview.report, /README\.md/);
+  assert.match(delivered.pendingReview.report, /parsePort tests/);
+  // Mirror the engine's durablePendingReview acceptance predicates against the
+  // persisted record so a field-shape regression is caught deterministically
+  // here (the live 80B run exercises the real engine; this pins the contract
+  // offline). The digest is PLAIN sha256 of the exact report bytes — the same
+  // computation the engine recomputes on resume — not the \r\n-normalizing
+  // digestText, so this test faithfully reflects what the engine will verify.
+  const pr = delivered.pendingReview;
+  assert.equal(pr.route.kind, "crap", "only transport the resume handler accepts");
+  assert.ok(typeof pr.route.model === "string" && pr.route.model.includes("/"), "route.model is a provider/model identity");
+  assert.match(pr.reviewID, /^[A-Za-z0-9_.:-]{1,160}$/, "engine-owned review identity");
+  assert.ok(typeof pr.report === "string" && pr.report.length > 0, "non-empty deliverable report");
+  assert.ok(Buffer.byteLength(pr.report, "utf8") <= 24 * 1024, "report within MAX_REPORT_BYTES");
+  assert.match(pr.reportDigest, /^[a-f0-9]{64}$/, "digest is 64 hex chars");
+  assert.equal(pr.reportDigest, createHash("sha256").update(pr.report, "utf8").digest("hex"), "digest is plain sha256 of the exact report bytes");
+  assert.ok(pr.delivery && typeof pr.delivery.messageID === "string" && pr.delivery.messageID.length > 0, "durable delivery message id");
+
+  // The delivered feedback is treated as untrusted and blocks mutation until repaired.
+  const pendingSystem = { system: [] };
+  await hooks["experimental.chat.system.transform"]({ sessionID }, pendingSystem);
+  assert.match(pendingSystem.system.join("\n"), /untrusted feedback/i);
+  const pendingAdmission = { decision: "allow" };
+  await hooks["tool.execute.admission"](
+    { sessionID, tool: "edit", callID: "call-review-injection", args: {}, source: "builtin", capability: "mutate" },
+    pendingAdmission,
+  );
+  assert.equal(pendingAdmission.decision, "deny");
+
+  // The builder addresses the findings; the repaired plan is recorded and the
+  // task advances — a repaired-better outcome, not a dead hang.
+  const second = await hooks.tool.task_quality_checkpoint.execute(
+    { repaired_plan: "1. Make changes only within src.\n2. Run the parsePort tests.", acceptance_criteria: ["Tests pass."] },
+    { sessionID, directory: ".", worktree: ".", metadata() {} },
+  );
+  assert.equal(second.title, "Repaired plan recorded");
+  assert.equal(fake.deliveries.length, 1);
+  assert.equal(fake.state(sessionID).data.phase, "awaiting-approval");
+  assert.equal(fake.state(sessionID).data.addressReceipt.deliveryMessageID, "msg-review-1");
+  clearRouteHandoff(sessionID);
 });
