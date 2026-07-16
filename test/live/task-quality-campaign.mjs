@@ -747,6 +747,36 @@ async function configFor(caseRoot, lane, arm) {
       './iterate-loop/index.js',
     ]
     cfg.agent = { general: { disable: true }, explore: { disable: true }, helper1: { disable: true }, helper2: { disable: true } }
+    // ── Lever D (reviewer-model diversity) — additive, single-flag, easily removable ──
+    // Root cause it fixes: only the `local` (80B subject) provider is enabled and the
+    // reviewer agents are disabled above, so the engine's clean-room HSS review has no
+    // INDEPENDENT model to dispatch to and falls back to same-model C.R.A.P. (the 80B
+    // reviews its own work). Lever O captured this on the live engine: reason "No
+    // eligible HSS helper completed the bounded clean-room review; using same-model
+    // C.R.A.P.", attempts ["helper2:agent-not-configured","helper1:agent-not-configured"].
+    // With OMEGA_REVIEWER_DIVERSITY=1 we wire ONE reliable 30B reviewer that runs on
+    // THIS laptop (127.0.0.1:8090 — a different physical box than the remote 80B, so no
+    // GPU contention) to BOTH candidate agents the engine tries. Its providerID
+    // (asus30b) differs from the active model's (local), so the engine's
+    // not-independent-model guard passes and a real different-model review runs.
+    // Flag OFF => this block is skipped and the written config is byte-identical.
+    if (process.env.OMEGA_REVIEWER_DIVERSITY === '1') {
+      const REVIEWER_MODEL = 'Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf'
+      cfg.enabled_providers = ['local', 'asus30b']
+      cfg.provider.asus30b = {
+        npm: '@ai-sdk/openai-compatible',
+        options: { baseURL: 'http://127.0.0.1:8090/v1', apiKey: 'local-noauth' },
+        models: { [REVIEWER_MODEL]: { name: 'ASUS 30B independent reviewer', limit: { context: CONTEXT, output: OUTPUT } } },
+      }
+      const reviewerAgent = {
+        mode: 'subagent',
+        model: `asus30b/${REVIEWER_MODEL}`,
+        description: 'Independent clean-room reviewer subagent — a 30B model on a different provider/box than the subject, used by the engine HSS review path to audit the subject model\'s work.',
+        prompt: 'You are an independent clean-room reviewer. Audit the supplied work strictly against its specification. Enumerate concrete defects with evidence (inputs that break it). Do not rubber-stamp; report only what you can justify.',
+      }
+      cfg.agent.helper1 = { ...reviewerAgent }
+      cfg.agent.helper2 = { ...reviewerAgent }
+    }
     fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n')
     writeJson(path.join(target, 'task-quality', 'policy.json'), {
       schemaVersion: 1,
@@ -3134,4 +3164,7 @@ export {
   AUTONOMOUS_DRIVE_CEILING_MS,
   AUTONOMOUS_STALL_MS,
   AUTONOMOUS_REVIEW_RECOVERY_MS,
+  // Exported for the Lever D config-unit test (reviewer-model diversity). configFor
+  // writes files, so the test drives it against a throwaway temp caseRoot.
+  configFor,
 }
