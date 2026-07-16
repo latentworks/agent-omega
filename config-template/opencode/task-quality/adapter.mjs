@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { artifactRepairLoopEnabled } from './artifact-repair.mjs'
 
 // Thin client adapter for the fork's durable task-quality endpoints. Keeping
 // this boundary explicit makes the plugin fail closed on an old engine instead
@@ -126,18 +127,24 @@ export function createLifecycleAdapter(_client, internal, reviewers = []) {
       // (no engine review identity, empty synthesized report, or missing
       // completion provenance) fall back to the fail-closed throw rather than
       // forging an undeliverable pending record. This conversion is scoped to
-      // PLAN first-reviews; an artifact non-pass keeps the original fail-closed
-      // throw (its repair wording and approval semantics differ, so extending
-      // the independent-review cure to artifacts is a separate, separately
-      // proven lever — never an untested behavior change smuggled in here).
+      // PLAN first-reviews by default; an artifact non-pass keeps the original
+      // fail-closed throw UNLESS the artifact-repair lever is enabled
+      // (OMEGA_ARTIFACT_REPAIR_LOOP) — the "separate, separately proven lever"
+      // this comment always anticipated. When on, an artifact non-pass takes the
+      // identical conversion so it reuses the proven artifact repair path
+      // (recordPendingArtifactReview -> resumeWithReview -> awaiting-artifact
+      // rereview -> bounded rounds -> pass | honest DECLINED at the cap). It
+      // stays fail-CLOSED (never approves), and the default-off gate keeps every
+      // existing run byte-identical.
       if (payload.review.result.verdict !== 'pass') {
         const verdict = typeof payload.review.result.verdict === 'string' ? payload.review.result.verdict : 'invalid'
         const reviewID = payload.review.reviewID ?? payload.review.id ?? payload.reviewID
         const completedAt = payload.review.completedAt
         const toolCount = payload.review.toolCalls ?? 0
-        const reportText = structuredReviewReport(verdict, payload.review.result)
+        const reportText = structuredReviewReport(verdict, payload.review.result, payload.submission.kind)
         if (
-          payload.submission.kind === 'plan' &&
+          (payload.submission.kind === 'plan' ||
+            (payload.submission.kind === 'artifact' && artifactRepairLoopEnabled())) &&
           typeof reviewID === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(reviewID) &&
           reportText && Buffer.byteLength(reportText, 'utf8') <= 24 * 1024 &&
           Number.isSafeInteger(completedAt) && completedAt > 0 &&
@@ -181,10 +188,11 @@ export function normalizeSnapshot(value) {
 // output is byte-bounded (<=24KB) to satisfy the durable delivery record and the
 // engine resume handler, and is always non-empty (the verdict header alone
 // guarantees content) so the caller's non-empty gate can trust it.
-export function structuredReviewReport(verdict, result) {
+export function structuredReviewReport(verdict, result, kind) {
+  const noun = kind === 'artifact' ? 'artifact' : 'plan'
   const summary = typeof result?.summary === 'string' ? result.summary.trim() : ''
   const findings = Array.isArray(result?.findings) ? result.findings : []
-  const lines = [`Independent plan review verdict: ${typeof verdict === 'string' && verdict ? verdict : 'needs_changes'}`]
+  const lines = [`Independent ${noun} review verdict: ${typeof verdict === 'string' && verdict ? verdict : 'needs_changes'}`]
   if (summary) lines.push('', summary)
   if (findings.length) {
     lines.push('', 'Findings to address before requesting approval:')
