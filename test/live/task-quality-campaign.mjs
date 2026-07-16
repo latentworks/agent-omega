@@ -36,6 +36,22 @@ const requireFromApp = createRequire(path.join(APP, 'package.json'))
 const { WebSocket } = requireFromApp('ws')
 const CONTEXT = 32768
 const OUTPUT = 4096
+// The independent reviewer (asus30b lane) may be a REASONING model that must emit
+// a long <think> block before its verdict; ~9.2k completion tokens observed to
+// finish one. The 4096 subject cap truncates that mid-think (finish_reason=length,
+// empty report -> invalid_result -> artifact-review-failed), so the reviewer lane
+// gets a larger completion cap. IMPORTANT: on the independent-reviewer (HSS
+// candidate) path this lane limit.output is NOT the binding floor — the engine's
+// per-candidate LOCAL budget (REVIEW_LOCAL_OUTPUT_TOKENS, engine default 2048) is.
+// Both levers MUST move together or the reviewer still truncates, so the sidecar
+// spawn (search REVIEWER_OUTPUT below) derives that engine knob from THIS constant.
+// Sized to clear the ~9.2k need with headroom; note prompt+generation share the
+// server's real n_ctx (16384), so a heavy artifact prompt can still squeeze
+// generation — the run's behavior proof (server finish_reason/completion_tokens)
+// is the backstop, not this cap alone. SUBJECT lanes keep OUTPUT unchanged, so
+// measured subject behavior and the preflight settings-drift gate
+// (gate.output === OUTPUT) are unaffected.
+const REVIEWER_OUTPUT = 12288
 const VERSION = 'agent-omega-task-quality-v2.7.3'
 const BASELINE_RE = /qwen.*3\.6.*35|3\.6.*35.*qwen/i
 const requestedModelID = process.env.AGENT_OMEGA_TEST_MODEL || null
@@ -770,7 +786,7 @@ async function configFor(caseRoot, lane, arm) {
       cfg.provider.asus30b = {
         npm: '@ai-sdk/openai-compatible',
         options: { baseURL: 'http://127.0.0.1:8090/v1', apiKey: 'local-noauth' },
-        models: { [REVIEWER_MODEL]: { name: 'ASUS independent reviewer', limit: { context: CONTEXT, output: OUTPUT } } },
+        models: { [REVIEWER_MODEL]: { name: 'ASUS independent reviewer', limit: { context: CONTEXT, output: REVIEWER_OUTPUT } } },
       }
       const reviewerAgent = {
         mode: 'subagent',
@@ -1179,6 +1195,26 @@ async function runCase({ id, lane, arm, thinking, prompts, timeoutMs = 300000, p
         // (core / thinking-ab / single-series / smoke) run byte-identical — the
         // key is simply not present in their sidecar environment.
         ...(autonomous ? { TASK_QUALITY_AUTONOMOUS: '1' } : {}),
+        // Couple the engine's LOCAL review completion budget to the reviewer lane.
+        // With OMEGA_REVIEWER_DIVERSITY=1 the independent reviewer is a LOCAL
+        // *reasoning* model that streams a long think-block before its verdict.
+        // On that (HSS candidate) path the engine's per-candidate budget is bound
+        // by REVIEW_LOCAL_OUTPUT_TOKENS (engine default 2048), NOT by the reviewer
+        // lane's limit.output — so raising REVIEWER_OUTPUT alone is inert and the
+        // reasoning reviewer truncates mid-think (finish_reason=length, empty
+        // verdict -> artifact-review-failed). The two levers must move together, so
+        // derive the knob from the SAME REVIEWER_OUTPUT constant that sets
+        // limit.output above: a run can never silently truncate by forgetting to
+        // export the knob. An explicit larger override still wins; when diversity
+        // is off the key is absent and the engine's unset-default behavior is
+        // byte-identical.
+        ...(process.env.OMEGA_REVIEWER_DIVERSITY === '1'
+          ? {
+              REVIEW_LOCAL_OUTPUT_TOKENS: String(
+                Math.max(REVIEWER_OUTPUT, Number.parseInt(process.env.REVIEW_LOCAL_OUTPUT_TOKENS ?? '', 10) || 0),
+              ),
+            }
+          : {}),
       },
     })
     child.stderr.pipe(stderr)
