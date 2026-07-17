@@ -73,6 +73,16 @@ const REVIEW_ROUNDS_CAP_OVERRIDE = (() => {
     ? value
     : null;
 })();
+// Commit C: bounded retry for a transient reviewer-MACHINERY failure on a bound
+// re-review (a transport error / timeout / adapter throw — NOT a returned verdict).
+// Without it, one flaky reviewer round consumes a repair round against an artifact
+// that may be fine. Env OMEGA_REVIEW_MACHINERY_RETRIES, default 0 ⇒ exactly one
+// attempt ⇒ byte-identical to prior behavior; clamped to a sane ceiling so a
+// hostile value cannot spin the reviewer unbounded.
+const MACHINERY_RETRIES = (() => {
+  const value = Number.parseInt(process.env.OMEGA_REVIEW_MACHINERY_RETRIES || "0", 10);
+  return Number.isSafeInteger(value) && value >= 0 && value <= 5 ? value : 0;
+})();
 // FIX-3: this is a MATCHER, not display text. Its exact value is a substring of
 // the lifecycle's thrown guard error (lifecycle.mjs recordAddressedArtifact), so
 // the terminal handler can recognize a missing-post-report-receipt failure and
@@ -1047,16 +1057,23 @@ async function runArtifactRereview(adapter, sessionID, expected, lifecycle, arti
   const digest = digestPlan(artifact);
   let review = null;
   let failureReason = null;
-  try {
-    review = await adapter.review({
-      sessionID,
-      contract: lifecycle.taskContract || "",
-      acceptanceCriteria: lifecycle.acceptanceCriteria || [],
-      submission: { kind: "artifact", content: artifact, digest },
-      rereview: { reviewID: lifecycle.pendingReview.reviewID },
-    });
-  } catch (error) {
-    failureReason = error?.message || String(error);
+  // Commit C: a thrown reviewer-machinery failure (review stays null) is retried up
+  // to MACHINERY_RETRIES times before falling closed, so a transient hiccup does not
+  // burn a repair round on a possibly-fine artifact. A RETURNED review — any verdict,
+  // including non-pass — is a real result and ends the loop immediately (never retried).
+  // Still exactly one recordArtifactRereview per call; default 0 retries ⇒ single try.
+  for (let attempt = 0; attempt <= MACHINERY_RETRIES && review === null; attempt++) {
+    try {
+      review = await adapter.review({
+        sessionID,
+        contract: lifecycle.taskContract || "",
+        acceptanceCriteria: lifecycle.acceptanceCriteria || [],
+        submission: { kind: "artifact", content: artifact, digest },
+        rereview: { reviewID: lifecycle.pendingReview.reviewID },
+      });
+    } catch (error) {
+      failureReason = error?.message || String(error);
+    }
   }
   return await persistCurrentTransition(adapter, sessionID, expected, (current) =>
     recordArtifactRereview(current, artifact, {
