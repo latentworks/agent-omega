@@ -147,7 +147,25 @@ export function admitTaskQualityTool({ tool, source, capability, trustedControl,
   if (!lifecycle) {
     return { decision: 'deny', reason: 'Task quality requires a qualifying routed task and repaired plan before a mutating tool can run.', policyVersion: TASK_QUALITY_POLICY_VERSION }
   }
-  if (!lifecycle.repairedPlan || lifecycle.phase !== 'awaiting-approval' && lifecycle.phase !== 'approved') {
+  // FIX-#31 (artifact-repair deadlock): `artifact-review-failed` is a repair-capable phase.
+  // When a bound re-review returns needs_changes within the round cap, the lifecycle lands in
+  // `artifact-review-failed` while still carrying a live, generation-bound approval, and
+  // index.js explicitly directs the model to "fix the identified gaps within the approved
+  // scope ... and call the artifact checkpoint again with the repaired artifact." This gate was
+  // the lone straggler that still denied that mutation, deadlocking the repair (ship-nothing).
+  // Widen the phase whitelist so `artifact-review-failed` FALLS THROUGH to the checks below —
+  // it does NOT short-circuit to allow. The real authorization is still done by
+  // hasCurrentApproval() at the next check (which itself requires phase ∈ {approved,
+  // artifact-review-failed} with the full generation+digest binding and no pending revocation),
+  // and the unsettled-execution and immutable-oracle guards still run after it. A revoked or
+  // generation-bumped `artifact-review-failed` passes this line but fails hasCurrentApproval,
+  // so no void approval can mutate. (Verified fail-open-safe by adversarial trace, 2026-07-16.)
+  if (
+    !lifecycle.repairedPlan ||
+    (lifecycle.phase !== 'awaiting-approval' &&
+      lifecycle.phase !== 'approved' &&
+      lifecycle.phase !== 'artifact-review-failed')
+  ) {
     return { decision: 'deny', reason: 'Task quality requires a repaired plan before mutation. Record the repaired plan and ask the user for an explicit go/no-go.', policyVersion: TASK_QUALITY_POLICY_VERSION }
   }
   if (!hasCurrentApproval(lifecycle)) {

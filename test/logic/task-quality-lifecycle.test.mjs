@@ -491,6 +491,64 @@ test('FIX-2 A2.5: non-pass re-reviews stay repairable until the cap, then end in
   assert.throws(() => recordPendingArtifactReview(state, 'another try', { review: boundRereview('another try', 'pass'), reviewedDigest: digestPlan('another try'), now: 19 }), /current explicit approval/)
 })
 
+test('FIX-#31: a repairable artifact-review-failed with a live approval admits repair mutation, while a void approval and the safety guards still deny', () => {
+  const oracleSet = parseImmutableOracles('README.md')
+
+  // Build the repairable failed state: an approved run whose bound re-review returned
+  // needs_changes within the cap — phase artifact-review-failed, generation UNbumped,
+  // approval still live. This is exactly the state index.js directs the model to repair in
+  // ("fix the identified gaps within the approved scope ... call the artifact checkpoint again").
+  const base = approvedWithSeedReceipt()
+  const { addressed, addressedText } = runReviewCycleToAddressed(base, 1)
+  const failed = recordArtifactRereview(addressed, addressedText, { review: boundRereview(addressedText, 'needs_changes'), reviewedDigest: digestPlan(addressedText), now: 18 })
+  assert.equal(failed.phase, PHASE.ARTIFACT_REVIEW_FAILED)
+  assert.equal(failed.generation, base.generation)
+  assert.equal(hasCurrentApproval(failed), true)
+
+  // THE FIX (#31): repair mutation is now admitted in this phase. Pre-fix the phase whitelist
+  // denied it, deadlocking the repair loop into shipping nothing (the csvrow/semver worse-case).
+  assert.equal(admitTaskQualityTool({ tool: 'edit', capability: 'mutate', lifecycle: failed, args: { filePath: 'src/impl.mjs' } }).decision, 'allow')
+
+  // Fall-through proof #1 — the immutable-oracle guard still runs AFTER the widened phase gate:
+  // targeting a declared oracle in this same phase is still denied (widening did not short-circuit).
+  const oracleHit = admitTaskQualityTool({ tool: 'edit', capability: 'mutate', lifecycle: failed, args: { filePath: 'README.md' }, immutableOracles: oracleSet })
+  assert.equal(oracleHit.decision, 'deny')
+  assert.match(oracleHit.reason, /immutable-artifact guard/)
+
+  // Fall-through proof #2 — the unsettled-execution guard still runs: an in-flight execution
+  // in this phase blocks a second concurrent mutation exactly as it does under 'approved'.
+  const midExecution = recordExecutionStarted(failed, { callID: 'call-repair-inflight', tool: 'edit', startedAt: 19 })
+  assert.equal(admitTaskQualityTool({ tool: 'write', capability: 'mutate', lifecycle: midExecution, args: { filePath: 'src/impl.mjs' } }).decision, 'deny')
+
+  // Fall-through proof #3 (reviewer ae3558603 hardening) — the widened phase gate must still fall
+  // through to the !revocationPending conjunct of hasCurrentApproval, which the other legs never
+  // exercise (they void the approval via a generation bump, not the latch). An external substantive
+  // turn arriving during the in-flight repair latches revocationPending (the unsettled path of
+  // revokeApprovalForSubstantiveTurn), voiding the approval; the whitelisted phase then denies at
+  // hasCurrentApproval, not at the phase gate.
+  const latchedRevoke = revokeApprovalForSubstantiveTurn(midExecution, { origin: 'external-user', messageID: 'msg-revoke-31', text: 'Now do something else.', now: 20 })
+  assert.equal(latchedRevoke.ok, true)
+  assert.equal(latchedRevoke.lifecycle.revocationPending.messageID, 'msg-revoke-31')
+  assert.equal(hasCurrentApproval(latchedRevoke.lifecycle), false)
+  assert.equal(admitTaskQualityTool({ tool: 'edit', capability: 'mutate', lifecycle: latchedRevoke.lifecycle, args: { filePath: 'src/impl.mjs' } }).decision, 'deny')
+
+  // Void-approval proof — an artifact-review-failed reached by the generation-BUMPING denial
+  // path carries no live approval, so it still fails at hasCurrentApproval (the next check),
+  // never at the widened phase gate. Widening the phase list opened no void-approval hole.
+  const b2 = approvedWithSeedReceipt()
+  const submitted = 'artifact submission for denial-31'
+  const reportText = 'finding pending at denial time'
+  const reportDigest = createHash('sha256').update(reportText, 'utf8').digest('hex')
+  const review = { route: { kind: 'crap', model: 'local/model' }, submission: { kind: 'artifact', digest: digestPlan(submitted) }, plainReport: { reviewID: 'review-denied-31', text: reportText, reportDigest, completedAt: 12, toolCount: 0 } }
+  const pending = recordPendingArtifactReview(b2, submitted, { review, reviewedDigest: digestPlan(submitted), now: 13 })
+  const delivered = recordReviewDelivered(pending, { reviewID: 'review-denied-31', reportDigest, messageID: 'msg-review-denied-31', now: 14 })
+  const denied = recordArtifactReviewDenied(delivered, submitted, { reason: 'engine died mid-review', now: 15 })
+  assert.equal(denied.phase, PHASE.ARTIFACT_REVIEW_FAILED)
+  assert.equal(denied.generation, b2.generation + 1)
+  assert.equal(hasCurrentApproval(denied), false)
+  assert.equal(admitTaskQualityTool({ tool: 'edit', capability: 'mutate', lifecycle: denied, args: { filePath: 'src/impl.mjs' } }).decision, 'deny')
+})
+
 test('FIX-2: an unreadable or unbound re-review fails closed and consumes a round', () => {
   const base = approvedWithSeedReceipt()
   // Round 1: the engine died mid-re-review — no verdict ever arrived.
