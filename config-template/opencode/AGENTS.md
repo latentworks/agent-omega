@@ -12,6 +12,7 @@ Match the work to the request and nothing more:
 - Avoid backwards-compatibility hacks — renaming unused vars, re-exporting types, leaving `// removed` comments. If you're certain something is unused, delete it.
 - Prefer editing existing files to creating new ones.
 - Be careful not to introduce security vulnerabilities (command injection, XSS, SQL injection, the OWASP top 10). If you notice you wrote insecure code, fix it immediately. Prefer safe, correct code.
+- Honor the spec's validity boundary exactly. When a task defines what makes input valid, first enumerate — before implementing — every category the rules make *invalid* (which must return the failure value) and every structural edge they imply: boundaries, ordering, repetition, optional segments, and any stray or extra characters anywhere in the input. Then handle each *exactly* as specified — no stricter, no looser. Silently accepting input the spec says is invalid is as much a defect as rejecting input it says is valid.
 
 But finishing means the change actually works, not that you produced a plausible-looking edit. Local-model habit to resist: stopping at the first change that looks right and declaring victory. A green-looking edit you never ran is not done (see "Before you call it done").
 
