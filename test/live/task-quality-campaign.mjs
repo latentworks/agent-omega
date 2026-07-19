@@ -10,6 +10,7 @@ import { promisify } from 'node:util'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { startSettledThinkingShim } from './settled-provider-shim.mjs'
+import { declareImmutableOracles } from './immutable-oracle-declaration.mjs'
 
 // Log-integrity caveat (FIX-6, observability): when a case is force-killed
 // (stopTree -> `taskkill /t /f`) the sidecar can be cut off mid-write, so the
@@ -1214,6 +1215,24 @@ async function runCase({ id, lane, arm, thinking, prompts, timeoutMs = 300000, p
                 Math.max(REVIEWER_OUTPUT, Number.parseInt(process.env.REVIEW_LOCAL_OUTPUT_TOKENS ?? '', 10) || 0),
               ),
             }
+          : {}),
+        // Lever I turn-on (immutable-artifact guard). For the OMEGA arm only, declare
+        // the acceptance oracles present in this workspace so the plugin's pre-write
+        // guard refuses any mutating write onto them — the r5 breach where a model
+        // fakes a pass by overwriting the hidden grading test, or rewrites the task
+        // contract. declareImmutableOracles queries each oracle's REAL 8.3 short name
+        // and declares it alongside the long name, so the Windows alias (e.g.
+        // PUBLIC~1.MJS) can't slip a write past a long-name-only match. The raw control
+        // arm never gets the key (it loads no plugin, and its byte-identical control is
+        // sacred); when a workspace has no oracle files the declaration is '' and the
+        // key is omitted entirely — the guard abstains and the run stays byte-identical
+        // to today. Mechanism, env→plugin flip, and live 8.3 round-trip are proven in
+        // test/live/immutable-guard-liveproof.mjs.
+        ...(arm === 'omega'
+          ? (() => {
+              const decl = declareImmutableOracles(workdir)
+              return decl ? { OMEGA_IMMUTABLE_ORACLES: decl } : {}
+            })()
           : {}),
       },
     })
