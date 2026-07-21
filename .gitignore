@@ -49,3 +49,6 @@ HARNESS_PROPOSALS.md
 HARNESS_RUBRIC.md
 _bench*/
 UI_BACKLOG.md
+
+# private measurement battery — never publish (would leak the held-out test set)
+_ratemeasure.mjs

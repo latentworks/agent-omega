@@ -17,6 +17,8 @@ import {
   CONTROL_TOOL,
   ARTIFACT_CONTROL_TOOL,
 } from "./admission.mjs";
+import { reviewCodeArtifact, selfReviewDisabled } from "./selfreview.mjs";
+import { deriveFunctionContract, applySwapToFile } from "./selfreview-seam.mjs";
 import {
   createLifecycle,
   digestPlan,
@@ -219,6 +221,63 @@ function log(message) {
     // FIX-6: surface log-append failures once instead of swallowing silently.
     warnOnce("task-quality.log append", error);
   }
+}
+
+// v2 SELF-REVIEW SELECT/SWAP — the "auto-fix, safety-gated" behavior Austin approved. When the finished work is a
+// single, unambiguously-identified, self-contained function (deriveFunctionContract; else it no-ops), run the
+// PROVEN ensemble self-review on the model's ACTUAL code and, ONLY when a re-derivation provably beats it on a
+// reasoning-certified oracle (decideSwap, never-worse by construction + the type-B audit guard), swap the file in
+// place (reversible, round-tripped). Everything is fully defensive: it NEVER throws, NEVER blocks completion, and
+// on any failure degrades to a no-op with the model's code untouched — so it cannot make the checkpoint worse.
+// Returns a small result the caller folds into the checkpoint output for observability. Gated off by
+// OMEGA_SELF_REVIEW_DISABLE. Runs only on the fresh artifact review (the moment the model first submits finished
+// work), before the summary is graded — the swap improves the code on disk; the artifact review is unchanged.
+async function maybeSelfReviewSwap(lifecycle, context) {
+  try {
+    if (selfReviewDisabled(process.env)) return { ran: false, reason: "disabled" };
+    const directory = context?.directory || context?.worktree;
+    if (!directory) return { ran: false, reason: "no-directory" };
+    // Which file the model actually wrote this task is decided DEFINITIVELY by git (deriveFunctionContract GATE A:
+    // git status change-set), not by guessing from the freeform artifact/summary. No git-confirmed change -> no swap
+    // (advise-only). So an old/unrelated single-function file that merely shares a task-mentioned name can never be
+    // the overwrite target, and we never depend on the artifact being the code (it is only a summary in production).
+    const contract = deriveFunctionContract({
+      taskContract: lifecycle?.taskContract || "",
+      directory,
+    });
+    if (!contract) return { ran: false, reason: "no-contract" };
+    const modelSpec = process.env.OMEGA_SR_MODEL || "evo/qwen3-coder-80b";
+    const r = await reviewCodeArtifact({
+      ctx: { directory, sessionID: context.sessionID, abort: context.abort },
+      task: { spec: contract.spec, fnName: contract.fnName, signature: contract.signature },
+      incumbentSource: contract.incumbentSource,
+      modelSpec,
+      env: process.env,
+    });
+    if (!r || !r.ran) {
+      log(`self-review: not-run (${r?.reason || "unknown"}) fn=${contract.fnName}`);
+      return { ran: false, reason: r?.reason || "not-run", fnName: contract.fnName, advisory: r?.advisory || null };
+    }
+    if (r.swapEligible && r.selectedSource) {
+      const applied = applySwapToFile({ file: contract.file, selectedSource: r.selectedSource });
+      log(`self-review: SWAP ${applied.applied ? "applied" : "FAILED(" + applied.reason + ")"} fn=${contract.fnName} file=${contract.file} raw=${r.rawScore} winner=${r.winnerScore}/${r.certifiedSize} (${r.swapReason})`);
+      return { ran: true, swapped: applied.applied, applyReason: applied.reason, file: contract.file, fnName: contract.fnName, rawScore: r.rawScore, winnerScore: r.winnerScore, certified: r.certifiedSize, swapReason: r.swapReason, advisory: r.advisory };
+    }
+    log(`self-review: advise-only fn=${contract.fnName} (${r.swapReason})`);
+    return { ran: true, swapped: false, fnName: contract.fnName, swapReason: r.swapReason, advisory: r.advisory };
+  } catch (error) {
+    try { log(`self-review: error ${String((error && error.message) || error)}`); } catch {}
+    return { ran: false, reason: "error", error: String((error && error.message) || error) };
+  }
+}
+
+// Fold a self-review swap result into a human/model-visible note for the checkpoint output (empty when nothing
+// notable happened, so the existing output text is unchanged in the common no-op case).
+function selfReviewNote(sr) {
+  if (!sr || !sr.ran) return "";
+  if (sr.swapped) return `\n\nSelf-review improved your \`${sr.fnName}\`: an independent ensemble found a version that was correct on ${sr.winnerScore}/${sr.certified} reasoning-certified inputs where yours was correct on ${sr.rawScore}. That better version has replaced your code in place (never-worse guaranteed: it was swapped only because it strictly beat your code on a certified oracle).`;
+  if (sr.advisory) return `\n\nSelf-review (advisory) on \`${sr.fnName}\`: ${sr.advisory}`;
+  return "";
 }
 
 function textParts(output) {
@@ -2189,6 +2248,15 @@ export const TaskQualityPlugin = async ({
               else completionDenied.add(context.sessionID);
               return rereviewToolResult(recorded);
             }
+            // v2 self-review SELECT/swap on the model's ACTUAL single-function code, BEFORE the artifact is graded.
+            // Fully defensive (never throws, never blocks); a no-op with code untouched whenever the task is not a
+            // cleanly-identified single function or no certified improvement exists. Improves code on disk; the
+            // artifact-review flow below is unchanged.
+            const selfReview = await maybeSelfReviewSwap(lifecycle, context);
+            const srNote = selfReviewNote(selfReview);
+            const srMeta = selfReview && selfReview.ran
+              ? { swapped: !!selfReview.swapped, fnName: selfReview.fnName || null, swapReason: selfReview.swapReason || null }
+              : null;
             const review = await adapter.review({
               sessionID: context.sessionID,
               contract: lifecycle?.taskContract || "",
@@ -2207,8 +2275,8 @@ export const TaskQualityPlugin = async ({
               completionDenied.delete(context.sessionID);
               return {
                 title: "Artifact review delivered",
-                output: "The complete plain-language artifact review was durably queued as a fresh user turn. Completion is not authorized until it is repaired, verified, and checkpointed again.",
-                metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, completionAuthorized: false, reviewID: review.plainReport.reviewID, reportDigest: review.plainReport.reportDigest, reviewedDigest: review.submission.digest, deliveryMessageID: delivery.messageID, receiptWatermark: recorded.pendingReview.receiptWatermark } },
+                output: "The complete plain-language artifact review was durably queued as a fresh user turn. Completion is not authorized until it is repaired, verified, and checkpointed again." + srNote,
+                metadata: { taskQuality: { phase: recorded.phase, generation: recorded.generation, completionAuthorized: false, reviewID: review.plainReport.reviewID, reportDigest: review.plainReport.reportDigest, reviewedDigest: review.submission.digest, deliveryMessageID: delivery.messageID, receiptWatermark: recorded.pendingReview.receiptWatermark, selfReview: srMeta } },
               };
             }
             const recorded = await recordArtifact(
@@ -2224,15 +2292,16 @@ export const TaskQualityPlugin = async ({
               title: passed
                 ? "Artifact review recorded"
                 : "Artifact review found gaps",
-              output: passed
+              output: (passed
                 ? "The final artifact review is durably recorded. This task generation is closed; begin a new routed task before further implementation."
-                : "The isolated artifact review found gaps or was blocked. This task generation is closed; route a repaired follow-up as a new task before further implementation.",
+                : "The isolated artifact review found gaps or was blocked. This task generation is closed; route a repaired follow-up as a new task before further implementation.") + srNote,
               metadata: {
                 taskQuality: {
                   phase: recorded.phase,
                   generation: recorded.generation,
                   artifactDigest: recorded.reviewedArtifact?.digest || null,
                   completionAuthorized: passed,
+                  selfReview: srMeta,
                 },
               },
             };

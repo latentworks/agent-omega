@@ -152,6 +152,33 @@ SSH — in a plain terminal, joining the live desktop session? That's in
 
 ---
 
+## Testing & evidence
+
+Agent Omega's whole bet — that a well-driven small model can do careful work — is a claim that
+has to be *measured*, not asserted. So the harness has been under continuous, adversarial testing
+from the very first days of the project, along two parallel lines. Both are documented in full,
+limitations and null results included.
+
+- **Harness tuning — is the scaffolding load-bearing?** Roughly **3,000 scored task runs** across
+  three models, probing the harness from every direction (add to it, remove from it, rewrite it),
+  with paired statistics, a held-out anti-overfit gate, a safety floor, and survival of adversarial
+  review by skeptic models. Full methods and results — including a confound we found, disclosed, and
+  fixed — are in **[EXPERIMENTS.md](EXPERIMENTS.md)**.
+- **Self-review — can the model improve its own code without ever making it worse?** A multi-day
+  campaign of **50+ tracked experiments** and **a dozen-plus measurement waves**, built around a
+  strict "never ship worse than the raw model" safety gate, execution-grounded grading (code is run,
+  prose is ignored), independently-verified answer keys, and a *never-probed* partition to keep the
+  system honest about generalization. Methods, the levers that worked, the ones that didn't, and the
+  honest ceiling are in **[SELF_REVIEW.md](SELF_REVIEW.md)**.
+- **Serving tunes — which local models, at which settings?** The evidence and benchmark rigor behind
+  the shipped local configuration live in **[TUNES.md](TUNES.md)**.
+
+The throughline across all three: **behavior is proven, not assumed** — a green exit code is never
+accepted as a result, anything that persists is round-tripped, and anything risky is checked by an
+independent reviewer trying to break it.
+
+---
+
 ## Coming soon (V3)
 
 Roadmap — flagged as what's ahead, not shipped yet:
